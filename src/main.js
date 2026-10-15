@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 // --- DOM Elements ---
 const container = document.getElementById('app');
@@ -10,20 +14,21 @@ const loaderElement = document.getElementById('loader');
 const progressBar = document.getElementById('progress-bar');
 const loaderStatus = document.getElementById('loader-status');
 
-// --- Scene & Night Atmosphere ---
+// --- Scene Setup: Clean Charcoal Studio Diorama Backdrop ---
 const scene = new THREE.Scene();
-const nightColor = new THREE.Color(0x070c18);
-scene.background = nightColor;
-scene.fog = new THREE.FogExp2(0x070c18, 0.0075);
+const studioBgColor = new THREE.Color(0x181a20); // Dark graphite studio floor matching reference
+scene.background = studioBgColor;
+scene.fog = new THREE.FogExp2(0x181a20, 0.005);
 
-// --- Camera ---
+// --- Camera: Hero 3/4 Elevated Isometric Framing ---
 const camera = new THREE.PerspectiveCamera(
-  55,
+  32, // Narrow FOV for tabletop diorama look
   window.innerWidth / window.innerHeight,
-  0.1,
-  1000
+  0.5,
+  500
 );
-camera.position.set(25, 20, 35);
+// Exact framing to match user's reference image
+camera.position.set(-18.0, 18.5, 13.0);
 
 // --- Renderer ---
 const renderer = new THREE.WebGLRenderer({
@@ -31,101 +36,71 @@ const renderer = new THREE.WebGLRenderer({
   powerPreference: 'high-performance'
 });
 renderer.setSize(window.innerWidth, window.innerHeight);
-// Limit pixel ratio to 2 for smooth mobile performance
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.1;
+renderer.toneMappingExposure = 1.08;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 container.appendChild(renderer.domElement);
 
+// --- Post-Processing: Subtle, Tight Golden Bloom ---
+const composer = new EffectComposer(renderer);
+const renderPass = new RenderPass(scene, camera);
+composer.addPass(renderPass);
+
+// Tight bloom to create subtle corona around lantern beads without blinding washouts
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  0.35, // Subtle strength
+  0.28, // Tight radius
+  0.84  // Threshold isolates only pure glowing lantern cores and window lights
+);
+composer.addPass(bloomPass);
+
+const outputPass = new OutputPass();
+composer.addPass(outputPass);
+
 // --- Orbit Controls ---
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
-controls.dampingFactor = 0.06;
-controls.maxPolarAngle = Math.PI / 2 - 0.01; // Stay above ground
+controls.dampingFactor = 0.05;
+controls.target.set(0.0, 0.8, 0.0);
+controls.maxPolarAngle = Math.PI / 2 - 0.02;
 controls.minDistance = 4;
-controls.maxDistance = 300;
+controls.maxDistance = 200;
+controls.update();
 
-window.game = { scene, camera, renderer, controls };
+window.game = { scene, camera, renderer, controls, composer };
 
-// --- Night Lighting ---
-// Ambient moonlight with sky/ground contrast
-const hemiLight = new THREE.HemisphereLight(0x354d75, 0x090e1c, 0.65);
+// --- Cinematic Lighting (Matching Reference Image Palette) ---
+
+// 1. Sky Fill Light: Rich periwinkle / violet-blue giving snow its signature painterly twilight tone
+const hemiLight = new THREE.HemisphereLight(0x5c74b2, 0x18243e, 1.25);
 scene.add(hemiLight);
 
-// Directional Moonlight
-const moonLight = new THREE.DirectionalLight(0xb4d4ff, 1.6);
-moonLight.position.set(40, 60, 30);
+// 2. Primary Moonlight: Cool crisp directional light casting diagonal shadows from top-left to bottom-right
+const moonLight = new THREE.DirectionalLight(0xb4ccff, 2.2);
+moonLight.position.set(-20, 36, -24);
 moonLight.castShadow = true;
 moonLight.shadow.mapSize.width = 2048;
 moonLight.shadow.mapSize.height = 2048;
-moonLight.shadow.camera.near = 10;
-moonLight.shadow.camera.far = 180;
-const d = 50;
-moonLight.shadow.camera.left = -d;
-moonLight.shadow.camera.right = d;
-moonLight.shadow.camera.top = d;
-moonLight.shadow.camera.bottom = -d;
-moonLight.shadow.bias = -0.0004;
+moonLight.shadow.camera.near = 5;
+moonLight.shadow.camera.far = 120;
+const shadowSpan = 32;
+moonLight.shadow.camera.left = -shadowSpan;
+moonLight.shadow.camera.right = shadowSpan;
+moonLight.shadow.camera.top = shadowSpan;
+moonLight.shadow.camera.bottom = -shadowSpan;
+moonLight.shadow.bias = -0.0003;
 scene.add(moonLight);
 
-// Subtle warm secondary fill
-const ambientWarm = new THREE.AmbientLight(0x181e2b, 0.4);
-scene.add(ambientWarm);
+// 3. Deep ambient fill for shadow depth
+const ambientFill = new THREE.AmbientLight(0x1a2644, 0.4);
+scene.add(ambientFill);
 
-// --- Falling Snow Particles ---
-function createSnowflakeTexture() {
-  const canvas = document.createElement('canvas');
-  canvas.width = 32;
-  canvas.height = 32;
-  const ctx = canvas.getContext('2d');
 
-  const gradient = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
-  gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
-  gradient.addColorStop(0.3, 'rgba(235, 245, 255, 0.85)');
-  gradient.addColorStop(0.7, 'rgba(200, 225, 255, 0.25)');
-  gradient.addColorStop(1, 'rgba(200, 225, 255, 0)');
 
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, 32, 32);
-  return new THREE.CanvasTexture(canvas);
-}
-
-const snowCount = 2200;
-const snowBounds = { x: 120, y: 55, z: 120 };
-const snowGeo = new THREE.BufferGeometry();
-const snowPositions = new Float32Array(snowCount * 3);
-const snowVelocities = [];
-
-for (let i = 0; i < snowCount; i++) {
-  snowPositions[i * 3] = (Math.random() - 0.5) * snowBounds.x;
-  snowPositions[i * 3 + 1] = Math.random() * snowBounds.y;
-  snowPositions[i * 3 + 2] = (Math.random() - 0.5) * snowBounds.z;
-
-  snowVelocities.push({
-    fallSpeed: 0.05 + Math.random() * 0.08,
-    swaySpeed: 0.8 + Math.random() * 1.2,
-    swayAmp: 0.02 + Math.random() * 0.03,
-    offset: Math.random() * Math.PI * 2
-  });
-}
-
-snowGeo.setAttribute('position', new THREE.BufferAttribute(snowPositions, 3));
-
-const snowMat = new THREE.PointsMaterial({
-  size: 0.7,
-  map: createSnowflakeTexture(),
-  transparent: true,
-  opacity: 0.85,
-  depthWrite: false,
-  blending: THREE.AdditiveBlending
-});
-
-const snowParticles = new THREE.Points(snowGeo, snowMat);
-scene.add(snowParticles);
-
-// --- Load Terrain GLTF with House Glow ---
+// --- Load Terrain GLTF ---
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('/libs/draco/gltf/');
 
@@ -139,22 +114,17 @@ gltfLoader.load(
   (gltf) => {
     const root = gltf.scene;
 
-    // Compute bounding box to center terrain and frame camera
+    // Center model at origin
     const box = new THREE.Box3().setFromObject(root);
     const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
 
-    // Center model at origin
     root.position.x = -center.x;
-    root.position.y = -box.min.y; // Keep base at ground level
+    root.position.y = -box.min.y;
     root.position.z = -center.z;
 
     scene.add(root);
 
-    // Track glowing points for localized warm lighting
-    const warmLightPositions = [];
-
-    // Traverse and process materials & emissions
+    // Traverse and optimize materials
     root.traverse((child) => {
       if (child.isMesh) {
         child.castShadow = true;
@@ -170,79 +140,54 @@ gltfLoader.load(
           const matName = (mat.name || '').toLowerCase();
           const meshName = (child.name || '').toLowerCase();
 
-          // Fix Blender glTF alpha transparency: ensure solid architecture is opaque with depthWrite
+          // 1. House Material: Preserve Alpha Texture while keeping DepthWrite
           if (
             meshName.includes('house') ||
             meshName.includes('building') ||
             matName.includes('building') ||
             matName.includes('house')
           ) {
-            mat.transparent = false;
-            mat.depthWrite = true;
+            mat.transparent = true;
+            mat.alphaTest = 0.5; // Cleanly clips cutout texture borders
+            mat.depthWrite = true; // Prevents backface bleed/sorting glitch
             mat.depthTest = true;
-            mat.alphaTest = 0;
+            mat.side = THREE.DoubleSide;
           }
 
-          // 1. Process meshes with explicit emission textures (like house glowing windows)
+          // 2. Window emission: Clean warm luminescence
           if (mat.emissiveMap) {
             mat.emissive = new THREE.Color(0xffffff);
-            mat.emissiveIntensity = 3.5;
+            mat.emissiveIntensity = 3.2;
             mat.needsUpdate = true;
-
-            const worldPos = new THREE.Vector3();
-            child.getWorldPosition(worldPos);
-            warmLightPositions.push(worldPos);
           }
-          // 2. Process stylized lantern/window/house glow materials
-          else if (
-            matName.includes('glow') ||
-            matName.includes('lantern') ||
-            matName.includes('window') ||
-            matName.includes('lamp') ||
-            matName.includes('light') ||
-            matName.includes('emission') ||
-            meshName.includes('lantern') ||
-            meshName.includes('window')
+
+          // 3. Frozen Crystalline Ice Lake: Mirror-like reflection of lights and moon
+          if (
+            matName.includes('ice') ||
+            matName.includes('water') ||
+            (mat.map && mat.map.name && mat.map.name.toLowerCase().includes('ice'))
           ) {
-            mat.emissive = new THREE.Color(0xffa834); // Warm amber candle/lamp glow
-            mat.emissiveIntensity = 5.0;
-            mat.toneMapped = false; // Bypass tone mapping for intense radiant look
-            mat.needsUpdate = true;
-
-            const worldPos = new THREE.Vector3();
-            child.getWorldPosition(worldPos);
-            warmLightPositions.push(worldPos);
+            mat.roughness = 0.1;
+            mat.metalness = 0.22;
+            if ('clearcoat' in mat) {
+              mat.clearcoat = 1.0;
+              mat.clearcoatRoughness = 0.08;
+            }
           }
-          // 3. Crisp snow/rock surface response
-          else if (matName.includes('snow') || matName.includes('ice')) {
-            mat.roughness = Math.max(mat.roughness, 0.4);
+
+          // 4. Snowy Terrain: Soft moonlit diffuse response
+          if (matName.includes('snow') || matName.includes('terrain')) {
+            mat.roughness = 0.7;
+            mat.metalness = 0.03;
+          }
+
+          // 5. Rock Cliffs: Rich warm contrast
+          if (matName.includes('rock') || matName.includes('cliff')) {
+            mat.roughness = 0.88;
           }
         });
       }
     });
-
-    // Add localized warm point lights near houses/lanterns (capped to maintain 60 FPS)
-    const maxLights = Math.min(warmLightPositions.length, 10);
-    for (let i = 0; i < maxLights; i++) {
-      const pos = warmLightPositions[i];
-      const warmLight = new THREE.PointLight(0xff9922, 2.5, 14, 1.8);
-      warmLight.position.copy(pos).add(new THREE.Vector3(0, 0.5, 0));
-      scene.add(warmLight);
-    }
-
-    // Auto-frame camera based on model dimensions
-    const maxDim = Math.max(size.x, size.z, 20);
-    camera.position.set(maxDim * 0.7, maxDim * 0.45, maxDim * 0.8);
-    camera.lookAt(0, size.y * 0.25, 0);
-    controls.target.set(0, size.y * 0.2, 0);
-    controls.update();
-
-    // Adjust shadow frustum to fit model size
-    moonLight.shadow.camera.left = -maxDim * 0.6;
-    moonLight.shadow.camera.right = maxDim * 0.6;
-    moonLight.shadow.camera.top = maxDim * 0.6;
-    moonLight.shadow.camera.bottom = -maxDim * 0.6;
-    moonLight.shadow.camera.updateProjectionMatrix();
 
     // Fade out loader
     if (loaderElement) {
@@ -274,9 +219,10 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(width, height);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  composer.setSize(width, height);
 });
 
-// --- Performance Telemetry & Animation Loop ---
+// --- Animation Loop ---
 let lastTime = performance.now();
 let frameCount = 0;
 let fps = 0;
@@ -285,31 +231,13 @@ const clock = new THREE.Clock();
 function animate(currentTime) {
   requestAnimationFrame(animate);
 
-  const delta = clock.getDelta();
   const elapsedTime = clock.getElapsedTime();
 
-  // Update controls
+  // Update camera controls
   controls.update();
 
-  // Update Snow Particles
-  const positions = snowGeo.attributes.position.array;
-  for (let i = 0; i < snowCount; i++) {
-    const v = snowVelocities[i];
-    // Fall downwards
-    positions[i * 3 + 1] -= v.fallSpeed;
-    // Gentle sway
-    positions[i * 3] += Math.sin(elapsedTime * v.swaySpeed + v.offset) * v.swayAmp;
 
-    // Reset when below ground
-    if (positions[i * 3 + 1] < 0) {
-      positions[i * 3 + 1] = snowBounds.y;
-      positions[i * 3] = (Math.random() - 0.5) * snowBounds.x;
-      positions[i * 3 + 2] = (Math.random() - 0.5) * snowBounds.z;
-    }
-  }
-  snowGeo.attributes.position.needsUpdate = true;
-
-  // FPS & Draw Call Telemetry
+  // Telemetry
   frameCount++;
   if (currentTime >= lastTime + 1000) {
     fps = Math.round((frameCount * 1000) / (currentTime - lastTime));
@@ -320,7 +248,8 @@ function animate(currentTime) {
     lastTime = currentTime;
   }
 
-  renderer.render(scene, camera);
+  // Render via Bloom Composer
+  composer.render();
 }
 
 requestAnimationFrame(animate);
