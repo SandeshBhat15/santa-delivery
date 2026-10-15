@@ -7,6 +7,7 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
     <title>3D Browser Game</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
@@ -17,6 +18,20 @@
     <div id="ui-container">
       <div id="debug-info">
         <span id="fps-counter">FPS: --</span>
+      </div>
+      <div id="hint-info">
+        <span>Drag / Swipe to orbit | Pinch / Scroll to zoom</span>
+      </div>
+    </div>
+
+    <!-- Loading Screen -->
+    <div id="loader">
+      <div class="loader-content">
+        <h2>Loading Winter World...</h2>
+        <div class="progress-bar-bg">
+          <div id="progress-bar"></div>
+        </div>
+        <p id="loader-status">0%</p>
       </div>
     </div>
 
