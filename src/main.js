@@ -14,11 +14,11 @@ const loaderElement = document.getElementById('loader');
 const progressBar = document.getElementById('progress-bar');
 const loaderStatus = document.getElementById('loader-status');
 
-// --- Scene Setup: Clean Charcoal Studio Diorama Backdrop ---
+// --- Scene Setup: Clean Midnight Twilight Backdrop ---
 const scene = new THREE.Scene();
-const studioBgColor = new THREE.Color(0x181a20); // Dark graphite studio floor matching reference
+const studioBgColor = new THREE.Color(0x0c111e); // Deep midnight indigo matching reference
 scene.background = studioBgColor;
-scene.fog = new THREE.FogExp2(0x181a20, 0.005);
+scene.fog = new THREE.FogExp2(0x0c111e, 0.004);
 
 // --- Camera: Hero 3/4 Elevated Isometric Framing ---
 const camera = new THREE.PerspectiveCamera(
@@ -38,22 +38,22 @@ const renderer = new THREE.WebGLRenderer({
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.08;
+renderer.toneMappingExposure = 1.15;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 container.appendChild(renderer.domElement);
 
-// --- Post-Processing: Subtle, Tight Golden Bloom ---
+// --- Post-Processing: Cinematic Golden Hearth Bloom ---
 const composer = new EffectComposer(renderer);
 const renderPass = new RenderPass(scene, camera);
 composer.addPass(renderPass);
 
-// Tight bloom to create subtle corona around lantern beads without blinding washouts
+// Bloom creates warm golden coronas around window emissions and cabin hearths
 const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
-  0.35, // Subtle strength
-  0.28, // Tight radius
-  0.84  // Threshold isolates only pure glowing lantern cores and window lights
+  0.45, // Crisp warm corona
+  0.32, // Natural radius
+  0.85  // Isolates high-intensity window emissions from the snow
 );
 composer.addPass(bloomPass);
 
@@ -72,15 +72,15 @@ controls.update();
 
 window.game = { scene, camera, renderer, controls, composer };
 
-// --- Cinematic Lighting (Matching Reference Image Palette) ---
+// --- Cinematic Lighting (Teal & Orange / Deep Indigo & Amber Palette) ---
 
-// 1. Sky Fill Light: Rich periwinkle / violet-blue giving snow its signature painterly twilight tone
-const hemiLight = new THREE.HemisphereLight(0x5c74b2, 0x18243e, 1.25);
+// 1. Sky Fill Light: Rich twilight indigo providing cool blue shadows on snow
+const hemiLight = new THREE.HemisphereLight(0x3e5894, 0x0a1020, 0.55);
 scene.add(hemiLight);
 
-// 2. Primary Moonlight: Cool crisp directional light casting diagonal shadows from top-left to bottom-right
-const moonLight = new THREE.DirectionalLight(0xb4ccff, 2.2);
-moonLight.position.set(-20, 36, -24);
+// 2. Primary Moonlight: Cool crisp lunar beam casting long, dramatic diagonal shadows
+const moonLight = new THREE.DirectionalLight(0x9ebbff, 1.35);
+moonLight.position.set(-18, 22, -22);
 moonLight.castShadow = true;
 moonLight.shadow.mapSize.width = 2048;
 moonLight.shadow.mapSize.height = 2048;
@@ -91,12 +91,42 @@ moonLight.shadow.camera.left = -shadowSpan;
 moonLight.shadow.camera.right = shadowSpan;
 moonLight.shadow.camera.top = shadowSpan;
 moonLight.shadow.camera.bottom = -shadowSpan;
-moonLight.shadow.bias = -0.0003;
+moonLight.shadow.bias = -0.00008;
+moonLight.shadow.normalBias = 0.04;
+moonLight.shadow.radius = 2.0;
 scene.add(moonLight);
 
 // 3. Deep ambient fill for shadow depth
-const ambientFill = new THREE.AmbientLight(0x1a2644, 0.4);
+const ambientFill = new THREE.AmbientLight(0x101828, 0.15);
 scene.add(ambientFill);
+
+// --- Warm Radial Hearth Glow Texture (Firelight spilling from windows onto snow) ---
+function createHearthGlowTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, 'rgba(255, 145, 25, 0.95)');
+  g.addColorStop(0.25, 'rgba(255, 105, 15, 0.65)');
+  g.addColorStop(0.55, 'rgba(215, 65, 5, 0.25)');
+  g.addColorStop(0.85, 'rgba(160, 35, 0, 0.05)');
+  g.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 128, 128);
+  return new THREE.CanvasTexture(canvas);
+}
+
+const hearthGlowGeo = new THREE.PlaneGeometry(1.3, 1.3);
+const hearthGlowMat = new THREE.MeshBasicMaterial({
+  map: createHearthGlowTexture(),
+  transparent: true,
+  opacity: 0.55,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+
+const villagePointLights = [];
 
 
 
@@ -123,6 +153,8 @@ gltfLoader.load(
     root.position.z = -center.z;
 
     scene.add(root);
+
+    const houseCoords = [];
 
     // Traverse and optimize materials
     root.traverse((child) => {
@@ -152,40 +184,78 @@ gltfLoader.load(
             mat.depthWrite = true; // Prevents backface bleed/sorting glitch
             mat.depthTest = true;
             mat.side = THREE.DoubleSide;
+
+            // Collect world position for hearth light spill on surrounding snow
+            const wp = new THREE.Vector3();
+            child.getWorldPosition(wp);
+            houseCoords.push(wp);
           }
 
-          // 2. Window emission: Clean warm luminescence
+          // 2. Window emission: Fiery golden-amber hearth glow
           if (mat.emissiveMap) {
-            mat.emissive = new THREE.Color(0xffffff);
-            mat.emissiveIntensity = 3.2;
+            mat.emissive = new THREE.Color(0xff7a10);
+            mat.emissiveIntensity = 4.8;
             mat.needsUpdate = true;
           }
 
-          // 3. Frozen Crystalline Ice Lake: Mirror-like reflection of lights and moon
+          // 3. Frozen Crystalline Ice Lake: Mirror-like reflection of moonlight & icy luminescence
           if (
             matName.includes('ice') ||
             matName.includes('water') ||
             (mat.map && mat.map.name && mat.map.name.toLowerCase().includes('ice'))
           ) {
-            mat.roughness = 0.1;
-            mat.metalness = 0.22;
-            if ('clearcoat' in mat) {
-              mat.clearcoat = 1.0;
-              mat.clearcoatRoughness = 0.08;
-            }
+            mat.roughness = 0.25;
+            mat.metalness = 0.05;
+            mat.emissive = new THREE.Color(0x1a4a80);
+            mat.emissiveIntensity = 1.0;
+            mat.needsUpdate = true;
           }
 
           // 4. Snowy Terrain: Soft moonlit diffuse response
           if (matName.includes('snow') || matName.includes('terrain')) {
-            mat.roughness = 0.7;
-            mat.metalness = 0.03;
+            mat.roughness = 0.65;
+            mat.metalness = 0.02;
           }
 
           // 5. Rock Cliffs: Rich warm contrast
           if (matName.includes('rock') || matName.includes('cliff')) {
-            mat.roughness = 0.88;
+            mat.roughness = 0.85;
           }
         });
+      }
+    });
+
+    // Add warm hearth light pools under cabins (firelight spilling onto snow, matching reference)
+    const filteredPoints = [];
+    houseCoords.forEach((hp) => {
+      // Keep decals inside the island boundary so they don't overhang into the black void
+      if (Math.abs(hp.x) > 8.9 || Math.abs(hp.z) > 8.9) return;
+
+      const tooClose = filteredPoints.some(
+        (p) => Math.hypot(p.x - hp.x, p.z - hp.z) < 0.95
+      );
+      if (!tooClose) {
+        filteredPoints.push(hp);
+
+        // Ground firelight pool under house
+        const pool = new THREE.Mesh(hearthGlowGeo, hearthGlowMat);
+        pool.position.set(hp.x, hp.y + 0.015, hp.z);
+        pool.rotation.x = -Math.PI / 2;
+        scene.add(pool);
+
+        // Subtle dynamic warm village point light (capped to max 12 lights inside the village, avoiding perimeter)
+        if (
+          villagePointLights.length < 12 &&
+          filteredPoints.length % 3 === 0 &&
+          Math.abs(hp.x) < 8.2 &&
+          Math.abs(hp.z) < 8.2
+        ) {
+          const pl = new THREE.PointLight(0xff8815, 0.95, 3.5, 2.0);
+          pl.position.set(hp.x, hp.y + 0.45, hp.z);
+          pl.userData = { baseIntensity: 0.95, seed: Math.random() * 10 };
+          scene.add(pl);
+          villagePointLights.push(pl);
+        }
       }
     });
 
@@ -236,7 +306,13 @@ function animate(currentTime) {
   // Update camera controls
   controls.update();
 
-
+  // Gentle hearth fire flicker animation for village cabins
+  villagePointLights.forEach((pl) => {
+    const flicker =
+      Math.sin(elapsedTime * 3.8 + pl.userData.seed) * 0.10 +
+      Math.cos(elapsedTime * 2.2 + pl.userData.seed * 2) * 0.05;
+    pl.intensity = pl.userData.baseIntensity * (1 + flicker);
+  });
   // Telemetry
   frameCount++;
   if (currentTime >= lastTime + 1000) {
