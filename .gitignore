@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Build outputs
+dist/
+dist-ssr/
+*.local
+
+# Vite cache
+.vite/
+
+# Editor & OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Blender temporary & backup files
+*.blend1
+*.blend2
+*.blend@
+*.crash.txt
+
+# Logs & environment variables
+*.log
+.env
+.env.*
+!.env.example
