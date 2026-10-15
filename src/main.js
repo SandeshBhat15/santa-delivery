@@ -170,10 +170,23 @@ gltfLoader.load(
           const matName = (mat.name || '').toLowerCase();
           const meshName = (child.name || '').toLowerCase();
 
-          // 1. Process meshes with explicit emission textures
+          // Fix Blender glTF alpha transparency: ensure solid architecture is opaque with depthWrite
+          if (
+            meshName.includes('house') ||
+            meshName.includes('building') ||
+            matName.includes('building') ||
+            matName.includes('house')
+          ) {
+            mat.transparent = false;
+            mat.depthWrite = true;
+            mat.depthTest = true;
+            mat.alphaTest = 0;
+          }
+
+          // 1. Process meshes with explicit emission textures (like house glowing windows)
           if (mat.emissiveMap) {
-            mat.emissive = mat.emissive.getHex() === 0 ? new THREE.Color(0xffe0a0) : mat.emissive;
-            mat.emissiveIntensity = 4.5;
+            mat.emissive = new THREE.Color(0xffffff);
+            mat.emissiveIntensity = 3.5;
             mat.needsUpdate = true;
 
             const worldPos = new THREE.Vector3();
