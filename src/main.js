@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 // --- DOM Elements ---
 const container = document.getElementById('app');
@@ -15,114 +19,9 @@ const scene = new THREE.Scene();
 
 window.THREE = THREE;
 
-// 1. Deep Midnight Winter Sky Dome Texture
-function createSkyDomeTexture() {
-  const canvas = document.createElement('canvas');
-  canvas.width = 1024;
-  canvas.height = 512;
-  const ctx = canvas.getContext('2d');
-
-  // Vertical atmospheric gradient: Deep cosmic black at zenith -> Dark midnight indigo -> Horizon mist veil
-  const grad = ctx.createLinearGradient(0, 0, 0, 512);
-  grad.addColorStop(0.0, '#010308'); // Cosmic midnight zenith
-  grad.addColorStop(0.35, '#020612'); // Deep interstellar dark
-  grad.addColorStop(0.65, '#050e1f'); // Moonlit scattered deep atmosphere
-  grad.addColorStop(0.85, '#0b182b'); // Horizon mountain mist veil (matches fog)
-  grad.addColorStop(1.0, '#07101e'); // Low ground absorption
-
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 1024, 512);
-
-  // Soft lunar glow halo in the upper night sky
-  const glowGrad = ctx.createRadialGradient(720, 240, 10, 720, 240, 320);
-  glowGrad.addColorStop(0.0, 'rgba(100, 150, 220, 0.14)');
-  glowGrad.addColorStop(0.5, 'rgba(40, 75, 130, 0.05)');
-  glowGrad.addColorStop(1.0, 'rgba(0, 0, 0, 0.0)');
-  ctx.fillStyle = glowGrad;
-  ctx.fillRect(0, 0, 1024, 512);
-
-  return new THREE.CanvasTexture(canvas);
-}
-
-const skyTexture = createSkyDomeTexture();
-const skyGeo = new THREE.SphereGeometry(500, 32, 24);
-const skyMat = new THREE.MeshBasicMaterial({
-  map: skyTexture,
-  side: THREE.BackSide,
-  depthWrite: false,
-  fog: false
-});
-const skyDome = new THREE.Mesh(skyGeo, skyMat);
-scene.add(skyDome);
-
-// Deep dark midnight background color matching the horizon mist
-const nightMistyColor = new THREE.Color(0x0b182b);
-scene.background = nightMistyColor;
-
-// 2. Realistic Low-Altitude Winter Mist & Distance Fog
-// FogExp2 gently wraps the entire scene in atmospheric cool night mist
-scene.fog = new THREE.FogExp2(0x0b182b, 0.032);
-
-// 3. Moon Disk & Celestial Lunar Corona
-const moonPivot = new THREE.Group();
-const moonDist = 380;
-const moonGeo = new THREE.PlaneGeometry(28, 28);
-
-function createMoonTexture() {
-  const canvas = document.createElement('canvas');
-  canvas.width = 128;
-  canvas.height = 128;
-  const ctx = canvas.getContext('2d');
-
-  const grad = ctx.createRadialGradient(64, 64, 4, 64, 64, 64);
-  grad.addColorStop(0, 'rgba(255, 255, 255, 1.0)');
-  grad.addColorStop(0.18, 'rgba(225, 240, 255, 0.9)');
-  grad.addColorStop(0.38, 'rgba(150, 190, 245, 0.45)');
-  grad.addColorStop(0.70, 'rgba(80, 130, 210, 0.12)');
-  grad.addColorStop(1.0, 'rgba(50, 90, 170, 0.0)');
-
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 128, 128);
-  return new THREE.CanvasTexture(canvas);
-}
-
-const moonMat = new THREE.MeshBasicMaterial({
-  map: createMoonTexture(),
-  transparent: true,
-  depthWrite: false,
-  blending: THREE.AdditiveBlending,
-  side: THREE.DoubleSide
-});
-const moonMesh = new THREE.Mesh(moonGeo, moonMat);
-moonMesh.position.set(130, 220, 100);
-moonMesh.lookAt(0, 0, 0);
-scene.add(moonMesh);
-
-// 4. Subtle Distant Stars in the clear mountain night
-const starCount = 550;
-const starGeo = new THREE.BufferGeometry();
-const starPositions = new Float32Array(starCount * 3);
-for (let i = 0; i < starCount; i++) {
-  const u = Math.random();
-  const v = Math.random();
-  const theta = u * 2.0 * Math.PI;
-  const phi = Math.acos(2.0 * v - 1.0);
-  const r = 420;
-  const y = Math.abs(r * Math.cos(phi)) + 20; // upper hemisphere
-  starPositions[i * 3] = r * Math.sin(phi) * Math.sin(theta);
-  starPositions[i * 3 + 1] = y;
-  starPositions[i * 3 + 2] = r * Math.sin(phi) * Math.cos(theta);
-}
-starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
-const starMat = new THREE.PointsMaterial({
-  color: 0xc4dcff,
-  size: 1.1,
-  transparent: true,
-  opacity: 0.7,
-  depthWrite: false
-});
-const stars = new THREE.Points(starGeo, starMat);
-scene.add(stars);
+// --- Cinematic Fairytale Winter Night Atmosphere ---
+scene.background = null; // Let the procedural sky dome render as background
+scene.environment = null;
 
 // --- Camera ---
 const camera = new THREE.PerspectiveCamera(
@@ -131,8 +30,8 @@ const camera = new THREE.PerspectiveCamera(
   0.1,
   1000
 );
-// Starting framed view looking across the misty frozen river toward the glowing houses
-camera.position.set(-6, 2.5, -2.0);
+// Cinematic framed view across the snowy island toward the glowing village
+camera.position.set(-6.5, 2.0, -1.5);
 
 // --- Renderer ---
 const renderer = new THREE.WebGLRenderer({
@@ -142,7 +41,7 @@ const renderer = new THREE.WebGLRenderer({
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.92; // Deep, authentic night contrast
+renderer.toneMappingExposure = 0.95;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 container.appendChild(renderer.domElement);
@@ -154,19 +53,302 @@ controls.dampingFactor = 0.06;
 controls.maxPolarAngle = Math.PI / 2 - 0.02; // Keep camera above ground
 controls.minDistance = 2.0;
 controls.maxDistance = 250;
-controls.target.set(0, 0.6, -4.5);
+controls.target.set(0, 3.5, -5.5);
 controls.update();
 
-window.game = { scene, camera, renderer, controls };
+// --- Cinematic Post-Processing Pipeline (Bloom for Glowing Window Hearths) ---
+const composer = new EffectComposer(renderer);
 
-// --- Authentic Night Lighting (Cool, Subtle Moonlight) ---
-// Ambient moonlight: cool deep navy sky bounce with dark shadowed ground
-const hemiLight = new THREE.HemisphereLight(0x162844, 0x03060a, 0.20);
-scene.add(hemiLight);
+const renderPass = new RenderPass(scene, camera);
+composer.addPass(renderPass);
 
-// Directional Moonlight: soft silver-blue beam casting long night shadows
-const moonLight = new THREE.DirectionalLight(0x7aa0ce, 0.32);
-moonLight.position.set(45, 75, 35);
+// UnrealBloomPass: Broad, soft dispersion of radiant amber warmth across village architecture and snow
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  1.42, // Bloom strength
+  1.35, // Bloom radius: broad, soft falloff scattering into eaves, walls, and ground snow
+  0.68  // Bloom threshold: lower threshold allows window emission glow to blend softly into neighboring surfaces
+);
+composer.addPass(bloomPass);
+
+const outputPass = new OutputPass();
+composer.addPass(outputPass);
+
+window.game = { scene, camera, renderer, controls, composer, bloomPass };
+
+// --- Pure Procedural GLSL Aurora Night Sky Dome (Zero Images, Zero Canvas Textures) ---
+const skyVertexShader = `
+  varying vec3 vWorldDirection;
+  void main() {
+    vWorldDirection = position;
+    vec4 mvPosition = viewMatrix * vec4(cameraPosition + position, 1.0);
+    gl_Position = (projectionMatrix * mvPosition).xyww;
+  }
+`;
+
+const skyFragmentShader = `
+  uniform float uTime;
+  varying vec3 vWorldDirection;
+
+  float hash21(vec2 p) {
+    p = fract(p * vec2(234.34, 435.345));
+    p += dot(p, p + 34.23);
+    return fract(p.x * p.y);
+  }
+
+  float hash31(vec3 p) {
+    p = fract(p * vec3(443.897, 441.423, 437.195));
+    p += dot(p, p.yzx + 19.19);
+    return fract((p.x + p.y) * p.z);
+  }
+
+  vec3 permute(vec3 x) { return mod(((x*34.0)+1.0)*x, 289.0); }
+  float snoise2(vec2 v) {
+    const vec4 C = vec4(0.211324865405187, 0.366025403784439,
+                       -0.577350269189626, 0.024390243902439);
+    vec2 i  = floor(v + dot(v, C.yy));
+    vec2 x0 = v -   i + dot(i, C.xx);
+    vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+    vec4 x12 = x0.xyxy + C.xxzz;
+    x12.xy -= i1;
+    i = mod(i, 289.0);
+    vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0)) + i.x + vec3(0.0, i1.x, 1.0));
+    vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
+    m = m*m; m = m*m;
+    vec3 x = 2.0 * fract(p * C.www) - 1.0;
+    vec3 h = abs(x) - 0.5;
+    vec3 ox = floor(x + 0.5);
+    vec3 a0 = x - ox;
+    m *= 1.79284291400159 - 0.85373472095314 * (a0*a0 + h*h);
+    vec3 g;
+    g.x  = a0.x  * x0.x  + h.x  * x0.y;
+    g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+    return 130.0 * dot(m, g);
+  }
+
+  float fbm2(vec2 p) {
+    float f = 0.0;
+    mat2 rot = mat2(0.8, -0.6, 0.6, 0.8);
+    f += 0.5000 * snoise2(p); p = rot * p * 2.02;
+    f += 0.2500 * snoise2(p); p = rot * p * 2.03;
+    f += 0.1250 * snoise2(p); p = rot * p * 2.01;
+    return f;
+  }
+
+  void main() {
+    vec3 d = normalize(vWorldDirection);
+    float h = d.y;
+
+    // 1. Fairytale Midnight Sky Gradient (Exact match to reference sky.png)
+    vec3 cZenith   = vec3(0.010, 0.018, 0.065); // Deep midnight cosmic navy
+    vec3 cUpper    = vec3(0.032, 0.075, 0.240); // Rich royal fairytale sapphire
+    vec3 cMid      = vec3(0.065, 0.130, 0.380); // Luminous deep blue
+    vec3 cHorizon  = vec3(0.115, 0.160, 0.420); // Atmospheric indigo
+    vec3 cBlush    = vec3(0.240, 0.170, 0.350); // Twilight violet/lavender glow
+
+    vec3 sky = cZenith;
+    sky = mix(sky, cUpper,   smoothstep(0.85, 0.45, h));
+    sky = mix(sky, cMid,     smoothstep(0.50, 0.20, h));
+    sky = mix(sky, cHorizon, smoothstep(0.24, 0.04, h));
+    sky = mix(sky, cBlush,   smoothstep(0.08, -0.06, h));
+
+    // 2. Cosmic Milky Way Nebula Band
+    vec3 mwNormal = normalize(vec3(0.65, 0.55, -0.45));
+    float mwDist = abs(dot(d, mwNormal));
+    if (h > 0.02 && mwDist < 0.35) {
+      float mwGlow = exp(-mwDist * 9.0) * smoothstep(0.02, 0.18, h);
+      vec2 mwCoord = vec2(dot(d, cross(mwNormal, vec3(0,1,0))), dot(d, vec3(0,1,0))) * 3.2;
+      float mwDust = fbm2(mwCoord + vec2(1.2, 3.4)) * 0.5 + 0.5;
+      vec3 mwCol1 = vec3(0.16, 0.26, 0.62);
+      vec3 mwCol2 = vec3(0.30, 0.16, 0.50);
+      vec3 mwColor = mix(mwCol1, mwCol2, mwDust);
+      sky += mwColor * mwGlow * (0.6 + 0.6 * mwDust) * 0.75;
+    }
+
+    // 3. Multi-Layer Celestial Starfield (Clean spherical Gaussian points)
+    if (h > 0.02) {
+      // Layer A: Crisp dense pinprick stars
+      vec3 sGrid = d * 160.0;
+      vec3 sid = floor(sGrid);
+      vec3 sf = fract(sGrid) - 0.5;
+      float sr = hash31(sid);
+      if (sr > 0.82) {
+        vec3 sOff = (vec3(hash31(sid + 1.1), hash31(sid + 2.3), hash31(sid + 3.7)) - 0.5) * 0.65;
+        float sD = length(sf - sOff);
+        float sTwinkle = sin(uTime * (2.0 + sr * 3.5) + sr * 62.8) * 0.25 + 0.75;
+        float sBri = exp(-sD * sD * 900.0) * (sr - 0.82) * 9.0 * sTwinkle;
+        vec3 sCol = (sr > 0.95) ? vec3(1.0, 0.94, 0.82) : vec3(0.88, 0.94, 1.0);
+        sky += sCol * sBri * smoothstep(0.02, 0.10, h);
+      }
+
+      // Layer B: Sparkling jewel stars
+      vec3 bGrid = d * 48.0;
+      vec3 bid = floor(bGrid);
+      vec3 bf = fract(bGrid) - 0.5;
+      float br = hash31(bid + 88.0);
+      if (br > 0.965 && h > 0.06) {
+        vec3 bOff = (vec3(hash31(bid + 5.1), hash31(bid + 6.3), hash31(bid + 7.7)) - 0.5) * 0.5;
+        float bD = length(bf - bOff);
+        float bCore = exp(-bD * bD * 1200.0) * 2.8;
+        float bAura = exp(-bD * 18.0) * 0.35;
+        float bTwinkle = sin(uTime * 1.5 + br * 31.4) * 0.2 + 0.8;
+        vec3 bCol = (br > 0.985) ? vec3(1.0, 0.90, 0.72) : vec3(0.88, 0.95, 1.0);
+        sky += bCol * (bCore + bAura) * bTwinkle * (br - 0.965) * 35.0 * smoothstep(0.06, 0.16, h);
+      }
+    }
+
+    // 4. Subtle, Ethereal Aurora Borealis Veil (Delicate & Restrained)
+    if (h > 0.08 && h < 0.65) {
+      float az = atan(d.z, d.x);
+      float alt = h;
+
+      // Center the aurora ribbon above the distant mountain peak in the framed camera view
+      float azDiff = az - (-0.28);
+      if (azDiff > 3.14159) azDiff -= 6.28318;
+      if (azDiff < -3.14159) azDiff += 6.28318;
+      float azArc = exp(-pow(azDiff * 1.5, 2.0));
+
+      if (azArc > 0.02) {
+        // Slender flowing ribbon
+        float ribbonU = az * 2.2 + sin(az * 1.2 + uTime * 0.08) * 0.25;
+        float ribbonCenter = 0.32 + sin(ribbonU + uTime * 0.10) * 0.07 + cos(ribbonU * 0.4 - uTime * 0.06) * 0.04;
+        float dist = abs(alt - ribbonCenter);
+
+        // Gentle, soft vertical drapery folds
+        float drapery = snoise2(vec2(ribbonU * 2.6 + uTime * 0.12, alt * 3.2)) * 0.5 + 0.5;
+        float curtain = exp(-dist * dist * 75.0) * (0.35 + 0.65 * drapery);
+
+        // Soft watercolor palette: subtle emerald base to delicate violet crest
+        vec3 cEmerald = vec3(0.04, 0.48, 0.35);
+        vec3 cCyan    = vec3(0.06, 0.38, 0.55);
+        vec3 cViolet  = vec3(0.38, 0.16, 0.50);
+
+        vec3 col = mix(cEmerald, cCyan, smoothstep(ribbonCenter - 0.05, ribbonCenter + 0.02, alt));
+        col = mix(col, cViolet, smoothstep(ribbonCenter + 0.01, ribbonCenter + 0.10, alt));
+
+        // Soft, faint translucent glow
+        float softGlow = exp(-dist * 12.0) * 0.08;
+        vec3 auroraTotal = (col * curtain * 0.28 + cCyan * softGlow * 0.10) * azArc;
+
+        sky += auroraTotal * smoothstep(0.08, 0.16, alt) * smoothstep(0.65, 0.42, alt);
+      }
+    }
+
+    // 5. Stylized Twilight Horizon Clouds (Matching bottom of sky.png)
+    if (h < 0.22 && h > -0.05) {
+      vec2 cCoord = vec2(atan(d.z, d.x) * 3.5, (h + 0.05) * 12.0 + uTime * 0.006);
+      float cn = fbm2(cCoord) * 0.5 + 0.5;
+      float cDensity = smoothstep(0.46, 0.75, cn) * smoothstep(0.20, 0.06, h) * smoothstep(-0.05, 0.02, h);
+      if (cDensity > 0.005) {
+        vec3 cBase = vec3(0.09, 0.10, 0.22);
+        vec3 cRim  = vec3(0.28, 0.22, 0.42);
+        vec3 cColor = mix(cBase, cRim, smoothstep(0.02, 0.14, h + (cn - 0.5) * 0.1));
+        sky = mix(sky, cColor, cDensity * 0.70);
+      }
+    }
+
+    gl_FragColor = vec4(sky, 1.0);
+  }
+`;
+
+const skyShaderUniforms = {
+  uTime: { value: 0 }
+};
+
+const skyMat = new THREE.ShaderMaterial({
+  vertexShader: skyVertexShader,
+  fragmentShader: skyFragmentShader,
+  uniforms: skyShaderUniforms,
+  side: THREE.BackSide,
+  depthWrite: false,
+  depthTest: true
+});
+
+const skyDome = new THREE.Mesh(new THREE.SphereGeometry(700, 64, 48), skyMat);
+skyDome.name = 'ProceduralSkyDome';
+skyDome.renderOrder = -1000;
+scene.add(skyDome);
+
+// --- True 3D Volumetric Height Fog & Atmospheric Perspective (Zero 2D Planes / Billboards) ---
+// Enable scene fog so all 3D MeshStandardMaterials activate the fog pipeline
+scene.fog = new THREE.Fog(0x182046, 1.0, 100.0);
+
+// 1. Pass true 3D world coordinates from vertex shader to fragment shader
+THREE.ShaderChunk.fog_pars_vertex = `
+  #ifdef USE_FOG
+    varying float vFogDepth;
+    varying vec3 vFogWorldPos;
+  #endif
+`;
+
+THREE.ShaderChunk.fog_vertex = `
+  #ifdef USE_FOG
+    vFogDepth = - mvPosition.z;
+    vFogWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+  #endif
+`;
+
+// 2. Fragment shader declarations
+THREE.ShaderChunk.fog_pars_fragment = `
+  #ifdef USE_FOG
+    uniform vec3 fogColor;
+    varying float vFogDepth;
+    varying vec3 vFogWorldPos;
+  #endif
+`;
+
+// 3. True 3D Volumetric Height Mist + Atmospheric Distance Fog
+// Analytically integrates exponential density along the 3D line of sight from camera to 3D surface
+THREE.ShaderChunk.fog_fragment = `
+  #ifdef USE_FOG
+    vec3 fCamPos = cameraPosition;
+    vec3 fWorldPos = vFogWorldPos;
+    vec3 fRay = fWorldPos - fCamPos;
+    float fDist = length(fRay);
+    vec3 fRayDir = fRay / max(fDist, 0.0001);
+
+    // --- 3D Volumetric Height Mist ---
+    // Mist pools naturally at lake level (h0 = 0.38) and decays exponentially upwards
+    float fBaseH = 0.38;
+    float fHeightFalloff = 1.25;
+    float fDensity0 = 0.18;
+
+    float fDeltaY = fWorldPos.y - fCamPos.y;
+    float fIntegral;
+    if (abs(fDeltaY) > 0.001) {
+      fIntegral = (exp(-fHeightFalloff * (fCamPos.y - fBaseH)) - exp(-fHeightFalloff * (fWorldPos.y - fBaseH))) / (fHeightFalloff * fDeltaY);
+    } else {
+      fIntegral = exp(-fHeightFalloff * (fCamPos.y - fBaseH));
+    }
+    fIntegral = max(0.0, fIntegral);
+
+    // Subtle 3D spatial drift undulation in the volume
+    float fEddy = sin(fWorldPos.x * 0.22 + fWorldPos.z * 0.16) * 0.15;
+    float fHeightDepth = fIntegral * fDist * fDensity0 * (1.0 + fEddy);
+    float fHeightFog = 1.0 - exp(-fHeightDepth);
+
+    // --- 3D Atmospheric Distance Fog ---
+    float fDistFog = smoothstep(5.0, 26.0, fDist) * 0.60;
+
+    // Combined 3D fog thickness
+    float fTotalFog = clamp(fHeightFog + fDistFog, 0.0, 0.78);
+
+    // Rich cinematic twilight indigo color grading
+    vec3 cValleyMist = vec3(0.08, 0.11, 0.25);
+    vec3 cDistanceFog = vec3(0.12, 0.16, 0.36);
+    vec3 fFogColor = mix(cValleyMist, cDistanceFog, smoothstep(0.0, 0.6, fDistFog));
+
+    gl_FragColor.rgb = mix(gl_FragColor.rgb, fFogColor, fTotalFog);
+  #endif
+`;
+
+// 1. Sky & Shadow Fill: Rich indigo ambient illumination with deep blue-violet shadow bounce
+const starlightHemiLight = new THREE.HemisphereLight(0x324c8c, 0x161b36, 0.65);
+scene.add(starlightHemiLight);
+
+// 2. Moonlight Key: Subtle cool lavender-blue moonlight simulating distant moon illumination without visible sky/moon mesh
+const moonLight = new THREE.DirectionalLight(0x6a90e0, 0.72);
+moonLight.position.set(28, 48, -22);
 moonLight.castShadow = true;
 moonLight.shadow.mapSize.width = 2048;
 moonLight.shadow.mapSize.height = 2048;
@@ -177,125 +359,37 @@ moonLight.shadow.camera.left = -d;
 moonLight.shadow.camera.right = d;
 moonLight.shadow.camera.top = d;
 moonLight.shadow.camera.bottom = -d;
-moonLight.shadow.normalBias = 0.05; // Eliminates shadow acne and banding on low-poly terrain
-moonLight.shadow.bias = -0.0001;
+moonLight.shadow.normalBias = 0.04;
+moonLight.shadow.bias = -0.0002;
+moonLight.shadow.radius = 2.5;
 scene.add(moonLight);
 
-// Minimal night ambient fill
-const ambientWarm = new THREE.AmbientLight(0x081322, 0.08);
+// 3. Subtle midnight indigo fill to ensure deep crevices never clip to black
+const ambientWarm = new THREE.AmbientLight(0x161c36, 0.22);
 scene.add(ambientWarm);
 
-// --- Tangible Drifting Low Ground Mist (Soft Rolling Fog Banks across the lake & valleys) ---
-function createMistTexture() {
-  const canvas = document.createElement('canvas');
-  canvas.width = 128;
-  canvas.height = 128;
-  const ctx = canvas.getContext('2d');
-
-  // Radial gradient with cubic smooth falloff (no clipping edges)
-  const grad = ctx.createRadialGradient(64, 64, 4, 64, 64, 60);
-  grad.addColorStop(0.0, 'rgba(215, 235, 255, 0.42)');
-  grad.addColorStop(0.25, 'rgba(175, 210, 250, 0.30)');
-  grad.addColorStop(0.55, 'rgba(125, 170, 225, 0.14)');
-  grad.addColorStop(0.80, 'rgba(75, 125, 190, 0.04)');
-  grad.addColorStop(1.0, 'rgba(0, 0, 0, 0.0)');
-
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 128, 128);
-  return new THREE.CanvasTexture(canvas);
-}
-
-const mistTexture = createMistTexture();
-const mistGroup = new THREE.Group();
-mistGroup.name = 'valleyMistGroup';
-scene.add(mistGroup);
-
-const mistSprites = [];
-
-// Low ground mist anchor positions: along the frozen river, village hollows, cliff bases, and valleys
-const mistAnchors = [
-  // Along the frozen lake / river
-  { x: -3.2, y: 0.38, z: 1.0, w: 5.5, h: 1.7, op: 0.22 },
-  { x: -1.2, y: 0.38, z: 1.3, w: 5.0, h: 1.6, op: 0.20 },
-  { x: 1.0, y: 0.38, z: 0.6, w: 5.4, h: 1.7, op: 0.22 },
-  { x: 3.2, y: 0.40, z: -0.4, w: 5.8, h: 1.8, op: 0.19 },
-  { x: 5.5, y: 0.42, z: -1.8, w: 6.2, h: 1.9, op: 0.21 },
-  // Between village cottages and background mountain
-  { x: -4.5, y: 0.65, z: -3.5, w: 6.5, h: 2.0, op: 0.18 },
-  { x: -2.0, y: 0.68, z: -4.2, w: 7.2, h: 2.1, op: 0.22 },
-  { x: 0.5, y: 0.70, z: -4.8, w: 7.0, h: 2.0, op: 0.20 },
-  { x: 2.8, y: 0.75, z: -4.5, w: 6.4, h: 1.9, op: 0.19 },
-  // Valley under the central cliff
-  { x: -1.2, y: 0.80, z: -7.0, w: 8.5, h: 2.5, op: 0.25 },
-  { x: 1.5, y: 0.85, z: -7.5, w: 9.0, h: 2.6, op: 0.26 },
-  { x: 3.8, y: 0.90, z: -8.0, w: 8.5, h: 2.4, op: 0.24 },
-  // Village entry path & hollows
-  { x: -6.5, y: 0.55, z: -1.0, w: 5.5, h: 1.8, op: 0.20 },
-  { x: -5.0, y: 0.48, z: 0.2, w: 5.2, h: 1.6, op: 0.19 },
-  // Right slope and church surroundings
-  { x: 6.0, y: 0.85, z: -4.0, w: 6.2, h: 1.8, op: 0.18 },
-  { x: 8.2, y: 0.90, z: -3.0, w: 5.8, h: 1.7, op: 0.17 },
-  { x: 7.5, y: 0.70, z: 0.5, w: 5.5, h: 1.7, op: 0.18 }
-];
-
-mistAnchors.forEach((loc) => {
-  // Layer multiple soft drifting sprites per anchor
-  for (let j = 0; j < 2; j++) {
-    const mat = new THREE.SpriteMaterial({
-      map: mistTexture,
-      transparent: true,
-      opacity: loc.op * (0.8 + Math.random() * 0.4),
-      color: new THREE.Color(0x789ec6), // Cool moonlit atmospheric vapor
-      depthWrite: false,
-      blending: THREE.NormalBlending
-    });
-    const sprite = new THREE.Sprite(mat);
-    const jx = loc.x + (Math.random() - 0.5) * 1.6;
-    const jy = loc.y + (Math.random() - 0.5) * 0.15;
-    const jz = loc.z + (Math.random() - 0.5) * 1.6;
-    const jw = loc.w * (0.85 + Math.random() * 0.3);
-    const jh = loc.h * (0.85 + Math.random() * 0.3);
-    sprite.position.set(jx, jy, jz);
-    sprite.scale.set(jw, jh, 1.0);
-    mistGroup.add(sprite);
-
-    mistSprites.push({
-      sprite,
-      baseX: jx,
-      baseY: jy,
-      driftSpeed: 0.002 + Math.random() * 0.003,
-      driftRange: 2.5 + Math.random() * 1.5,
-      bobFreq: 0.35 + Math.random() * 0.45,
-      phase: Math.random() * Math.PI * 2
-    });
+// --- Pure Procedural GLSL Snowfall (Zero Canvas Textures) ---
+const snowVertexShader = `
+  uniform float uSize;
+  void main() {
+    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+    gl_PointSize = uSize * (300.0 / -mvPosition.z);
+    gl_Position = projectionMatrix * mvPosition;
   }
-});
+`;
 
-// --- Delicate, True-to-Scale Winter Snowfall Particles ---
-function createSnowflakeTexture() {
-  const canvas = document.createElement('canvas');
-  canvas.width = 64;
-  canvas.height = 64;
-  const ctx = canvas.getContext('2d');
+const snowFragmentShader = `
+  void main() {
+    float d = length(gl_PointCoord - vec2(0.5));
+    if (d > 0.5) discard;
+    float alpha = smoothstep(0.5, 0.0, d);
+    gl_FragColor = vec4(vec3(0.95, 0.98, 1.0), alpha * 0.85);
+  }
+`;
 
-  const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-  gradient.addColorStop(0, 'rgba(255, 255, 255, 1.0)');
-  gradient.addColorStop(0.25, 'rgba(240, 248, 255, 0.9)');
-  gradient.addColorStop(0.55, 'rgba(200, 225, 255, 0.3)');
-  gradient.addColorStop(0.85, 'rgba(160, 200, 245, 0.06)');
-  gradient.addColorStop(1.0, 'rgba(0, 0, 0, 0.0)');
-
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, 64, 64);
-  return new THREE.CanvasTexture(canvas);
-}
-
-const snowTexture = createSnowflakeTexture();
-
-// Snow volume bounds covering the playable island and sky
 const snowBounds = { x: 45, y: 20, z: 45 };
 
-// Layer 1: Dense ambient village snowfall
+// Layer 1: Ambient village snowfall
 const snowCount = 3200;
 const snowGeo = new THREE.BufferGeometry();
 const snowPositions = new Float32Array(snowCount * 3);
@@ -316,18 +410,18 @@ for (let i = 0; i < snowCount; i++) {
 }
 
 snowGeo.setAttribute('position', new THREE.BufferAttribute(snowPositions, 3));
-const snowMat = new THREE.PointsMaterial({
-  size: 0.18, // True-to-scale delicate snow crystals
-  map: snowTexture,
+const snowMat = new THREE.ShaderMaterial({
+  vertexShader: snowVertexShader,
+  fragmentShader: snowFragmentShader,
+  uniforms: { uSize: { value: 0.11 } },
   transparent: true,
-  opacity: 0.85,
   depthWrite: false,
   blending: THREE.AdditiveBlending
 });
 const snowParticles = new THREE.Points(snowGeo, snowMat);
 scene.add(snowParticles);
 
-// Layer 2: Soft foreground flakes fluttering near camera lens
+// Layer 2: Near-camera fluffy flakes
 const largeSnowCount = 280;
 const largeSnowGeo = new THREE.BufferGeometry();
 const largeSnowPositions = new Float32Array(largeSnowCount * 3);
@@ -348,16 +442,25 @@ for (let i = 0; i < largeSnowCount; i++) {
 }
 
 largeSnowGeo.setAttribute('position', new THREE.BufferAttribute(largeSnowPositions, 3));
-const largeSnowMat = new THREE.PointsMaterial({
-  size: 0.38, // Atmospheric foreground flakes (delicate, not huge blobs)
-  map: snowTexture,
+const largeSnowMat = new THREE.ShaderMaterial({
+  vertexShader: snowVertexShader,
+  fragmentShader: snowFragmentShader,
+  uniforms: { uSize: { value: 0.16 } },
   transparent: true,
-  opacity: 0.80,
   depthWrite: false,
   blending: THREE.AdditiveBlending
 });
 const largeSnowParticles = new THREE.Points(largeSnowGeo, largeSnowMat);
 scene.add(largeSnowParticles);
+
+// --- Custom Procedural Snow Shader Uniforms for Terrain Material ---
+const terrainSnowUniforms = {
+  uTime: { value: 0 },
+  uSnowColor: { value: new THREE.Color(0xeaf2ff) },       // Soft luminous powder crest
+  uSnowMidColor: { value: new THREE.Color(0x7e9cd6) },    // Translucent lavender-blue midtone
+  uSnowShadowColor: { value: new THREE.Color(0x28305c) }, // Deep fairytale indigo-violet crevice shadow
+  uSparkleIntensity: { value: 0.90 }
+};
 
 // --- Load Terrain GLTF with House Glow ---
 const dracoLoader = new DRACOLoader();
@@ -404,24 +507,26 @@ gltfLoader.load(
           const matName = (mat.name || '').toLowerCase();
           const meshName = (child.name || '').toLowerCase();
 
-          // Fix Blender glTF alpha transparency: ensure solid architecture is opaque with depthWrite
+          // Preserve Blender glTF alpha transparency with alphaTest cutout for scalloped roof snow trim
           if (
             meshName.includes('house') ||
             meshName.includes('building') ||
             matName.includes('building') ||
             matName.includes('house')
           ) {
-            mat.transparent = false;
-            mat.depthWrite = true;
+            mat.transparent = true;
+            mat.alphaTest = 0.45; // Cuts out the transparent border around the wavy snow roof trim
+            mat.depthWrite = true; // Ensures solid architecture occlusion without z-sorting artifacts
             mat.depthTest = true;
-            mat.alphaTest = 0;
+            mat.side = THREE.DoubleSide;
+            mat.needsUpdate = true;
           }
 
           // 1. Process meshes with explicit emission textures (like house glowing windows)
           if (mat.emissiveMap) {
-            mat.emissive = new THREE.Color(0xffa834);
-            mat.emissiveIntensity = 3.5;
-            mat.toneMapped = false;
+            mat.emissive = new THREE.Color(0xffa63b);
+            mat.emissiveIntensity = 3.6;
+            mat.toneMapped = true;
             mat.needsUpdate = true;
           }
           // 2. Process stylized lantern/window/house glow materials
@@ -435,112 +540,203 @@ gltfLoader.load(
             meshName.includes('lantern') ||
             meshName.includes('window')
           ) {
-            mat.emissive = new THREE.Color(0xffa834);
-            mat.emissiveIntensity = 3.5;
-            mat.toneMapped = false;
+            mat.emissive = new THREE.Color(0xffa63b);
+            mat.emissiveIntensity = 3.6;
+            mat.toneMapped = true;
             mat.needsUpdate = true;
           }
-          // 3. Realistic night response for snow and frozen crystalline ice
-          else if (matName.includes('snow')) {
-            mat.roughness = 0.85; // Powdery fresh dry snow
-            mat.metalness = 0.02;
-          } else if (matName.includes('ice') || matName.includes('water')) {
-            mat.roughness = 0.18; // Glazed frozen river surface reflecting moonlight
-            mat.metalness = 0.1;
-          }
-        });
-      }
-    });
+          // 3. Ground, Cliffs, Lake and Plateau separation
+          const isLake = meshName.includes('lake') ||
+                         meshName.includes('water') ||
+                         meshName.includes('river') ||
+                         matName.includes('ice');
 
-    // --- Analyze Houses and Setup Soft Glow & Chunk Lights ---
-    const houseMeshes = [];
-    root.traverse((child) => {
-      const meshName = (child.name || '').toLowerCase();
-      if (child.isMesh && (meshName.includes('house') || meshName.includes('building') || meshName.includes('cottage') || meshName.includes('cabin'))) {
-        houseMeshes.push(child);
-      }
-    });
+          const isTerrain = matName === 'terrain';
 
-    // Extract world positions for clustering
-    const housesData = houseMeshes.map((mesh) => {
-      const pos = new THREE.Vector3();
-      mesh.getWorldPosition(pos);
-      return { mesh, pos };
-    });
-
-    // Spatial clustering: Group houses closer than 1.4 units into chunks
-    const CLUSTER_DIST = 1.4;
-    const clusters = [];
-    const visited = new Set();
-
-    for (let i = 0; i < housesData.length; i++) {
-      if (visited.has(i)) continue;
-      const cluster = [housesData[i]];
-      visited.add(i);
-
-      const queue = [housesData[i]];
-      while (queue.length > 0) {
-        const current = queue.shift();
-        for (let j = 0; j < housesData.length; j++) {
-          if (!visited.has(j)) {
-            const dx = current.pos.x - housesData[j].pos.x;
-            const dz = current.pos.z - housesData[j].pos.z;
-            const dist = Math.hypot(dx, dz);
-            if (dist <= CLUSTER_DIST) {
-              visited.add(j);
-              cluster.push(housesData[j]);
-              queue.push(housesData[j]);
+          if (isLake) {
+            // Clone material so lake does not mutate shared Plateau material
+            if (child.material === mat) {
+              child.material = mat.clone();
             }
+            const lakeMat = child.material;
+            lakeMat.roughness = 0.22; // Clean icy gloss with soft moonlight specular highlights
+            lakeMat.metalness = 0.05;
+            lakeMat.color = new THREE.Color(0xffffff); // Full neutral multiplier so Seamless Crystalline Blue Ice Texture is completely visible
+            lakeMat.needsUpdate = true;
+          } else if (isTerrain && !mat.userData.snowShaderApplied) {
+            // Apply custom procedural snow shader mixed with existing terrain texture exclusively to terrain material
+            mat.userData.snowShaderApplied = true;
+            mat.roughness = 0.80;
+            mat.metalness = 0.0;
+            mat.customProgramCacheKey = () => 'terrain_procedural_snow_v1';
+
+            mat.onBeforeCompile = (shader) => {
+              shader.uniforms.uTime = terrainSnowUniforms.uTime;
+              shader.uniforms.uSnowColor = terrainSnowUniforms.uSnowColor;
+              shader.uniforms.uSnowMidColor = terrainSnowUniforms.uSnowMidColor;
+              shader.uniforms.uSnowShadowColor = terrainSnowUniforms.uSnowShadowColor;
+              shader.uniforms.uSparkleIntensity = terrainSnowUniforms.uSparkleIntensity;
+
+              // 1. Vertex Shader: compute and pass world coordinates & world normal
+              shader.vertexShader = `
+                varying vec3 vTerrainWorldPos;
+                varying vec3 vTerrainWorldNormal;
+              ` + shader.vertexShader;
+
+              shader.vertexShader = shader.vertexShader.replace(
+                '#include <worldpos_vertex>',
+                `
+                #include <worldpos_vertex>
+                vTerrainWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+                vTerrainWorldNormal = normalize(mat3(modelMatrix) * normal);
+                `
+              );
+
+              // 2. Fragment Shader: Inject procedural noise functions
+              shader.fragmentShader = `
+                varying vec3 vTerrainWorldPos;
+                varying vec3 vTerrainWorldNormal;
+                uniform float uTime;
+                uniform vec3 uSnowColor;
+                uniform vec3 uSnowMidColor;
+                uniform vec3 uSnowShadowColor;
+                uniform float uSparkleIntensity;
+
+                float hash21Snow(vec2 p) {
+                  p = fract(p * vec2(233.34, 851.73));
+                  p += dot(p, p + 23.45);
+                  return fract(p.x * p.y);
+                }
+
+                float snowNoise(vec2 p) {
+                  vec2 i = floor(p);
+                  vec2 f = fract(p);
+                  vec2 u = f * f * (3.0 - 2.0 * f);
+                  return mix(
+                    mix(hash21Snow(i + vec2(0.0, 0.0)), hash21Snow(i + vec2(1.0, 0.0)), u.x),
+                    mix(hash21Snow(i + vec2(0.0, 1.0)), hash21Snow(i + vec2(1.0, 1.0)), u.x),
+                    u.y
+                  );
+                }
+
+                float snowFBM(vec2 p) {
+                  float v = 0.0;
+                  float a = 0.5;
+                  mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);
+                  for (int i = 0; i < 3; i++) {
+                    v += a * snowNoise(p);
+                    p = rot * p * 2.1 + vec2(1.3, 2.7);
+                    a *= 0.5;
+                  }
+                  return v;
+                }
+              ` + shader.fragmentShader;
+
+              // Shared variables declared in void main() for map, roughness, and normal passes
+              shader.fragmentShader = shader.fragmentShader.replace(
+                'void main() {',
+                `
+                void main() {
+                  vec3 sWPos = vTerrainWorldPos;
+                  vec3 sWNorm = normalize(vTerrainWorldNormal);
+                  vec2 sDriftUv = vec2(sWPos.x * 0.18 + sWPos.z * 0.11, sWPos.z * 0.18 - sWPos.x * 0.11);
+                  float sMacroDrift = sin(sDriftUv.x * 1.5 + sin(sDriftUv.y * 1.0) * 0.8) * 0.5 + 0.5;
+                  float sMicroRipples = snowFBM(sWPos.xz * 1.15);
+                  float sDriftCombined = sMacroDrift * 0.42 + sMicroRipples * 0.58;
+                  float sSlope = clamp(sWNorm.y, 0.0, 1.0);
+                  float sSnowThreshold = 0.40 - sMicroRipples * 0.16;
+                  float sSnowCoverage = smoothstep(sSnowThreshold, sSnowThreshold + 0.30, sSlope);
+                `
+              );
+
+              // Replace map_fragment to blend procedural snow with existing terrain texture
+              shader.fragmentShader = shader.fragmentShader.replace(
+                '#include <map_fragment>',
+                `
+                #ifdef USE_MAP
+                  vec4 sampledDiffuseColor = texture2D( map, vMapUv );
+                  #ifdef DECODE_VIDEO_TEXTURE
+                    sampledDiffuseColor = sRGBTransferEOTF( sampledDiffuseColor );
+                  #endif
+                #else
+                  vec4 sampledDiffuseColor = vec4(1.0);
+                #endif
+
+                // --- PROCEDURAL SNOW SHADER MIXED WITH TERRAIN TEXTURE ---
+                // 1. Procedural Snow Depth Palette with Crevice Ambient Occlusion
+                float creviceAO = clamp(sDriftCombined * 1.15 + 0.22, 0.52, 1.0);
+                vec3 snowBase = mix(uSnowShadowColor * creviceAO, uSnowMidColor, smoothstep(0.18, 0.62, sDriftCombined));
+                vec3 snowCrest = mix(snowBase, uSnowColor, smoothstep(0.52, 0.92, sDriftCombined));
+
+                // 2. View-Dependent Powder Rim & Forward Translucency
+                vec3 viewDir = normalize(vViewPosition);
+                float fresnel = pow(1.0 - max(0.0, dot(sWNorm, viewDir)), 3.0);
+                vec3 snowFinal = snowCrest + vec3(0.12, 0.16, 0.28) * fresnel * 0.50;
+
+                // Subsurface forward scattering in view of moonlight
+                vec3 moonDir = normalize(vec3(28.0, 48.0, -22.0));
+                float sssScatter = pow(clamp(dot(viewDir, -moonDir), 0.0, 1.0), 3.0) * (1.0 - sSlope * 0.45);
+                snowFinal += vec3(0.14, 0.18, 0.32) * sssScatter * 0.45;
+
+                // 3. Crystalline Moonlight Sheen & Delicate Multi-Frequency Glitter
+                vec3 halfVec = normalize(viewDir + moonDir);
+                float specAngle = max(0.0, dot(sWNorm, halfVec));
+                float moonSheen = pow(specAngle, 16.0) * (0.28 + 0.72 * sMacroDrift);
+                float glitter1 = snowNoise(sWPos.xz * 32.0 + sin(uTime * 0.4) * 0.03);
+                float glitter2 = snowNoise(sWPos.xz * 68.0 - cos(uTime * 0.3) * 0.03);
+                float glitter = pow(glitter1 * glitter2 * specAngle, 4.5) * 1.6;
+                vec3 sparkleColor = vec3(0.92, 0.96, 1.0) * (moonSheen * 0.22 + glitter * 0.28) * uSparkleIntensity;
+
+                // 4. Harmonious Mixing with Existing Terrain Texture
+                // Modulate the snow with the low-poly faceting of the original texture
+                float texLum = dot(sampledDiffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+                vec3 facetedSnow = snowFinal * (texLum * 0.45 + 0.78);
+
+                // Blend base terrain texture with our snow shader
+                vec3 blendedDiffuse = mix(sampledDiffuseColor.rgb, facetedSnow, sSnowCoverage * 0.86);
+                blendedDiffuse += sparkleColor * sSnowCoverage;
+
+                diffuseColor.rgb = blendedDiffuse;
+                `
+              );
+
+              // 5. Modify roughness to reflect powdery vs compacted icy drifts
+              shader.fragmentShader = shader.fragmentShader.replace(
+                '#include <roughnessmap_fragment>',
+                `
+                #include <roughnessmap_fragment>
+                roughnessFactor = mix(roughnessFactor, mix(0.85, 0.48, sMacroDrift), sSnowCoverage * 0.85);
+                `
+              );
+
+              // 6. Perturb geometric normal with procedural snow drift curvature for real 3D volume
+              shader.fragmentShader = shader.fragmentShader.replace(
+                '#include <normal_fragment_maps>',
+                `
+                #include <normal_fragment_maps>
+
+                float eps = 0.06;
+                float hC = snowFBM(sWPos.xz * 1.15) * 0.6 + sMacroDrift * 0.4;
+                float hX = snowFBM((sWPos.xz + vec2(eps, 0.0)) * 1.15) * 0.6 + (sin((sDriftUv.x + eps * 0.18) * 1.5 + sin(sDriftUv.y * 1.0) * 0.8) * 0.5 + 0.5) * 0.4;
+                float hZ = snowFBM((sWPos.xz + vec2(0.0, eps)) * 1.15) * 0.6 + (sin(sDriftUv.x * 1.5 + sin((sDriftUv.y + eps * 0.18) * 1.0) * 0.8) * 0.5 + 0.5) * 0.4;
+
+                vec3 worldDriftN = normalize(vec3(-(hX - hC) / eps * 0.38, 1.0, -(hZ - hC) / eps * 0.38));
+                vec3 viewDriftN = normalize((viewMatrix * vec4(worldDriftN, 0.0)).xyz);
+                normal = normalize(mix(normal, viewDriftN, sSnowCoverage * 0.50));
+                `
+              );
+            };
+
+            mat.needsUpdate = true;
           }
-        }
-      }
-      clusters.push(cluster);
-    }
-
-    // Array to store village lights for subtle cozy flicker
-    window.villageLights = [];
-
-    // Add lighting based on cluster size:
-    // - Single / Isolated house (1-2 houses): soft intimate glow, smaller radius
-    // - Chunk of houses (3+ houses): 1 central warm light with larger spread & soft falloff
-    clusters.forEach((cluster) => {
-      const count = cluster.length;
-      const center = new THREE.Vector3();
-      cluster.forEach((h) => center.add(h.pos));
-      center.divideScalar(count);
-
-      if (count >= 3) {
-        // Chunk of houses: 1 light with more spread, elevated slightly above roofs
-        const spreadRadius = Math.min(6 + count * 0.15, 12);
-        const chunkLight = new THREE.PointLight(0xffb040, 1.35, spreadRadius, 1.4);
-        chunkLight.position.set(center.x, center.y + 0.8, center.z);
-        scene.add(chunkLight);
-
-        window.villageLights.push({
-          light: chunkLight,
-          baseIntensity: 1.35,
-          freq: 1.5 + Math.random() * 2.0,
-          phase: Math.random() * Math.PI * 2
-        });
-      } else {
-        // Isolated house: soft cozy glow, close to ground/doorstep, not too intense
-        const softLight = new THREE.PointLight(0xff9d26, 0.75, 4.0, 1.6);
-        softLight.position.set(center.x, center.y + 0.35, center.z);
-        scene.add(softLight);
-
-        window.villageLights.push({
-          light: softLight,
-          baseIntensity: 0.75,
-          freq: 2.0 + Math.random() * 2.5,
-          phase: Math.random() * Math.PI * 2
         });
       }
     });
 
-    // Frame camera on the cozy village across the frozen lake with atmospheric mist in view
-    camera.position.set(-5.5, 2.2, -2.0);
-    camera.lookAt(0.5, 0.5, -4.5);
-    controls.target.set(0.5, 0.5, -4.5);
+    // Frame camera on the cozy village across the frozen lake with atmospheric sky and moon in view
+    camera.position.set(-6.2, 2.4, -2.0);
+    camera.lookAt(0.5, 1.1, -4.5);
+    controls.target.set(0.5, 1.1, -4.5);
     controls.update();
 
     // Adjust shadow frustum to fit model size
@@ -581,6 +777,8 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(width, height);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  composer.setSize(width, height);
+  composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 });
 
 // --- Performance Telemetry & Animation Loop ---
@@ -598,26 +796,16 @@ function animate(currentTime) {
   // Update controls
   controls.update();
 
-  // Subtle warm flicker for village house lights (simulating fireplace/hearth embers)
-  if (window.villageLights && window.villageLights.length > 0) {
-    for (let i = 0; i < window.villageLights.length; i++) {
-      const vl = window.villageLights[i];
-      const flicker = Math.sin(elapsedTime * vl.freq + vl.phase) * 0.08 +
-                      Math.cos(elapsedTime * vl.freq * 2.3) * 0.04;
-      vl.light.intensity = vl.baseIntensity * (1 + flicker);
-    }
+  // Update procedural sky & aurora time
+  if (skyShaderUniforms) {
+    skyShaderUniforms.uTime.value = elapsedTime;
   }
 
-  // Update Drifting Low Ground Mist (Wafting across lake, valley, and village)
-  if (mistSprites && mistSprites.length > 0) {
-    for (let i = 0; i < mistSprites.length; i++) {
-      const ms = mistSprites[i];
-      ms.sprite.position.x = ms.baseX + Math.sin(elapsedTime * ms.driftSpeed * 10 + ms.phase) * ms.driftRange;
-      ms.sprite.position.y = ms.baseY + Math.sin(elapsedTime * ms.bobFreq + ms.phase) * 0.05;
-    }
+  // Update procedural terrain snow shader time
+  if (terrainSnowUniforms) {
+    terrainSnowUniforms.uTime.value = elapsedTime;
   }
 
-  // Update Snow Particles (Layer 1 - Fine background snowfall)
   const positions = snowGeo.attributes.position.array;
   for (let i = 0; i < snowCount; i++) {
     const v = snowVelocities[i];
@@ -664,7 +852,8 @@ function animate(currentTime) {
     lastTime = currentTime;
   }
 
-  renderer.render(scene, camera);
+  // Render post-processed scene with bloom
+  composer.render();
 }
 
 requestAnimationFrame(animate);
