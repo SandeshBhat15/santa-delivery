@@ -62,12 +62,12 @@ const composer = new EffectComposer(renderer);
 const renderPass = new RenderPass(scene, camera);
 composer.addPass(renderPass);
 
-// UnrealBloomPass: Broad, soft dispersion of radiant amber warmth across village architecture and snow
+// UnrealBloomPass: Warm, crisp radiant glow with soft falloff that preserves architecture clarity
 const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
-  1.42, // Bloom strength
-  1.35, // Bloom radius: broad, soft falloff scattering into eaves, walls, and ground snow
-  0.68  // Bloom threshold: lower threshold allows window emission glow to blend softly into neighboring surfaces
+  1.10, // Bloom strength
+  0.75, // Bloom radius: natural radiant falloff without foggy glare
+  0.72  // Bloom threshold: focuses glow specifically on bright window glass
 );
 composer.addPass(bloomPass);
 
@@ -342,12 +342,12 @@ THREE.ShaderChunk.fog_fragment = `
   #endif
 `;
 
-// 1. Sky & Shadow Fill: Rich indigo ambient illumination with deep blue-violet shadow bounce
-const starlightHemiLight = new THREE.HemisphereLight(0x324c8c, 0x161b36, 0.65);
+// 1. Sky & Shadow Fill: Soft indigo-blue sky light with warm ground bounce to naturally illuminate walls and timbers
+const starlightHemiLight = new THREE.HemisphereLight(0x5a72a8, 0x252238, 0.88);
 scene.add(starlightHemiLight);
 
 // 2. Moonlight Key: Subtle cool lavender-blue moonlight simulating distant moon illumination without visible sky/moon mesh
-const moonLight = new THREE.DirectionalLight(0x6a90e0, 0.72);
+const moonLight = new THREE.DirectionalLight(0x7298e8, 0.72);
 moonLight.position.set(28, 48, -22);
 moonLight.castShadow = true;
 moonLight.shadow.mapSize.width = 2048;
@@ -364,8 +364,15 @@ moonLight.shadow.bias = -0.0002;
 moonLight.shadow.radius = 2.5;
 scene.add(moonLight);
 
-// 3. Subtle midnight indigo fill to ensure deep crevices never clip to black
-const ambientWarm = new THREE.AmbientLight(0x161c36, 0.22);
+// 3. Front Key Fill: Soft warm frontal illumination that brings out the vibrant red timber walls, wooden trim, and stone foundations
+const villageFacadeLight = new THREE.DirectionalLight(0xffeedd, 0.50);
+villageFacadeLight.position.set(-18, 14, 12);
+villageFacadeLight.target.position.set(-2.8, 0.5, -4.0);
+scene.add(villageFacadeLight);
+scene.add(villageFacadeLight.target);
+
+// 4. Subtle twilight ambient fill to ensure crevices and recesses preserve clarity
+const ambientWarm = new THREE.AmbientLight(0x28243c, 0.35);
 scene.add(ambientWarm);
 
 // --- Pure Procedural GLSL Snowfall (Zero Canvas Textures) ---
@@ -525,7 +532,7 @@ gltfLoader.load(
           // 1. Process meshes with explicit emission textures (like house glowing windows)
           if (mat.emissiveMap) {
             mat.emissive = new THREE.Color(0xffa63b);
-            mat.emissiveIntensity = 3.6;
+            mat.emissiveIntensity = 2.4;
             mat.toneMapped = true;
             mat.needsUpdate = true;
           }
@@ -541,7 +548,7 @@ gltfLoader.load(
             meshName.includes('window')
           ) {
             mat.emissive = new THREE.Color(0xffa63b);
-            mat.emissiveIntensity = 3.6;
+            mat.emissiveIntensity = 2.4;
             mat.toneMapped = true;
             mat.needsUpdate = true;
           }
