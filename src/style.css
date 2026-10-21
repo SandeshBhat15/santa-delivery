@@ -125,3 +125,388 @@ canvas {
   font-size: 13px;
   color: #8da4c4;
 }
+
+
+/* ==========================================================================
+   SANTA GIFT DELIVERY HUD & TOUCH CONTROLS
+   ========================================================================== */
+
+#santa-hud {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.hud-card {
+  position: absolute;
+  background: rgba(10, 20, 38, 0.75);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 220, 120, 0.25);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  border-radius: 12px;
+  padding: 10px 14px;
+  color: #f1f2f6;
+  pointer-events: auto;
+}
+
+.hud-top-left {
+  top: 14px;
+  left: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 140px;
+}
+
+.hud-row {
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.hud-icon {
+  margin-right: 6px;
+  font-size: 14px;
+}
+
+.hud-label {
+  color: #9ab4d6;
+  margin-right: auto;
+}
+
+.hud-value {
+  color: #ffd700;
+  font-family: monospace;
+  font-size: 14px;
+}
+
+.hud-top-right {
+  top: 14px;
+  right: 14px;
+  display: flex;
+  align-items: center;
+  padding: 8px 14px;
+}
+
+.hud-target-indicator {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.compass-arrow {
+  color: #ffcc00;
+  font-size: 20px;
+  line-height: 1;
+  transition: transform 0.08s ease-out;
+  filter: drop-shadow(0 0 6px #ffcc00);
+}
+
+.target-meta {
+  display: flex;
+  flex-direction: column;
+}
+
+.target-title {
+  font-size: 10px;
+  letter-spacing: 0.8px;
+  color: #8da4c4;
+}
+
+.target-dist {
+  font-size: 14px;
+  font-weight: 700;
+  color: #ffffff;
+  font-family: monospace;
+}
+
+.delivery-status {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  margin-top: 2px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-align: center;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+  transition: all 0.2s ease;
+}
+
+.status-in-range {
+  background: rgba(46, 204, 113, 0.85);
+  color: #ffffff;
+  box-shadow: 0 0 8px rgba(46, 204, 113, 0.6);
+  animation: pulse-ready 1.0s infinite alternate;
+}
+
+.status-too-high {
+  background: rgba(230, 126, 34, 0.85);
+  color: #ffffff;
+}
+
+.status-too-low {
+  background: rgba(231, 76, 60, 0.85);
+  color: #ffffff;
+}
+
+.status-out-of-range {
+  background: rgba(52, 73, 94, 0.75);
+  color: #bdc3c7;
+}
+
+@keyframes pulse-ready {
+  0% { transform: scale(0.96); box-shadow: 0 0 6px rgba(46, 204, 113, 0.4); }
+  100% { transform: scale(1.04); box-shadow: 0 0 12px rgba(46, 204, 113, 0.9); }
+}
+
+/* Banner Notifications */
+.hud-banner {
+  position: absolute;
+  top: 75px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-20px);
+  padding: 10px 24px;
+  border-radius: 24px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  transition: all 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.hud-banner.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.hud-banner.success {
+  background: linear-gradient(135deg, rgba(39, 174, 96, 0.9), rgba(46, 204, 113, 0.9));
+  color: #ffffff;
+  border: 1px solid #a8e6cf;
+}
+
+.hud-banner.miss {
+  background: linear-gradient(135deg, rgba(231, 76, 60, 0.9), rgba(192, 57, 43, 0.9));
+  color: #ffffff;
+  border: 1px solid #ff7675;
+}
+
+.hud-banner.chunk-complete {
+  background: linear-gradient(135deg, rgba(241, 196, 15, 0.95), rgba(243, 156, 18, 0.95));
+  color: #1e272e;
+  border: 1px solid #ffffff;
+}
+
+/* Mobile On-Screen Controls: Virtual Joystick (Left) + Altitude Flight Track (Right) + Drop Button (Center-Right) */
+#mobile-controls-wrapper {
+  position: absolute;
+  bottom: 20px;
+  left: 0;
+  width: 100%;
+  padding: 0 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  pointer-events: none;
+  z-index: 20;
+  box-sizing: border-box;
+}
+
+.control-label {
+  font-size: 10px;
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.65);
+  letter-spacing: 1px;
+  text-align: center;
+  margin-top: 6px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+
+#joystick-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: auto;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#joystick-base {
+  width: 106px;
+  height: 106px;
+  background: radial-gradient(circle, rgba(14, 25, 45, 0.7) 0%, rgba(10, 18, 32, 0.9) 100%);
+  border: 2px solid rgba(255, 255, 255, 0.32);
+  border-radius: 50%;
+  position: relative;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45), inset 0 0 16px rgba(255, 255, 255, 0.1);
+  touch-action: none;
+}
+
+#joystick-thumb {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #f39c12 0%, #d35400 100%);
+  border: 2px solid #f9e79f;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 4px 12px rgba(243, 156, 18, 0.6);
+  pointer-events: none;
+  will-change: transform;
+}
+
+/* Bottom-Right Drop Gift Button */
+#drop-zone {
+  pointer-events: auto;
+  margin-bottom: 8px;
+}
+
+.btn-drop-large {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 82px;
+  min-height: 82px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+  border: 3px solid #f1c40f;
+  color: #ffffff;
+  box-shadow: 0 6px 22px rgba(231, 76, 60, 0.6), inset 0 2px 4px rgba(255, 255, 255, 0.3);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.btn-drop-large:active {
+  transform: scale(0.92);
+  background: linear-gradient(135deg, #f1c40f 0%, #e67e22 100%);
+  box-shadow: 0 3px 12px rgba(241, 196, 15, 0.6);
+}
+
+.btn-drop-large.out-of-gifts {
+  background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
+  border-color: #a8e6cf;
+  box-shadow: 0 6px 22px rgba(46, 204, 113, 0.6);
+}
+
+.drop-icon {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.drop-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+/* Bottom-Right Dedicated Altitude Control (Vertical Flight Track) */
+#altitude-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: auto;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#altitude-track {
+  width: 54px;
+  height: 120px;
+  background: radial-gradient(circle, rgba(14, 25, 45, 0.7) 0%, rgba(10, 18, 32, 0.9) 100%);
+  border: 2px solid rgba(255, 255, 255, 0.32);
+  border-radius: 28px;
+  position: relative;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45), inset 0 0 12px rgba(255, 255, 255, 0.08);
+  touch-action: none;
+}
+
+#altitude-knob {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #3498db 0%, #2980b9 100%);
+  border: 2px solid #a9cce3;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 4px 14px rgba(41, 128, 185, 0.6);
+  pointer-events: none;
+  will-change: transform;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.knob-arrow {
+  font-size: 8px;
+  opacity: 0.85;
+}
+
+.knob-label {
+  font-size: 9px;
+  letter-spacing: 0.5px;
+}
+
+/* Landscape / Tablet Responsive Tweaks */
+@media (max-height: 500px) {
+  #mobile-controls-wrapper {
+    bottom: 10px;
+    padding: 0 14px;
+  }
+  #joystick-base {
+    width: 86px;
+    height: 86px;
+  }
+  #joystick-thumb {
+    width: 38px;
+    height: 38px;
+  }
+  .btn-drop-large {
+    min-width: 68px;
+    min-height: 68px;
+  }
+  .drop-icon {
+    font-size: 20px;
+  }
+}
+
+/* Desktop layout optimizations */
+@media (min-width: 900px) and (hover: hover) {
+  #mobile-controls-wrapper {
+    display: none;
+  }
+}
+
+@media (max-width: 899px) {
+  #hint-info {
+    display: none;
+  }
+}
+
+
