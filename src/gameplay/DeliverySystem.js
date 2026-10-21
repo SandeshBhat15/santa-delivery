@@ -85,29 +85,6 @@ export class DeliverySystem {
     const hud = document.createElement('div');
     hud.id = 'santa-hud';
     hud.innerHTML = `
-      <div class="hud-card hud-top-left">
-        <div class="hud-row">
-          <span class="hud-icon">🎁</span>
-          <span class="hud-label">GIFTS:</span>
-          <span id="hud-gifts-count" class="hud-value">25</span>
-        </div>
-        <div class="hud-row">
-          <span class="hud-icon">🏠</span>
-          <span class="hud-label">CHUNK:</span>
-          <span id="hud-chunk-progress" class="hud-value">0 / 5</span>
-        </div>
-        <div class="hud-row">
-          <span class="hud-icon">⭐</span>
-          <span class="hud-label">TOTAL:</span>
-          <span id="hud-total-delivered" class="hud-value">0</span>
-        </div>
-        <div class="hud-row">
-          <span class="hud-icon">🏆</span>
-          <span class="hud-label">SCORE:</span>
-          <span id="hud-score" class="hud-value">0</span>
-        </div>
-      </div>
-
       <div class="hud-card hud-top-right">
         <div class="hud-target-indicator">
           <div id="hud-compass-arrow" class="compass-arrow">▲</div>
@@ -379,23 +356,11 @@ export class DeliverySystem {
   }
 
   _updateVisualMarkers() {
-    // Synchronize 3D beacon markers in scene for all active targets
-    this.trackedHouses.forEach((houseData) => {
-      // Check if house's chunk is currently loaded
-      const isLoaded = this.chunkSystem.chunks.has(houseData.chunkKey);
-
-      if (isLoaded && !houseData.delivered) {
-        if (!houseData.marker) {
-          houseData.marker = this._createTargetMarker(houseData.worldPos);
-          this.markersGroup.add(houseData.marker);
-        }
-      } else {
-        if (houseData.marker) {
-          this.markersGroup.remove(houseData.marker);
-          houseData.marker = null;
-        }
-      }
-    });
+    // Drop markers removed as requested for an immersive, clean environment.
+    // Clean up any remaining markers from the scene
+    if (this.markersGroup && this.markersGroup.children.length > 0) {
+      this.markersGroup.clear();
+    }
   }
 
   _createTargetMarker(worldPos) {

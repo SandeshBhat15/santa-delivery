@@ -863,14 +863,14 @@ if (THREE.UniformsLib.fog) {
 }
 
 // 1. Native Three.js Distance Fog as the base effect
-// Open-world seamless atmospheric perspective:
-// - Near: 14.0 -> Immediate foreground (houses, trees, lake) stays 100% crisp and readable
-// - Far: 48.0 -> Smooth natural transition where distant hills and pine trees blend into the horizon
+// Scaled for miniature flight perspective:
+// - Near: 3.5m -> Immediate foreground (Santa, sleigh, immediate trees & chimneys) stays 100% crisp and readable
+// - Far: 22.0m -> Smooth atmospheric perspective where distant mountains and pine forests seamlessly dissolve into horizon
 // - Color: 0x0e1b2f -> Exactly matches the sky shader's horizon haze color (#0e1b2f)
 const fogColorHex = 0x0e1b2f;
-scene.fog = new THREE.Fog(fogColorHex, 14.0, 48.0);
+scene.fog = new THREE.Fog(fogColorHex, 3.5, 22.0);
 
-// 2. Pass true 3D world coordinates from vertex shader to fragment shader
+// 2. Pass true 3D world coordinates from vertex shader to fragment shader (supports InstancedMesh)
 THREE.ShaderChunk.fog_pars_vertex = `
   #ifdef USE_FOG
     varying float vFogDepth;
@@ -881,7 +881,11 @@ THREE.ShaderChunk.fog_pars_vertex = `
 THREE.ShaderChunk.fog_vertex = `
   #ifdef USE_FOG
     vFogDepth = - mvPosition.z;
-    vFogWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+    #ifdef USE_INSTANCING
+      vFogWorldPos = (modelMatrix * (instanceMatrix * vec4(transformed, 1.0))).xyz;
+    #else
+      vFogWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+    #endif
   #endif
 `;
 
@@ -925,7 +929,7 @@ THREE.ShaderChunk.fog_pars_fragment = `
   #endif
 `;
 
-// 4. Combined Native Distance Fog & Procedural Terrain-Conforming Ground Mist
+// 4. Combined Atmospheric Distance Fog & Procedural Terrain-Conforming Ground Mist
 THREE.ShaderChunk.fog_fragment = `
   #ifdef USE_FOG
     vec3 fCamPos = cameraPosition;
@@ -935,63 +939,38 @@ THREE.ShaderChunk.fog_fragment = `
     // =========================================================================
     // 1. VISIBLE DISTANCE FOG (Smooth natural cubic-smoothstep atmospheric extinction)
     // =========================================================================
-    // Smooth transition starting gently after foreground (fogNear = 14.0) and dissolving completely into horizon by fogFar (48.0)
-    float dNorm = clamp((fDist - fogNear) / (fogFar - fogNear), 0.0, 1.0);
-    // Smoothstep cubic curve guarantees zero derivatives at near and far (no abrupt edge or boundary line)
+    float dNorm = clamp((fDist - fogNear) / max(fogFar - fogNear, 0.001), 0.0, 1.0);
     float fDistFog = smoothstep(0.0, 1.0, dNorm);
+    fDistFog = pow(fDistFog, 0.85); // Gentle atmospheric veil lifting distant mountains into the night sky
 
     // =========================================================================
-    // 2. PROCEDURAL GROUND MIST (Low-lying, terrain-conforming, soft noise pools)
+    // 2. PROCEDURAL GROUND MIST & VALLEY HAZE
     // =========================================================================
+    // Low-lying winter valley haze clinging to hollows and terrain depressions (up to y=1.2)
+    float hMistFalloff = smoothstep(1.20, 0.10, fWorldPos.y);
 
-    // A. Cling to terrain elevations up to y=1.8 (covers village level, hollows, riverbanks, and low slopes)
-    float hMistFalloff = smoothstep(1.80, 0.20, fWorldPos.y);
-
-    // B. Irregular broken-up wandering patches
-    vec2 mistUv = fWorldPos.xz * 0.16;
+    // Subtle drifting atmospheric mist noise
+    vec2 mistUv = fWorldPos.xz * 0.12;
     float t = uFogTime * 0.024;
     #if ${IS_MOBILE ? '1' : '0'}
-    // Mobile: smooth trigonometric wave avoids 2 full simplex noise texture lookups per fragment
     float patchDensity = smoothstep(-0.45, 0.40, sin(mistUv.x * 2.1 + t * 0.3) * cos(mistUv.y * 2.1 + t * 0.2));
     #else
-    // Desktop: dual-layer simplex noise
     float n1 = snoiseFog(mistUv + vec2(t * 0.35, t * 0.15));
     float n2 = snoiseFog(mistUv * 2.2 - vec2(t * 0.25, t * 0.38));
     float patchNoise = n1 * 0.60 + n2 * 0.40;
     float patchDensity = smoothstep(-0.35, 0.50, patchNoise);
     #endif
 
-    // C. Spatial concentration:
-    // - River & Frozen Lake basin centered around (-4.95, -5.0)
-    float distRiver = length(fWorldPos.xz - vec2(-4.95, -5.0));
-    float riverZone = smoothstep(6.8, 1.0, distRiver);
+    // Haze develops beyond immediate flight clearance (fDist > 2.0)
+    float fgClear = smoothstep(2.0, 6.0, fDist);
+    float groundMistDensity = hMistFalloff * (patchDensity * 0.40 + 0.60) * fgClear * 0.35;
 
-    // - Valleys, hollows, and slopes across terrain
-    float distantLowZone = smoothstep(8.0, 36.0, fDist) * smoothstep(1.8, 0.30, fWorldPos.y);
+    // Atmospheric night sky horizon color blend
+    vec3 cMistColor = fogColor;
 
-    // - Near camera clearance keeping immediate foreground readable
-    float fgClear = smoothstep(3.5, 9.5, fDist);
-
-    // Combined natural ground mist density (gentle ambient ground pool, not a solid wall)
-    float mistRegions = max(riverZone * 0.75, distantLowZone * 0.65);
-    float groundMistDensity = hMistFalloff * (patchDensity * 0.50 + 0.50) * mistRegions * fgClear * 0.45;
-    groundMistDensity = clamp(groundMistDensity, 0.0, 0.45);
-
-    // D. Coloration: Harmonized with horizon sky color and subtly warmed near village windows
-    vec3 cMistCool = fogColor;
-    float distVillage = length(fWorldPos.xz - vec2(-2.0, -4.2));
-    float villageWarmth = smoothstep(4.2, 1.0, distVillage) * smoothstep(0.9, 0.4, fWorldPos.y) * 0.35;
-    vec3 cMistWarm = mix(fogColor, vec3(0.080, 0.060, 0.040), 0.45);
-    vec3 cMistColor = mix(cMistCool, cMistWarm, villageWarmth);
-
-    // =========================================================================
-    // 3. FINAL COMPOSITING
-    // =========================================================================
-
+    // Final Compositing: seamless atmospheric depth
     float fTotalFog = clamp(fDistFog + groundMistDensity * (1.0 - fDistFog), 0.0, 1.0);
-    vec3 fFinalFogColor = mix(cMistColor, fogColor, smoothstep(0.0, 0.30, fDistFog));
-
-    gl_FragColor.rgb = mix(gl_FragColor.rgb, fFinalFogColor, fTotalFog);
+    gl_FragColor.rgb = mix(gl_FragColor.rgb, cMistColor, fTotalFog);
   #endif
 `;
 
@@ -1057,9 +1036,9 @@ const snowVertexShader = `
     float depth = max(-mvPosition.z, 0.4);
 
     // Natural physical size attenuation with smooth clamp
-    // Scaled for crisp visibility on high-DPI mobile screens
-    float baseScale = (520.0 / depth) * uSize * aSize;
-    gl_PointSize = clamp(baseScale, 2.5, 52.0);
+    // Calibrated for crisp, delicate winter snowfall without oversized giant blobs
+    float baseScale = (260.0 / depth) * uSize * aSize;
+    gl_PointSize = clamp(baseScale, 1.5, 22.0);
 
     // Near plane camera fade to eliminate harsh near-clip popping
     vDepthFade = smoothstep(0.3, 1.8, depth);
@@ -1177,7 +1156,7 @@ const snowMat = new THREE.ShaderMaterial({
   vertexShader: snowVertexShader,
   fragmentShader: snowFragmentShader,
   uniforms: {
-    uSize: { value: 0.22 },
+    uSize: { value: 0.12 },
     uOpacity: { value: 0.85 },
     uOvercast: { value: 0.0 }
   },
@@ -1204,7 +1183,7 @@ for (let i = 0; i < largeSnowCount; i++) {
   largeSnowPositions[i * 3 + 1] = Math.random() * snowBounds.y;
   largeSnowPositions[i * 3 + 2] = (Math.random() - 0.5) * snowBounds.z;
 
-  largeSnowSizes[i] = 1.35 + Math.random() * 1.75;
+  largeSnowSizes[i] = 0.9 + Math.random() * 0.9;
   largeSnowRotSpeeds[i] = (Math.random() - 0.5) * 2.2;
   largeSnowFlakeTypes[i] = Math.random();
   largeSnowPhases[i] = Math.random() * Math.PI * 2;
@@ -1228,7 +1207,7 @@ const largeSnowMat = new THREE.ShaderMaterial({
   vertexShader: snowVertexShader,
   fragmentShader: snowFragmentShader,
   uniforms: {
-    uSize: { value: 0.35 },
+    uSize: { value: 0.18 },
     uOpacity: { value: 0.85 },
     uOvercast: { value: 0.0 }
   },
@@ -1255,8 +1234,8 @@ class DynamicWeatherEngine {
     this.weatherIntensity = 0.0; // 0.0 (Clear) to 1.0 (Blizzard)
     this.windVelocity = new THREE.Vector3(0.008, 0, 0.004);
     this.windGust = 0.0;
-    this.fogNear = 14.0;
-    this.fogFar = 48.0;
+    this.fogNear = 3.5;
+    this.fogFar = 22.0;
 
     // Smoothed transition values
     this.targetIntensity = 0.0;
@@ -1322,10 +1301,10 @@ class DynamicWeatherEngine {
     );
 
     // Atmospheric Distance Fog Harmonization
-    // Clear: near 14.0, far 48.0 (matches horizon background seamlessly)
-    // Blizzard: near 6.0, far 26.0 (atmospheric winter whiteout without abrupt walls)
-    this.fogNear = 14.0 - this.weatherIntensity * 8.0;
-    this.fogFar  = 48.0 - this.weatherIntensity * 22.0;
+    // Clear: near 3.5, far 22.0 (matches horizon background seamlessly)
+    // Blizzard: near 1.8, far 12.0 (atmospheric winter whiteout without abrupt walls)
+    this.fogNear = 3.5 - this.weatherIntensity * 1.7;
+    this.fogFar  = 22.0 - this.weatherIntensity * 10.0;
 
     if (scene.fog) {
       scene.fog.near = this.fogNear;
@@ -1974,8 +1953,8 @@ class InfiniteChunkSystem {
     this.projScreenMatrix = new THREE.Matrix4();
     this.chunkBox = new THREE.Box3();
     this.loadQueue = []; // Array of { cx, cz, priority, distSq }
-    this.maxLoadsPerFrame = options.maxLoadsPerFrame || (IS_MOBILE ? 1 : 2); // Stagger loading over frames to eliminate hitching
-    this.visibleThreshold = options.visibleThreshold || (this.chunkSize * (IS_MOBILE ? 2.5 : 3.5)); // Max view distance for chunks
+    this.maxLoadsPerFrame = options.maxLoadsPerFrame || 2; // Stagger loading over frames (up to 2 chunks/tick) to eliminate hitching while loading fast
+    this.visibleThreshold = options.visibleThreshold || (this.chunkSize * 3.5); // Max view distance for chunks
   }
 
   // Deterministic seedable random (LCG + Wang Hash)
@@ -2270,7 +2249,10 @@ class InfiniteChunkSystem {
 
     const terrainMeshes = [];
     group.traverse((c) => {
-      if (c.isMesh && c.name.includes('Plane')) terrainMeshes.push(c);
+      // Include all land terrain meshes (cliffs, plateaus, hills, plains, rocks) and exclude water/lake
+      if (c.isMesh && !c.name.includes('Lake') && !(c.material?.name || '').includes('ice')) {
+        terrainMeshes.push(c);
+      }
     });
 
     const raycaster = new THREE.Raycaster();
@@ -2300,13 +2282,19 @@ class InfiniteChunkSystem {
     let lz = wz - cz * this.chunkSize;
 
     // Check if chunk has a rotation
+    // When chunk is rotated around Y by angle, inverse rotation maps (lx, lz) back to template coords:
     const rotIdx = this.getChunkRotationIndex(cx, cz);
-    if (rotIdx === 1) { // 90 deg: (x, z) -> (-z, x)
-      const ox = lx; lx = lz; lz = -ox;
-    } else if (rotIdx === 2) { // 180 deg
-      lx = -lx; lz = -lz;
-    } else if (rotIdx === 3) { // 270 deg
-      const ox = lx; lx = -lz; lz = ox;
+    if (rotIdx === 1) { // 90 deg: inverse of +90deg is -90deg: (x, z) -> (-z, x)
+      const ox = lx;
+      lx = -lz;
+      lz = ox;
+    } else if (rotIdx === 2) { // 180 deg: (x, z) -> (-x, -z)
+      lx = -lx;
+      lz = -lz;
+    } else if (rotIdx === 3) { // 270 deg: inverse of +270deg is +90deg: (x, z) -> (z, -x)
+      const ox = lx;
+      lx = lz;
+      lz = -ox;
     }
 
     const u = (lx + half) / this.chunkSize;
@@ -2363,8 +2351,153 @@ class InfiniteChunkSystem {
       terrainClone.rotation.y = angle;
     }
     chunkGroup.add(terrainClone);
+    chunkGroup.updateMatrixWorld(true);
 
-    // 2. High-Performance Instanced Vegetation (Trees & Bushes)
+    // 2. Houses & Settlements (Placed first so vegetation clearings around houses can be enforced)
+    const houseGroup = new THREE.Group();
+    houseGroup.name = `Houses_${key}`;
+    const houseColliders = [];
+    const houseClearings = []; // Centers and clearance radii to prevent trees/bushes from spawning under houses
+
+    if (isCenter) {
+      // Main village: compute world-space bounding boxes for central houses
+      this.templateHouses.forEach((h) => {
+        const box = new THREE.Box3();
+        if (h.geo && !h.geo.boundingBox) h.geo.computeBoundingBox();
+        if (h.geo && h.geo.boundingBox) {
+          box.copy(h.geo.boundingBox);
+          const m = new THREE.Matrix4().compose(
+            h.pos,
+            new THREE.Quaternion().setFromEuler(h.rot),
+            h.scale
+          );
+          box.applyMatrix4(m);
+          box.min.add(chunkGroup.position);
+          box.max.add(chunkGroup.position);
+          houseColliders.push(box);
+        }
+      });
+      // Main village: use single high-performance merged village house mesh (109 houses -> 1 draw call)
+      if (this.mergedVillageMesh) {
+        houseGroup.add(this.mergedVillageMesh.clone());
+      } else {
+        this.templateHouses.forEach((h) => {
+          const hMesh = new THREE.Mesh(h.geo, h.mat);
+          hMesh.name = h.meshName;
+          hMesh.position.copy(h.pos);
+          hMesh.rotation.copy(h.rot);
+          hMesh.scale.copy(h.scale);
+          hMesh.castShadow = true;
+          hMesh.receiveShadow = true;
+          houseGroup.add(hMesh);
+        });
+      }
+    } else {
+      // Deterministically place outpost/cabin settlements on wilderness chunks
+      const houseCount = Math.floor(4 + this.hashCoord(cx, cz, 819) * 2); // 4 or 5
+      const candidates = this.templateHouses.filter(h => h.meshName.startsWith('house'));
+      const houseRaycaster = new THREE.Raycaster();
+      const downDir = new THREE.Vector3(0, -1, 0);
+
+      if (candidates.length > 0) {
+        for (let hIdx = 0; hIdx < houseCount; hIdx++) {
+          const h = candidates[hIdx % candidates.length];
+
+          // Try candidate spots to find a solid, gentle snow meadow (avoiding lake water and steep cliffs)
+          let bestOffset = null;
+          let bestY = null;
+
+          for (let attempt = 0; attempt < 5; attempt++) {
+            const seedOffset = attempt * 3.7;
+            const candOffset = new THREE.Vector3(
+              (this.hashCoord(cx + hIdx * 1.7 + seedOffset, cz, 921) - 0.5) * 11.0,
+              0,
+              (this.hashCoord(cx, cz + hIdx * 1.7 + seedOffset, 923) - 0.5) * 11.0
+            );
+
+            const worldHx = worldX + candOffset.x;
+            const worldHz = worldZ + candOffset.z;
+
+            // Raycast in true WORLD coordinates against terrainClone
+            houseRaycaster.set(new THREE.Vector3(worldHx, 25.0, worldHz), downDir);
+            const hits = houseRaycaster.intersectObject(terrainClone, true);
+            if (hits.length === 0) continue;
+
+            const centerHit = hits[0];
+            // Reject if inside frozen lake depression (y <= 0.36) or on steep cliff face
+            if (centerHit.point.y <= 0.36 || (centerHit.face && centerHit.face.normal.y < 0.78)) continue;
+
+            // Test 4 footprint corners in world coordinates to ensure ground is reasonably flat
+            const footprintOffsets = [
+              { dx: -0.12, dz: -0.12 },
+              { dx:  0.12, dz: -0.12 },
+              { dx: -0.12, dz:  0.12 },
+              { dx:  0.12, dz:  0.12 }
+            ];
+            let minCornerY = centerHit.point.y;
+            let maxCornerY = centerHit.point.y;
+            let invalidCorner = false;
+
+            for (let c = 0; c < 4; c++) {
+              const corner = footprintOffsets[c];
+              houseRaycaster.set(new THREE.Vector3(worldHx + corner.dx, 25.0, worldHz + corner.dz), downDir);
+              const cHits = houseRaycaster.intersectObject(terrainClone, true);
+              if (cHits.length === 0 || cHits[0].point.y <= 0.36) {
+                invalidCorner = true;
+                break;
+              }
+              minCornerY = Math.min(minCornerY, cHits[0].point.y);
+              maxCornerY = Math.max(maxCornerY, cHits[0].point.y);
+            }
+
+            // Reject if terrain slope across footprint varies by more than 7cm (cliff edge or steep ditch)
+            if (invalidCorner || (maxCornerY - minCornerY) > 0.07) continue;
+
+            // Bed foundation 0.01m into snow surface to guarantee zero gap beneath base sills
+            bestOffset = candOffset;
+            bestY = minCornerY - 0.01;
+            break;
+          }
+
+          if (!bestOffset) continue;
+
+          const hMesh = new THREE.Mesh(h.geo, h.mat);
+          hMesh.name = `Outpost_${key}_${h.meshName}_${hIdx}`;
+          hMesh.position.set(bestOffset.x, bestY, bestOffset.z);
+          hMesh.rotation.y = this.hashCoord(cx, cz + hIdx, 111) * Math.PI * 2;
+          hMesh.scale.copy(h.scale);
+          hMesh.castShadow = !IS_MOBILE;
+          hMesh.receiveShadow = true;
+          houseGroup.add(hMesh);
+
+          // Clear trees within 1.8m so no trunk ever clips into or spawns under the house
+          houseClearings.push({
+            x: bestOffset.x,
+            z: bestOffset.z,
+            radius: 1.8
+          });
+
+          // World bounding box for wilderness house
+          const worldHx = worldX + bestOffset.x;
+          const worldHz = worldZ + bestOffset.z;
+          const box = new THREE.Box3();
+          if (h.geo && !h.geo.boundingBox) h.geo.computeBoundingBox();
+          if (h.geo && h.geo.boundingBox) {
+            box.copy(h.geo.boundingBox);
+            const m = new THREE.Matrix4().compose(
+              new THREE.Vector3(worldHx, bestY, worldHz),
+              new THREE.Quaternion().setFromEuler(new THREE.Euler(0, hMesh.rotation.y, 0)),
+              h.scale
+            );
+            box.applyMatrix4(m);
+            houseColliders.push(box);
+          }
+        }
+      }
+    }
+    chunkGroup.add(houseGroup);
+
+    // 3. High-Performance Instanced Vegetation (Trees & Bushes)
     const treeInstances = [];
     const bushInstances = [];
 
@@ -2379,7 +2512,7 @@ class InfiniteChunkSystem {
     const dummy = new THREE.Object3D();
     const rotMat = new THREE.Matrix4().makeRotationY(angle);
 
-    // Populate trees with deterministic variance
+    // Populate trees with deterministic variance and house clearing check
     const treeDensity = isCenter ? 1.0 : (0.65 + this.hashCoord(cx, cz, 71) * 0.5);
     this.templateTrees.forEach((tData, idx) => {
       if (this.hashCoord(cx + idx * 0.1, cz + idx * 0.1, 99) > treeDensity) return;
@@ -2399,13 +2532,24 @@ class InfiniteChunkSystem {
         dummy.scale.multiplyScalar(scaleJitter);
       }
 
+      // Skip trees that land inside any house clearing
+      let inClearing = false;
+      for (let c = 0; c < houseClearings.length; c++) {
+        const cl = houseClearings[c];
+        if (Math.hypot(dummy.position.x - cl.x, dummy.position.z - cl.z) < cl.radius) {
+          inClearing = true;
+          break;
+        }
+      }
+      if (inClearing) return;
+
       dummy.updateMatrix();
       if (treeInstances[tData.protoId]) {
         treeInstances[tData.protoId].push(dummy.matrix.clone());
       }
     });
 
-    // Populate bushes with deterministic variance
+    // Populate bushes with deterministic variance and house clearing check
     this.templateBushes.forEach((bData, idx) => {
       if (this.hashCoord(cx + idx * 0.13, cz + idx * 0.13, 101) > treeDensity) return;
 
@@ -2418,6 +2562,17 @@ class InfiniteChunkSystem {
         dummy.rotation.y += angle;
       }
 
+      // Skip bushes that land inside any house clearing
+      let inClearing = false;
+      for (let c = 0; c < houseClearings.length; c++) {
+        const cl = houseClearings[c];
+        if (Math.hypot(dummy.position.x - cl.x, dummy.position.z - cl.z) < cl.radius) {
+          inClearing = true;
+          break;
+        }
+      }
+      if (inClearing) return;
+
       dummy.updateMatrix();
       if (bushInstances[bData.protoId]) {
         bushInstances[bData.protoId].push(dummy.matrix.clone());
@@ -2428,8 +2583,6 @@ class InfiniteChunkSystem {
     const instancedMeshes = [];
 
     if (IS_MOBILE) {
-      // Since tree and bush share the exact same material ("trees"),
-      // merge all foliage into a unified foliage instanced mesh to save an additional draw call per chunk
       const allFoliageMatrices = [];
       for (let id = 0; id < this.treePrototypes.length; id++) {
         if (treeInstances[id]) allFoliageMatrices.push(...treeInstances[id]);
@@ -2453,7 +2606,6 @@ class InfiniteChunkSystem {
         instancedMeshes.push(instMesh);
       }
     } else {
-      // Desktop: instantiate all distinct tree and bush prototype variants
       this.treePrototypes.forEach((proto, id) => {
         const matrices = treeInstances[id];
         if (matrices.length > 0) {
@@ -2485,90 +2637,6 @@ class InfiniteChunkSystem {
           instancedMeshes.push(instMesh);
         }
       });
-    }
-
-    // 3. Houses / Settlements
-    const houseGroup = new THREE.Group();
-    houseGroup.name = `Houses_${key}`;
-
-    const houseColliders = [];
-    if (isCenter) {
-      // Main village: compute world-space bounding boxes for central houses
-      this.templateHouses.forEach((h) => {
-        const box = new THREE.Box3();
-        if (h.geo && !h.geo.boundingBox) h.geo.computeBoundingBox();
-        if (h.geo && h.geo.boundingBox) {
-          box.copy(h.geo.boundingBox);
-          const m = new THREE.Matrix4().compose(
-            h.pos,
-            new THREE.Quaternion().setFromEuler(h.rot),
-            h.scale
-          );
-          box.applyMatrix4(m);
-          // Offset into chunk world position
-          box.min.add(chunkGroup.position);
-          box.max.add(chunkGroup.position);
-          houseColliders.push(box);
-        }
-      });
-      // Main village: use single high-performance merged village house mesh (109 houses -> 1 draw call)
-      if (this.mergedVillageMesh) {
-        houseGroup.add(this.mergedVillageMesh.clone());
-      } else {
-        this.templateHouses.forEach((h) => {
-          const hMesh = new THREE.Mesh(h.geo, h.mat);
-          hMesh.name = h.meshName;
-          hMesh.position.copy(h.pos);
-          hMesh.rotation.copy(h.rot);
-          hMesh.scale.copy(h.scale);
-          hMesh.castShadow = true;
-          hMesh.receiveShadow = true;
-          houseGroup.add(hMesh);
-        });
-      }
-    } else {
-      // Deterministically place outpost/cabin settlements on wilderness chunks
-      // Exactly 4 to 5 eligible houses per chunk for consistent delivery targets
-      const houseCount = Math.floor(4 + this.hashCoord(cx, cz, 819) * 2); // 4 or 5
-      const candidates = this.templateHouses.filter(h => h.meshName.startsWith('house'));
-      if (candidates.length > 0) {
-        for (let hIdx = 0; hIdx < houseCount; hIdx++) {
-          const h = candidates[hIdx % candidates.length];
-          const hMesh = new THREE.Mesh(h.geo, h.mat);
-          hMesh.name = `Outpost_${key}_${h.meshName}_${hIdx}`;
-
-          // Position around a localized outpost clearing
-          const localOffset = new THREE.Vector3(
-            (this.hashCoord(cx + hIdx * 1.7, cz, 921) - 0.5) * 11.0,
-            0,
-            (this.hashCoord(cx, cz + hIdx * 1.7, 923) - 0.5) * 11.0
-          );
-          const worldHx = worldX + localOffset.x;
-          const worldHz = worldZ + localOffset.z;
-          const terrainH = this.getHeight(worldHx, worldHz);
-
-          hMesh.position.set(localOffset.x, terrainH, localOffset.z);
-          hMesh.rotation.y = this.hashCoord(cx, cz + hIdx, 111) * Math.PI * 2;
-          hMesh.scale.copy(h.scale);
-          hMesh.castShadow = !IS_MOBILE;
-          hMesh.receiveShadow = true;
-          houseGroup.add(hMesh);
-
-          // World bounding box for wilderness house
-          const box = new THREE.Box3();
-          if (h.geo && !h.geo.boundingBox) h.geo.computeBoundingBox();
-          if (h.geo && h.geo.boundingBox) {
-            box.copy(h.geo.boundingBox);
-            const m = new THREE.Matrix4().compose(
-              new THREE.Vector3(worldHx, terrainH, worldHz),
-              new THREE.Quaternion().setFromEuler(new THREE.Euler(0, hMesh.rotation.y, 0)),
-              h.scale
-            );
-            box.applyMatrix4(m);
-            houseColliders.push(box);
-          }
-        }
-      }
     }
     chunkGroup.add(houseGroup);
 
@@ -2650,6 +2718,8 @@ class InfiniteChunkSystem {
 
   // View-based progressive chunk streaming called every animation frame
   update(targetPos, cam = camera) {
+    if (!this.templateTerrainGroup) return;
+
     const half = this.chunkSize * 0.5;
     const focusPos = targetPos || (controls ? controls.target : cam.position);
     const centerCx = Math.floor((focusPos.x + half) / this.chunkSize);
@@ -2693,14 +2763,13 @@ class InfiniteChunkSystem {
     // 1. Process progressive loading queue: closest chunks in camera view load first
     if (candidates.length > 0) {
       candidates.sort((a, b) => a.distSq - b.distSq);
-      // On mobile, clamp total active chunks to at most 2 (main village + immediate forward view chunk)
-      if (IS_MOBILE && this.chunks.size >= 2) {
-        // Do not load additional chunks beyond 2 on mobile
-      } else {
+      // On mobile, permit up to 9 active chunks (3x3 grid around player) with forward lookahead into fog
+      const maxActiveChunks = IS_MOBILE ? 9 : 25;
+      if (this.chunks.size < maxActiveChunks) {
         // Stagger loading: load up to maxLoadsPerFrame per tick to maintain 60-120+ FPS without hitching
         const loadBatch = candidates.slice(0, this.maxLoadsPerFrame);
         for (const c of loadBatch) {
-          if (IS_MOBILE && this.chunks.size >= 2) break;
+          if (this.chunks.size >= maxActiveChunks) break;
           this.loadChunk(c.cx, c.cz);
         }
       }
@@ -2714,8 +2783,8 @@ class InfiniteChunkSystem {
       const dist = Math.max(Math.abs(chunk.cx - centerCx), Math.abs(chunk.cz - centerCz));
       const inView = this.isChunkInView(chunk.cx, chunk.cz);
 
-      // Unload if out of load radius, or if not in camera view
-      if (dist > r || (!inView && (IS_MOBILE || dist > 1))) {
+      // Unload if out of unload radius, or if not in camera view (keep immediate radius 1 neighbors so quick turns don't pop)
+      if (dist > un || (!inView && dist > 1)) {
         keysToRemove.push(key);
       }
     }
@@ -2747,10 +2816,10 @@ class InfiniteChunkSystem {
   }
 }
 
-// Instantiate infinite chunk manager (Desktop: 3x3-5x5 grid; Mobile: focused forward frustum streaming)
+// Instantiate infinite chunk manager (Desktop & Mobile: 5x5 potential grid with focused forward frustum streaming)
 const chunkSystem = new InfiniteChunkSystem(scene, {
-  loadRadius: IS_MOBILE ? 1 : 2,
-  unloadRadius: IS_MOBILE ? 1 : 2
+  loadRadius: 2,
+  unloadRadius: 2
 });
 window.chunkSystem = chunkSystem;
 window.game.chunkSystem = chunkSystem;

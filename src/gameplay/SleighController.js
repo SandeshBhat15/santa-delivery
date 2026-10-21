@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+import { MagicalFlightTrail } from './MagicalFlightTrail.js';
 
 export class SleighController {
   constructor(scene, camera, controls, chunkSystem, isMobile = false) {
@@ -16,20 +17,18 @@ export class SleighController {
     this.scene.add(this.group);
 
     // Initial position above starting village (low rooftop cruising height)
-    this.position = new THREE.Vector3(0, 2.4, 8.0);
+    this.position = new THREE.Vector3(0, 0.8, 8.0);
     this.rotationY = 0.0; // Heading north (-Z) toward village center
     this.pitch = 0.0;
     this.bank = 0.0;
-    this.speed = 0.0;
+    this.speed = 3.0;
 
-    // Movement parameters
-    this.cruiseSpeed = 8.5; // Automatic forward flight speed
-    this.maxSpeed = 12.0;
-    this.minSpeed = 0.0;
-    this.accel = 8.0;
-    this.decel = 6.0;
+    // Movement & Non-Linear Aerodynamics Parameters
+    this.baseCruiseSpeed = 3.0; // Gentle forward cruising speed calibrated for miniature rig
+    this.maxSpeed = 5.2;        // Maximum speed during steep dives or boost
+    this.minSpeed = 1.6;        // Minimum speed during steep climbs or tight turns
     this.turnSpeed = 1.9;
-    this.climbSpeed = 6.0;
+    this.climbSpeed = 3.5;
     this.bankMax = 0.42;
 
     // Controls input state
@@ -38,16 +37,18 @@ export class SleighController {
       right: false,
       up: false,
       down: false,
-      drop: false
+      drop: false,
+      boost: false
     };
 
-    // Customizable key mappings (Desktop: A/D or Left/Right to steer, W/S or Up/Down for climb/dive, Space/E to drop gift)
+    // Customizable key mappings (Desktop: A/D to steer, W/S for climb/dive, Space/E to drop gift, Shift to boost)
     this.keyMap = {
       left: ['KeyA', 'ArrowLeft'],
       right: ['KeyD', 'ArrowRight'],
       climb: ['KeyW', 'ArrowUp', 'Space'],
       descend: ['KeyS', 'ArrowDown'],
-      drop: ['KeyE']
+      drop: ['KeyE'],
+      boost: ['ShiftLeft', 'ShiftRight', 'KeyF']
     };
 
     // Virtual analog joystick control: x = steering (yaw + banking roll), y = altitude (pitch + climb/dive)
@@ -55,27 +56,28 @@ export class SleighController {
     this.verticalInput = 0.0;
 
     // Configurable flight simulation dynamics
-    this.climbRate = 6.0;
-    this.descendRate = 5.5;
+    this.climbRate = 3.5;
+    this.descendRate = 3.2;
     this.verticalSpeed = 0.0;
-    this.verticalAccel = 12.0;
-    this.verticalDecel = 9.0;
+    this.verticalAccel = 8.0;
+    this.verticalDecel = 6.0;
     this.pitchMax = 0.35; // Max pitch angle (radians) during climb/dive
 
     // Dynamic Terrain-Relative Altitude Limits (meters above local terrain)
-    this.minAltitudeAboveTerrain = 0.85; // Low-skimming over the snow
-    this.maxAltitudeAboveTerrain = 8.5;  // Low-to-medium rooftop flight vista
-    this.altitudeSoftBuffer = 1.5;       // Distance from boundary where vertical damping begins
+    this.minAltitudeAboveTerrain = 0.01; // Skims ground level with runners directly in the snow
+    this.targetFlightAltitude = 0.40;    // Player-controlled cruising flight level above terrain (scaled for mini rig)
+    this.maxAltitudeAboveTerrain = 1.40;  // Maximum ceiling for village flight
+    this.altitudeSoftBuffer = 0.06;      // Distance from boundary where vertical damping begins
 
     // Sleigh & Reindeer Collision Bounds (meters)
-    // Sleigh body + reindeer team total footprint calibrated for new scale
-    this.collisionRadiusXZ = 0.85;
-    this.collisionHalfHeight = 0.65;
-    this.safetyMargin = 0.3; // Wall and roof clearance margin
+    // Sleigh body + reindeer team total footprint calibrated for reduced scale
+    this.collisionRadiusXZ = 0.14;
+    this.collisionHalfHeight = 0.10;
+    this.safetyMargin = 0.06; // Wall and roof clearance margin
 
-    // Follow camera offset & sensitivity (closer third-person follow camera)
-    this.camDistance = isMobile ? 5.6 : 4.8;
-    this.camHeight = isMobile ? 2.4 : 1.9;
+    // Follow camera offset & sensitivity (calibrated close third-person follow camera for mini rig)
+    this.camDistance = isMobile ? 1.05 : 0.82;
+    this.camHeight = isMobile ? 0.42 : 0.32;
     this.camLag = 6.5; // Responsive smooth follow
     this.camTargetPos = new THREE.Vector3();
     this.camLookPos = new THREE.Vector3();
@@ -85,6 +87,11 @@ export class SleighController {
     this.reindeerLegs = [];
     this.reindeers = [];
     this.mixers = []; // AnimationMixers for deer instances
+    this.fairyLights = []; // Twinkling fairy light bulbs on antlers
+    this.sleighLanterns = []; // Warm glowing lanterns on sleigh runners
+
+    // Magical flight trail emitting stardust & icy crystals from reindeer hooves
+    this.flightTrail = new MagicalFlightTrail(this.scene, this.isMobile);
 
     this._setupInputListeners();
     this._buildSleighAndReindeer();
@@ -109,6 +116,8 @@ export class SleighController {
       } else if (this.keyMap.drop.includes(code)) {
         this.inputs.drop = true;
         if (window.deliverySystem) window.deliverySystem.triggerDelivery();
+      } else if (this.keyMap.boost.includes(code)) {
+        this.inputs.boost = true;
       }
     });
 
@@ -124,6 +133,8 @@ export class SleighController {
         this.inputs.down = false;
       } else if (this.keyMap.drop.includes(code)) {
         this.inputs.drop = false;
+      } else if (this.keyMap.boost.includes(code)) {
+        this.inputs.boost = false;
       }
     });
   }
@@ -158,8 +169,8 @@ export class SleighController {
     masterGroup.name = 'MasterSantaRig';
     masterGroup.rotation.y = Math.PI;
 
-    // Scale calibrated to match terrain and house proportions (~35% smaller than before)
-    const MODEL_SCALE = 3.9;
+    // Overall rig scale reduced by 50% for realistic miniature village flight proportions
+    const MODEL_SCALE = 0.488;
     masterGroup.scale.setScalar(MODEL_SCALE);
 
     // Locate the three components in GLB
@@ -194,8 +205,13 @@ export class SleighController {
     // 1. Sleigh & Santa Group (with slight vertical hover bob)
     const sleighGroup = new THREE.Group();
     sleighGroup.name = 'SleighAndSantaGroup';
-    if (sledgeNode) sleighGroup.add(sledgeNode);
-    if (santaRigNode) sleighGroup.add(santaRigNode);
+    if (sledgeNode) {
+      sleighGroup.add(sledgeNode);
+      this._attachSleighLanterns(sledgeNode);
+    }
+    if (santaRigNode) {
+      sleighGroup.add(santaRigNode);
+    }
     masterGroup.add(sleighGroup);
     this.sleighMeshGroup = sleighGroup;
 
@@ -216,6 +232,15 @@ export class SleighController {
         { name: 'Reindeer_Back_R', x:  0.075, z: 0.42, timeOffset: 0.15 }
       ];
 
+      // Play Santa driving animation if available in GLTF
+      const santaRigActionClip = animations.find(a => a.name === 'santa_rigAction' || a.name.includes('santa'));
+      if (santaRigNode && santaRigActionClip) {
+        const santaMixer = new THREE.AnimationMixer(santaRigNode);
+        const sAction = santaMixer.clipAction(santaRigActionClip);
+        sAction.play();
+        this.mixers.push(santaMixer);
+      }
+
       // Harness lines container
       const reinMat = new THREE.MeshStandardMaterial({
         color: 0xd4af37,
@@ -226,6 +251,9 @@ export class SleighController {
       // Front sleigh hitch positions
       const hitchLeft = new THREE.Vector3(-0.045, 0.07, 0.16);
       const hitchRight = new THREE.Vector3(0.045, 0.07, 0.16);
+
+      this.reindeers = [];
+      const reinBaseGeo = new THREE.CylinderGeometry(0.0018, 0.0018, 1.0, 4);
 
       deerConfigs.forEach((cfg) => {
         const deerClone = SkeletonUtils.clone(deerRigNode);
@@ -239,24 +267,211 @@ export class SleighController {
         mixer.setTime(cfg.timeOffset);
         this.mixers.push(mixer);
 
+        // Attach fairy lights directly to the head bone so they sway with the deer's gallop stride
+        this._attachAntlerFairyLights(deerClone);
+
         masterGroup.add(deerClone);
 
         // Connect reins from sleigh hitch to reindeer collar
         const hitch = cfg.x < 0 ? hitchLeft : hitchRight;
-        const collar = new THREE.Vector3(cfg.x, 0.12, cfg.z + 0.05);
+        const collarOffset = new THREE.Vector3(0, 0.12, 0.05);
+        const collar = new THREE.Vector3(cfg.x, 0, cfg.z).add(collarOffset);
         const dir = new THREE.Vector3().subVectors(collar, hitch);
         const len = dir.length();
-        const reinGeo = new THREE.CylinderGeometry(0.0018, 0.0018, len, 4);
-        const rein = new THREE.Mesh(reinGeo, reinMat);
+        const rein = new THREE.Mesh(reinBaseGeo.clone(), reinMat);
         rein.position.copy(hitch).addScaledVector(dir, 0.5);
+        rein.scale.set(1, len, 1);
         rein.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
         masterGroup.add(rein);
+
+        this.reindeers.push({
+          mesh: deerClone,
+          isLead: cfg.name.includes('Lead'),
+          baseX: cfg.x,
+          baseY: 0,
+          baseZ: cfg.z,
+          timeOffset: cfg.timeOffset,
+          hitchPos: hitch,
+          collarOffset: collarOffset,
+          reinMesh: rein
+        });
       });
     } else if (deerRigNode) {
+      this._attachAntlerFairyLights(deerRigNode);
       masterGroup.add(deerRigNode);
     }
 
+    // Attach magical stardust emitters to all 16 reindeer hooves
+    if (this.flightTrail && this.reindeers) {
+      this.flightTrail.initReindeerEmitters(this.reindeers);
+    }
+
     this.group.add(masterGroup);
+  }
+
+  /**
+   * Builds festive, twinkling fairy lights string along reindeer antler prongs
+   * Uses realistic high-fidelity micro-bulbs, brass sockets, and delicate wiring
+   * Attached directly to the animated 'head' bone so lights gallop realistically.
+   */
+  _attachAntlerFairyLights(deerObject) {
+    let headBone = null;
+    deerObject.traverse((c) => {
+      if (c.isBone && c.name === 'head') headBone = c;
+    });
+    if (!headBone) return;
+
+    const fairyLightsGroup = new THREE.Group();
+    fairyLightsGroup.name = 'AntlerFairyLights';
+
+    // Festive jewel tones: Warm Amber, Emerald Green, Ruby Red, Frosted Cyan, Amethyst Violet, Golden Candlelight
+    const colors = [
+      0xffaa22, // Warm Amber
+      0x27ae60, // Emerald Green
+      0xe74c3c, // Ruby Red
+      0x00bcd4, // Frosted Cyan
+      0x9b59b6, // Amethyst Violet
+      0xf1c40f  // Golden Candlelight
+    ];
+
+    // High quality smooth teardrop/candle mini bulb geometry with brass socket
+    const bulbGeo = new THREE.SphereGeometry(0.0028, 16, 12);
+    bulbGeo.scale(1.0, 1.4, 1.0); // Natural classic Christmas bulb elongation
+    const socketGeo = new THREE.CylinderGeometry(0.0015, 0.0017, 0.0022, 8);
+    const socketMat = new THREE.MeshStandardMaterial({
+      color: 0x273024, // Vintage green braided socket collar
+      roughness: 0.6,
+      metalness: 0.3
+    });
+
+    // Dark green twisted garland wire connecting the bulbs along the antlers (opaque to eliminate alpha depth-box artifacts)
+    const wireMat = new THREE.LineBasicMaterial({
+      color: 0x1b3820,
+      transparent: false,
+      depthWrite: true
+    });
+
+    // Antler prong coordinate paths in head bone local space (smooth contouring along the main beam and tines)
+    const leftBranch = [
+      { x: -0.012, y: -0.038, z: -0.012, colorIdx: 0, phase: 0.0 },
+      { x: -0.022, y: -0.048, z: -0.008, colorIdx: 1, phase: 1.2 },
+      { x: -0.034, y: -0.058, z: -0.002, colorIdx: 2, phase: 2.4 },
+      { x: -0.046, y: -0.068, z:  0.006, colorIdx: 3, phase: 3.6 },
+      { x: -0.058, y: -0.076, z:  0.012, colorIdx: 4, phase: 4.8 },
+      { x: -0.068, y: -0.062, z: -0.014, colorIdx: 5, phase: 0.8 },
+      { x: -0.038, y: -0.082, z:  0.020, colorIdx: 0, phase: 1.6 }
+    ];
+
+    const rightBranch = [
+      { x:  0.012, y: -0.038, z: -0.012, colorIdx: 2, phase: 0.6 },
+      { x:  0.022, y: -0.048, z: -0.008, colorIdx: 0, phase: 1.8 },
+      { x:  0.034, y: -0.058, z: -0.002, colorIdx: 4, phase: 3.0 },
+      { x:  0.046, y: -0.068, z:  0.006, colorIdx: 1, phase: 4.2 },
+      { x:  0.058, y: -0.076, z:  0.012, colorIdx: 3, phase: 5.4 },
+      { x:  0.068, y: -0.062, z: -0.014, colorIdx: 2, phase: 1.0 },
+      { x:  0.038, y: -0.082, z:  0.020, colorIdx: 5, phase: 2.2 }
+    ];
+
+    [leftBranch, rightBranch].forEach((branch) => {
+      // Create connecting string wire between bulbs
+      const wirePoints = branch.map(pt => new THREE.Vector3(pt.x, pt.y, pt.z));
+      const wireCurve = new THREE.CatmullRomCurve3(wirePoints);
+      const wireGeo = new THREE.BufferGeometry().setFromPoints(wireCurve.getPoints(24));
+      const wireLine = new THREE.Line(wireGeo, wireMat);
+      fairyLightsGroup.add(wireLine);
+
+      // Create each individual candle mini bulb with metal socket
+      branch.forEach((pt) => {
+        const col = colors[pt.colorIdx];
+        const mat = new THREE.MeshStandardMaterial({
+          color: col,
+          emissive: new THREE.Color(col),
+          emissiveIntensity: 1.6,
+          roughness: 0.15,
+          metalness: 0.05
+        });
+
+        const bulbContainer = new THREE.Group();
+        bulbContainer.position.set(pt.x, pt.y, pt.z);
+
+        const socket = new THREE.Mesh(socketGeo, socketMat);
+        socket.position.y = -0.002;
+        bulbContainer.add(socket);
+
+        const bulb = new THREE.Mesh(bulbGeo, mat);
+        bulbContainer.add(bulb);
+
+        fairyLightsGroup.add(bulbContainer);
+
+        this.fairyLights.push({
+          material: mat,
+          baseIntensity: 1.6,
+          freq: 1.8 + (pt.colorIdx % 3) * 1.2,
+          phase: pt.phase + Math.random() * 0.4
+        });
+      });
+    });
+
+    // Front lead reindeer only get the festive antler lights for clean, elegant clarity
+    const deerLeadPair = ['Reindeer_Lead_L', 'Reindeer_Lead_R'];
+    if (deerLeadPair.includes(deerObject.name)) {
+      headBone.add(fairyLightsGroup);
+    }
+  }
+
+  /**
+   * Illuminates the 3D artist's vintage carriage lanterns built into the rear flanks of the sleigh model
+   * Calibrated with gentle candle warmth that softly accents the sleigh without glaring.
+   */
+  _attachSleighLanterns(sledgeMesh) {
+    const lanternGroup = new THREE.Group();
+    lanternGroup.name = 'SleighLanterns';
+
+    // Warm cozy candle/mantle glass core (scaled neatly to fit inside the lantern housing)
+    const candleGeo = new THREE.SphereGeometry(0.0028, 8, 8);
+    candleGeo.scale(0.8, 1.2, 0.8);
+
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: 0xd48833,
+      emissive: new THREE.Color(0xd47722),
+      emissiveIntensity: 0.35,
+      roughness: 0.3,
+      metalness: 0.1
+    });
+
+    // Exact geometric centers of the artist's modeled vintage lanterns on the sledge mesh:
+    // Left:  x: -0.068, y: 0.0605, z: -0.144
+    // Right: x: +0.070, y: 0.0605, z: -0.150
+    const mounts = [
+      { x: -0.068, y: 0.0605, z: -0.144 },
+      { x:  0.070, y: 0.0605, z: -0.150 }
+    ];
+
+    mounts.forEach((m, idx) => {
+      const lamp = new THREE.Group();
+      lamp.position.set(m.x, m.y, m.z);
+
+      // Gentle glowing candle flame inside the lantern fixture
+      const flame = new THREE.Mesh(candleGeo, glassMat);
+      lamp.add(flame);
+
+      // Soft warm illuminating point light casting subtle golden ambiance on the lantern rim
+      const lanternLight = new THREE.PointLight(0xff9933, 0.015, 0.30, 2.0);
+      lamp.add(lanternLight);
+
+      this.sleighLanterns.push({
+        material: glassMat,
+        light: lanternLight,
+        baseIntensity: 0.015,
+        baseEmissive: 0.35,
+        freq: 2.2 + idx * 0.7,
+        phase: idx * 1.5
+      });
+
+      lanternGroup.add(lamp);
+    });
+
+    sledgeMesh.add(lanternGroup);
   }
 
   _buildProceduralFallback() {
@@ -576,16 +791,7 @@ export class SleighController {
   update(delta, elapsedTime) {
     if (delta <= 0) return;
 
-    // 1. Automatic Continuous Forward Flight with Smooth Acceleration
-    // Santa is always cruising forward smoothly
-    const targetSpeed = this.cruiseSpeed;
-    if (this.speed < targetSpeed) {
-      this.speed = Math.min(this.speed + this.accel * delta, targetSpeed);
-    } else if (this.speed > targetSpeed) {
-      this.speed = Math.max(this.speed - this.decel * delta, targetSpeed);
-    }
-
-    // 2. Analog Joystick & Keyboard Steering & Altitude
+    // 1. Analog Joystick & Keyboard Steering & Altitude
     let joyX = this.joystick.x; // Horizontal steering [-1..1]
     let joyY = this.joystick.y; // Vertical altitude [-1..1] (negative = up/climb, positive = down/dive)
 
@@ -609,17 +815,39 @@ export class SleighController {
     }
 
     // Smooth interpolated rotation
+    this.turnInput = turnInput;
     this.rotationY += turnInput * this.turnSpeed * delta;
 
-    // Banking roll during turns (smooth aerodynamic tilt)
-    const targetBank = -turnInput * this.bankMax;
+    // Banking roll during turns (positive banking so inner side dips naturally into turn)
+    const targetBank = turnInput * this.bankMax;
     this.bank += (targetBank - this.bank) * Math.min(delta * 5.5, 1.0);
 
-    // 3. Vertical Flight (Climbing & Descending via Joystick Y or W/S/Space Keys)
+    // 2. Vertical Flight (Smooth Look-Ahead Terrain Following & Gliding)
     let localGroundH = 0.5;
+    let aheadGroundH = 0.5;
+    let farAheadGroundH = 0.5;
+
+    const heading = new THREE.Vector3(
+      -Math.sin(this.rotationY),
+      0,
+      -Math.cos(this.rotationY)
+    );
+
     if (this.chunkSystem && this.chunkSystem.getHeight) {
       localGroundH = this.chunkSystem.getHeight(this.position.x, this.position.z);
+      // Predictive terrain look-ahead along forward vector (scaled for mini rig)
+      aheadGroundH = this.chunkSystem.getHeight(
+        this.position.x + heading.x * 0.7,
+        this.position.z + heading.z * 0.7
+      );
+      farAheadGroundH = this.chunkSystem.getHeight(
+        this.position.x + heading.x * 1.4,
+        this.position.z + heading.z * 1.4
+      );
     }
+
+    // Effective terrain envelope accounts for approaching hills ahead of time
+    const effectiveTerrainH = Math.max(localGroundH, aheadGroundH * 0.9 + localGroundH * 0.1, farAheadGroundH * 0.75);
 
     const currentAltitude = this.position.y - localGroundH;
     const minAlt = this.minAltitudeAboveTerrain;
@@ -653,20 +881,28 @@ export class SleighController {
     let targetVertSpeed = 0.0;
     if (vertCommand > 0) {
       targetVertSpeed = this.climbRate * vertCommand * climbFactor;
+      this.targetFlightAltitude = Math.min(maxAlt, this.targetFlightAltitude + this.climbRate * vertCommand * delta * 0.9);
     } else if (vertCommand < 0) {
       targetVertSpeed = -this.descendRate * Math.abs(vertCommand) * descendFactor;
+      this.targetFlightAltitude = Math.max(minAlt, this.targetFlightAltitude - this.descendRate * Math.abs(vertCommand) * delta * 0.9);
+    } else {
+      // Smoothly track the player's chosen flight level (whether ground-level skimming or rooftop height)
+      const altDelta = this.targetFlightAltitude - currentAltitude;
+      targetVertSpeed = THREE.MathUtils.clamp(altDelta * 2.2, -this.descendRate * 0.6, this.climbRate * 0.6);
     }
 
-    // Auto-cushioning recovery if terrain rises beneath the sleigh
-    if (currentAltitude < minAlt) {
-      const liftDeficit = minAlt - currentAltitude;
-      targetVertSpeed = Math.max(targetVertSpeed, liftDeficit * 5.0);
+    // Predictive smooth contour lift: naturally glide up hills before hitting them
+    const terrainClimbDeficit = (effectiveTerrainH + minAlt) - this.position.y;
+    if (terrainClimbDeficit > 0) {
+      // Smooth proportional lift avoids sudden velocity shocks
+      const predictiveClimb = terrainClimbDeficit * 4.5;
+      targetVertSpeed = Math.max(targetVertSpeed, predictiveClimb);
     } else if (currentAltitude > maxAlt) {
       const overHeight = currentAltitude - maxAlt;
-      targetVertSpeed = Math.min(targetVertSpeed, -overHeight * 3.5);
+      targetVertSpeed = Math.min(targetVertSpeed, -overHeight * 2.8);
     }
 
-    // Smooth vertical acceleration / deceleration
+    // Smooth vertical acceleration / deceleration with critically damped spring
     if (this.verticalSpeed < targetVertSpeed) {
       this.verticalSpeed = Math.min(this.verticalSpeed + this.verticalAccel * delta, targetVertSpeed);
     } else if (this.verticalSpeed > targetVertSpeed) {
@@ -675,9 +911,10 @@ export class SleighController {
 
     this.position.y += this.verticalSpeed * delta;
 
-    // Safety hard clamp strictly prevents dipping below absolute terrain floor
-    if (this.position.y < localGroundH + minAlt * 0.75) {
-      this.position.y = localGroundH + minAlt * 0.75;
+    // Solid physical ground level floor (runners skim directly atop the snow)
+    const absoluteFloor = localGroundH + minAlt;
+    if (this.position.y < absoluteFloor) {
+      this.position.y += (absoluteFloor - this.position.y) * Math.min(delta * 16.0, 1.0);
       if (this.verticalSpeed < 0) this.verticalSpeed = 0;
     }
 
@@ -686,29 +923,75 @@ export class SleighController {
     const targetPitch = normVertRate * this.pitchMax;
     this.pitch += (targetPitch - this.pitch) * Math.min(delta * 5.5, 1.0);
 
-    // 3. Free 3D Displacement along X and Z
-    const heading = new THREE.Vector3(
-      -Math.sin(this.rotationY),
-      0,
-      -Math.cos(this.rotationY)
-    );
+    // 3. Dynamic Non-Linear Aerodynamic Flight Speed
+    // Graceful base speed (~4.0 m/s) with organic response to diving, climbing, turns and boost
+    let targetSpeed = this.baseCruiseSpeed;
+
+    // Non-linear Dive Gravity Boost & Climb Drag:
+    if (normVertRate < -0.05) {
+      // Non-linear quadratic acceleration during dives (swooping momentum)
+      const diveFactor = -normVertRate;
+      targetSpeed += (diveFactor * diveFactor * 1.8 + diveFactor * 0.6);
+    } else if (normVertRate > 0.05) {
+      // Natural aerodynamic drag & gravity work during steep climbs
+      const climbFactor = Math.min(normVertRate, 1.0);
+      targetSpeed -= (climbFactor * 0.95);
+    }
+
+    // Induced Drag during Banked Turns (non-linear ease into turns):
+    const bankRatio = Math.abs(this.bank) / (this.bankMax || 0.42);
+    if (bankRatio > 0.1) {
+      targetSpeed -= Math.pow(bankRatio, 1.6) * 0.75;
+    }
+
+    // Player Sprint / Boost (Shift or KeyF)
+    if (this.inputs.boost) {
+      targetSpeed += 1.8;
+    }
+
+    // Clamp target within dynamic flight envelope [minSpeed..maxSpeed]
+    targetSpeed = THREE.MathUtils.clamp(targetSpeed, this.minSpeed, this.maxSpeed);
+
+    // Asymptotic non-linear exponential damping (no robotic linear steps or hard corner clamps)
+    const speedResponseRate = (targetSpeed > this.speed) ? 2.5 : 2.0;
+    this.speed += (targetSpeed - this.speed) * (1.0 - Math.exp(-speedResponseRate * delta));
+
+    // 4. Free 3D Displacement along X and Z
     this.position.addScaledVector(heading, this.speed * delta);
 
-    // 4. House & Structure Collision Avoidance
+    // 5. House & Structure Collision Avoidance
     // Checks nearby building bounding boxes with safety margins and pushes sleigh smoothly outward
     this._resolveHouseCollisions();
 
-    // 5. Apply Full 3D Transform to Sleigh Group
+    // 6. Apply Full 3D Transform to Sleigh Group
     this.group.position.copy(this.position);
     this.group.rotation.set(0, this.rotationY, 0, 'YXZ');
     this.group.rotation.x = this.pitch;
     this.group.rotation.z = this.bank;
 
-    // 4. Subtle Bobbing, Tilting & Reindeer Gallop Animations
-    this.animTime += delta * (3.0 + this.speed * 0.8);
-    const bob = Math.sin(this.animTime * 2.5) * 0.08;
+    // 7. Gentle, Majestic Hover Bobbing (Silky smooth 1.2 Hz wave, 0.032m amplitude)
+    this.animTime += delta * (2.0 + this.speed * 0.4);
+    const gentleBob = Math.sin(this.animTime * 1.2) * 0.032;
     if (this.sleighMeshGroup) {
-      this.sleighMeshGroup.position.y = bob;
+      this.sleighMeshGroup.position.y = gentleBob;
+    }
+
+    // 8. Update Fairy Lights & Sleigh Lanterns Twinkle Animation
+    if (this.fairyLights && this.fairyLights.length > 0) {
+      for (let i = 0; i < this.fairyLights.length; i++) {
+        const fl = this.fairyLights[i];
+        const twinkle = Math.sin(this.animTime * fl.freq + fl.phase) * 0.35 + 0.95;
+        fl.material.emissiveIntensity = fl.baseIntensity * Math.max(0.2, twinkle);
+      }
+    }
+
+    if (this.sleighLanterns && this.sleighLanterns.length > 0) {
+      for (let i = 0; i < this.sleighLanterns.length; i++) {
+        const sl = this.sleighLanterns[i];
+        const flicker = Math.sin(this.animTime * sl.freq + sl.phase) * 0.05 + 0.97;
+        sl.material.emissiveIntensity = (sl.baseEmissive || 0.35) * flicker;
+        if (sl.light) sl.light.intensity = sl.baseIntensity * flicker;
+      }
     }
 
     // Update skeletal AnimationMixers for all reindeer instances
@@ -727,11 +1010,54 @@ export class SleighController {
       leg.pivot.rotation.x = angle;
     });
 
-    // Reindeer spine rhythm
-    this.reindeers.forEach((rMesh, i) => {
-      rMesh.position.y = 0.45 + Math.sin(this.animTime * 3.5 + i * 0.7) * 0.06;
-      rMesh.rotation.z = Math.sin(this.animTime * 2.5 + i) * 0.04;
-    });
+    // 9. Dynamic Reindeer Lead Steering, Climb Pitch & Dynamic Reins
+    if (this.reindeers && this.reindeers.length > 0) {
+      const normVert = THREE.MathUtils.clamp(this.verticalSpeed / Math.max(this.climbRate, this.descendRate), -1.0, 1.0);
+      const climbPitchLead = -normVert * 0.24; // Negative X rotation tilts +Z nose upward into climb
+      const turnYawLead = -(this.turnInput || 0.0) * 0.28; // Negative Y rotation heads into left turn
+
+      for (let i = 0; i < this.reindeers.length; i++) {
+        const d = this.reindeers[i];
+        if (!d.mesh) continue;
+        const leadFactor = d.isLead ? 1.0 : 0.65;
+
+        // Dynamic orientation: Lead yaw into turns, climb pitch upward into climbs, and gentle gallop sway
+        const gallopBob = Math.sin(this.animTime * 3.5 + (d.timeOffset || 0) * 8.0) * 0.016;
+        const gallopSway = Math.sin(this.animTime * 3.0 + i) * 0.02;
+
+        d.mesh.position.y = (d.baseY || 0) + gallopBob;
+        d.mesh.rotation.y = turnYawLead * leadFactor + gallopSway;
+        d.mesh.rotation.x = climbPitchLead * leadFactor;
+        d.mesh.rotation.z = -(this.turnInput || 0.0) * 0.15 * leadFactor;
+
+        // Dynamically update harness rein line connecting sleigh hitch to reindeer collar
+        if (d.reinMesh && d.hitchPos) {
+          const currentPos = d.mesh.position.clone().add(d.collarOffset);
+          const dir = new THREE.Vector3().subVectors(currentPos, d.hitchPos);
+          const len = dir.length();
+          d.reinMesh.position.copy(d.hitchPos).addScaledVector(dir, 0.5);
+          d.reinMesh.scale.set(1, len, 1);
+          d.reinMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+        }
+      }
+    }
+
+    // 10. Update Magical Reindeer Flight Trail
+    if (this.flightTrail) {
+      this.flightTrail.update(delta, {
+        speed: this.speed,
+        minSpeed: this.minSpeed,
+        maxSpeed: this.maxSpeed,
+        verticalSpeed: this.verticalSpeed,
+        climbRate: this.climbRate,
+        descendRate: this.descendRate,
+        isBoosting: !!this.inputs.boost,
+        pitch: this.pitch,
+        bank: this.bank,
+        heading: heading,
+        animTime: this.animTime
+      });
+    }
 
     // 5. Update Follow Camera
     this._updateFollowCamera(delta);
@@ -755,8 +1081,8 @@ export class SleighController {
       0,
       -Math.cos(this.rotationY)
     );
-    this.camLookPos.copy(this.position).addScaledVector(forwardVec, 3.5);
-    this.camLookPos.y = this.position.y + 0.6;
+    this.camLookPos.copy(this.position).addScaledVector(forwardVec, 0.55);
+    this.camLookPos.y = this.position.y + 0.10;
 
     // Smooth spring dampening camera lag
     const lerpRate = Math.min(delta * 5.5, 1.0);
@@ -771,29 +1097,29 @@ export class SleighController {
   _resolveHouseCollisions() {
     if (!this.chunkSystem || !this.chunkSystem.getHouseCollidersNear) return;
 
-    // Search for nearby house AABBs within 14 meters of Santa's sleigh
-    const nearbyHouses = this.chunkSystem.getHouseCollidersNear(this.position.x, this.position.z, 14.0);
+    // Search for nearby house AABBs within 10 meters of Santa's sleigh
+    const nearbyHouses = this.chunkSystem.getHouseCollidersNear(this.position.x, this.position.z, 10.0);
     if (!nearbyHouses || nearbyHouses.length === 0) return;
 
     // Sleigh collision volume modeled as 2 overlapping bounding spheres:
-    // 1. Sleigh main chassis at position (x, y + 0.35, z)
-    // 2. Reindeer lead team in front along heading vector (-sin(rotY), 0, -cos(rotY)) * 2.2
+    // 1. Sleigh main chassis at position (x, y + 0.08, z)
+    // 2. Reindeer lead team in front along heading vector (-sin(rotY), 0, -cos(rotY)) * 0.48
     const forwardX = -Math.sin(this.rotationY);
     const forwardZ = -Math.cos(this.rotationY);
 
     const collisionNodes = [
       {
-        pos: new THREE.Vector3(this.position.x, this.position.y + 0.35, this.position.z),
-        radius: 0.95,
+        pos: new THREE.Vector3(this.position.x, this.position.y + 0.08, this.position.z),
+        radius: 0.19,
         isChassis: true
       },
       {
         pos: new THREE.Vector3(
-          this.position.x + forwardX * 2.1,
-          this.position.y + 0.35,
-          this.position.z + forwardZ * 2.1
+          this.position.x + forwardX * 0.48,
+          this.position.y + 0.08,
+          this.position.z + forwardZ * 0.48
         ),
-        radius: 0.85,
+        radius: 0.16,
         isChassis: false
       }
     ];
@@ -877,9 +1203,16 @@ export class SleighController {
 
   getDropOrigin() {
     // Returns world position under the sleigh for gift release
-    const p = new THREE.Vector3(0, -0.4, 0);
+    const p = new THREE.Vector3(0, -0.05, 0);
     this.group.localToWorld(p);
     return p;
+  }
+
+  dispose() {
+    if (this.flightTrail) {
+      this.flightTrail.dispose();
+      this.flightTrail = null;
+    }
   }
 }
 
