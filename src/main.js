@@ -883,6 +883,8 @@ THREE.ShaderChunk.fog_vertex = `
     vFogDepth = - mvPosition.z;
     #ifdef USE_INSTANCING
       vFogWorldPos = (modelMatrix * (instanceMatrix * vec4(transformed, 1.0))).xyz;
+    #elif defined(USE_SPRITE)
+      vFogWorldPos = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
     #else
       vFogWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
     #endif
@@ -975,20 +977,20 @@ THREE.ShaderChunk.fog_fragment = `
 `;
 
 // 1. Sky & Shadow Fill: Lifted blue-violet sky light with deep nocturnal ground bounce for readable terrain facets
-const starlightHemiLight = new THREE.HemisphereLight(0x22365a, 0x08101c, 0.58);
+const starlightHemiLight = new THREE.HemisphereLight(0x22365a, 0x08101c, 0.46);
 scene.add(starlightHemiLight);
 
 // 2. Moonlight Key: Subtle cool moonlit silver-blue beam casting crisp night shadows
-const moonLight = new THREE.DirectionalLight(0x7ea4e8, 0.62);
+const moonLight = new THREE.DirectionalLight(0x7ea4e8, 0.95);
 moonLight.position.set(28, 48, -22);
 moonLight.castShadow = true;
-// On mobile (Realme Narzo / Mali GPU), 1024 shadow map is crisp across the focused 36m bounding box and saves massive depth bandwidth
-const shadowMapDim = IS_MOBILE ? 1024 : 4096;
+// 2048 shadow map saves massive fillrate and depth bandwidth (75% less texels than 4096)
+const shadowMapDim = IS_MOBILE ? 1024 : 2048;
 moonLight.shadow.mapSize.width = shadowMapDim;
 moonLight.shadow.mapSize.height = shadowMapDim;
-moonLight.shadow.camera.near = 10;
-moonLight.shadow.camera.far = 160;
-const d = IS_MOBILE ? 36 : 38;
+moonLight.shadow.camera.near = 12;
+moonLight.shadow.camera.far = 120;
+const d = IS_MOBILE ? 24 : 32;
 moonLight.shadow.camera.left = -d;
 moonLight.shadow.camera.right = d;
 moonLight.shadow.camera.top = d;
@@ -997,6 +999,17 @@ moonLight.shadow.normalBias = 0.045;
 moonLight.shadow.bias = -0.0004;
 moonLight.shadow.radius = 2.0;
 scene.add(moonLight);
+scene.add(moonLight.target);
+
+// --- Runtime shadow rig -----------------------------------------------------
+// The moonlight direction is CONSTANT (fixed offset from its aim point), so the shadow
+// angle never changes while the rig slides across the snow. The aim point is pinned to
+// the GROUND under Santa (not to the airborne sleigh), which lets us keep the shadow
+// frustum tight and therefore keep the texel density high enough for tree/house
+// shadows to actually read on the snow instead of being averaged away.
+const MOON_OFFSET = new THREE.Vector3(24, 42, -18); // constant light offset => constant light direction
+const shadowFocus = new THREE.Vector3(0, 0, 0); // ground-projected anchor of the shadow frustum
+const MOON_DIR = new THREE.Vector3(-24, -42, 18).normalize(); // unit vector pointing from the moon into the scene
 
 // 3. Front Key Fill: Soft warm frontal illumination that brings out the vibrant red timber walls
 const villageFacadeLight = new THREE.DirectionalLight(0xffeedd, 0.35);
@@ -1006,7 +1019,7 @@ scene.add(villageFacadeLight);
 scene.add(villageFacadeLight.target);
 
 // 4. Subtle twilight ambient fill to ensure crevices and recesses preserve clarity without flattening shadows
-const ambientWarm = new THREE.AmbientLight(0x0e1828, 0.22);
+const ambientWarm = new THREE.AmbientLight(0x0e1828, 0.14);
 scene.add(ambientWarm);
 
 // 5. Aurora Sky-to-Ground Key Fill: Soft, breathing emerald-cyan ambient glow coming from northern sky
@@ -1062,53 +1075,17 @@ const snowFragmentShader = `
   void main() {
     // Centered coordinates [-1, 1]
     vec2 uv = (gl_PointCoord - vec2(0.5)) * 2.0;
+    float r2 = dot(uv, uv);
+    if (r2 > 1.0) discard;
 
-    // Apply procedural snowflake rotation
-    vec2 rotUv = vec2(
-      uv.x * vRot.x - uv.y * vRot.y,
-      uv.x * vRot.y + uv.y * vRot.x
-    );
+    // Fast, lightweight soft circular snow flake (no expensive trigonometric dendritic branching)
+    float alpha = clamp(1.0 - r2, 0.0, 1.0);
+    alpha = alpha * alpha; // Smooth natural falloff
 
-    float r = length(uv);
-    if (r > 1.0) discard;
+    // Coloration: Crisp ice-white core
+    vec3 flakeColor = vec3(1.0, 1.0, 1.0);
 
-    float alpha = 0.0;
-
-    if (vFlakeType < 0.35) {
-      // Type 1: Soft Airy Fluffy Snow Clump (Smooth Gaussian with bright crystalline core)
-      float softBody = exp(-r * r * 3.8);
-      float innerPuff = exp(-r * r * 10.0);
-      alpha = softBody * 0.75 + innerPuff * 0.45;
-    } else if (vFlakeType < 0.75) {
-      // Type 2: 6-Fold Symmetric Crystalline Dendrite
-      float theta = atan(rotUv.y, rotUv.x);
-      // Fold into 60-degree sector (pi / 3 = 1.047197)
-      float fold = abs(mod(theta + 0.523598, 1.047197) - 0.523598);
-      vec2 armCoord = vec2(cos(fold), sin(fold)) * r;
-
-      // Main radial arms
-      float arm = smoothstep(0.18, 0.02, armCoord.y) * smoothstep(1.0, 0.12, armCoord.x);
-
-      // Secondary crystal branching barbs along the arms
-      float barbPos = abs(armCoord.x - 0.52);
-      float barb = smoothstep(0.12, 0.0, abs(armCoord.y - barbPos * 0.65)) * smoothstep(0.42, 0.0, barbPos);
-
-      float crystalCore = smoothstep(0.32, 0.02, r);
-      float crystal = max(arm * 0.90 + barb * 0.55, crystalCore);
-      alpha = crystal;
-    } else {
-      // Type 3: Soft Optical Bokeh Orb (Lens aperture circle with delicate rim)
-      float bokehCore = smoothstep(0.95, 0.55, r) * 0.75;
-      float bokehRim  = smoothstep(0.98, 0.80, r) * (1.0 - smoothstep(0.80, 0.60, r)) * 0.45;
-      alpha = bokehCore + bokehRim;
-    }
-
-    // Coloration: Crisp ice-white core with subtle frosty cyan-violet edge tint
-    vec3 iceCore  = vec3(1.0, 1.0, 1.0);
-    vec3 frostRim = vec3(0.88, 0.94, 1.0);
-    vec3 flakeColor = mix(frostRim, iceCore, smoothstep(0.8, 0.2, r));
-
-    float finalAlpha = clamp(alpha * uOpacity * vDepthFade, 0.0, 1.0);
+    float finalAlpha = alpha * uOpacity * vDepthFade;
     if (finalAlpha < 0.005) discard;
 
     gl_FragColor = vec4(flakeColor, finalAlpha);
@@ -1927,6 +1904,7 @@ class InfiniteChunkSystem {
 
     // Template resources extracted from terrain.glb
     this.templateTerrainGroup = null; // Contains terrain planes & cliffs
+    this.templateTerrainMeshes = []; // Array of shared template meshes for zero-copy instantiation
     this.treePrototypes = []; // Array of { geometry, material, name }
     this.bushPrototypes = [];
     this.templateTrees = []; // Local tree transforms from base chunk
@@ -1948,13 +1926,25 @@ class InfiniteChunkSystem {
     this.raycaster = new THREE.Raycaster();
     this.downVec = new THREE.Vector3(0, -1, 0);
 
+    // Reusable raycaster & vectors for zero-allocation wilderness house placement
+    this._houseRaycaster = new THREE.Raycaster();
+    this._downDir = new THREE.Vector3(0, -1, 0);
+    this._rayOrigin = new THREE.Vector3();
+    this._footprintOffsets = [
+      { dx: -0.12, dz: -0.12 },
+      { dx:  0.12, dz: -0.12 },
+      { dx: -0.12, dz:  0.12 },
+      { dx:  0.12, dz:  0.12 }
+    ];
+
     // View-frustum based progressive chunk loading
     this.frustum = new THREE.Frustum();
     this.projScreenMatrix = new THREE.Matrix4();
     this.chunkBox = new THREE.Box3();
-    this.loadQueue = []; // Array of { cx, cz, priority, distSq }
-    this.maxLoadsPerFrame = options.maxLoadsPerFrame || 2; // Stagger loading over frames (up to 2 chunks/tick) to eliminate hitching while loading fast
-    this.visibleThreshold = options.visibleThreshold || (this.chunkSize * 3.5); // Max view distance for chunks
+    this.loadQueue = [];
+    this.maxLoadsPerFrame = 1; // Strict 1 chunk per frame budget guarantees zero stutter on mobile
+    this.visibleThreshold = options.visibleThreshold || (this.chunkSize * 1.5); // Synchronized to 22m fog horizon
+    this._cullVec = new THREE.Vector3();
   }
 
   // Deterministic seedable random (LCG + Wang Hash)
@@ -2146,7 +2136,7 @@ class InfiniteChunkSystem {
       if (!child.isMesh) return;
       const mat = child.material;
       if (!mat) return;
-      const matKey = mat.uuid;
+      const matKey = mat.name || mat.uuid;
       if (!materialMeshBuckets.has(matKey)) {
         materialMeshBuckets.set(matKey, {
           material: mat,
@@ -2182,6 +2172,7 @@ class InfiniteChunkSystem {
       }
     }
 
+    this.templateTerrainMeshes = [...cleanTerrainRoot.children];
     console.log(`[InfiniteChunkSystem] Initialized with ${this.treePrototypes.length} tree types, ${this.bushPrototypes.length} bush types, ${this.templateTrees.length} trees, ${this.templateHouses.length} houses, merged terrain meshes: ${cleanTerrainRoot.children.length}.`);
   }
 
@@ -2339,18 +2330,28 @@ class InfiniteChunkSystem {
     chunkGroup.name = `Chunk_${key}`;
     const worldX = cx * this.chunkSize;
     const worldZ = cz * this.chunkSize;
-    chunkGroup.position.set(worldX, 0, worldZ);
-
     const isCenter = (cx === 0 && cz === 0);
+    chunkGroup.position.set(worldX, 0, worldZ);
     const rotIdx = this.getChunkRotationIndex(cx, cz);
     const angle = rotIdx * (Math.PI / 2);
 
-    // 1. Terrain Mesh (Cloned from seamlessly edge-blended template)
-    const terrainClone = this.templateTerrainGroup.clone(true);
+    // 1. Terrain Mesh (Shares BufferGeometries with zero-copy instantiation to eliminate stutter)
+    const terrainGroup = new THREE.Group();
+    terrainGroup.name = `Terrain_${key}`;
+    const terrainMeshes = (this.templateTerrainMeshes && this.templateTerrainMeshes.length > 0)
+      ? this.templateTerrainMeshes
+      : (this.templateTerrainGroup ? this.templateTerrainGroup.children : []);
+    terrainMeshes.forEach((tMesh) => {
+      const m = new THREE.Mesh(tMesh.geometry, tMesh.material);
+      m.name = tMesh.name;
+      m.castShadow = false;
+      m.receiveShadow = tMesh.receiveShadow;
+      terrainGroup.add(m);
+    });
     if (!isCenter && rotIdx !== 0) {
-      terrainClone.rotation.y = angle;
+      terrainGroup.rotation.y = angle;
     }
-    chunkGroup.add(terrainClone);
+    chunkGroup.add(terrainGroup);
     chunkGroup.updateMatrixWorld(true);
 
     // 2. Houses & Settlements (Placed first so vegetation clearings around houses can be enforced)
@@ -2393,11 +2394,11 @@ class InfiniteChunkSystem {
         });
       }
     } else {
-      // Deterministically place outpost/cabin settlements on wilderness chunks
+      // Deterministically place outpost/cabin settlements on wilderness chunks (merged into 1 draw call)
       const houseCount = Math.floor(4 + this.hashCoord(cx, cz, 819) * 2); // 4 or 5
       const candidates = this.templateHouses.filter(h => h.meshName.startsWith('house'));
-      const houseRaycaster = new THREE.Raycaster();
-      const downDir = new THREE.Vector3(0, -1, 0);
+      const wildernessHouseGeos = [];
+      let wildernessHouseMat = null;
 
       if (candidates.length > 0) {
         for (let hIdx = 0; hIdx < houseCount; hIdx++) {
@@ -2418,9 +2419,9 @@ class InfiniteChunkSystem {
             const worldHx = worldX + candOffset.x;
             const worldHz = worldZ + candOffset.z;
 
-            // Raycast in true WORLD coordinates against terrainClone
-            houseRaycaster.set(new THREE.Vector3(worldHx, 25.0, worldHz), downDir);
-            const hits = houseRaycaster.intersectObject(terrainClone, true);
+            // Raycast in true WORLD coordinates against terrainGroup
+            this._houseRaycaster.set(new THREE.Vector3(worldHx, 25.0, worldHz), this._downDir);
+            const hits = this._houseRaycaster.intersectObject(terrainGroup, true);
             if (hits.length === 0) continue;
 
             const centerHit = hits[0];
@@ -2428,20 +2429,14 @@ class InfiniteChunkSystem {
             if (centerHit.point.y <= 0.36 || (centerHit.face && centerHit.face.normal.y < 0.78)) continue;
 
             // Test 4 footprint corners in world coordinates to ensure ground is reasonably flat
-            const footprintOffsets = [
-              { dx: -0.12, dz: -0.12 },
-              { dx:  0.12, dz: -0.12 },
-              { dx: -0.12, dz:  0.12 },
-              { dx:  0.12, dz:  0.12 }
-            ];
             let minCornerY = centerHit.point.y;
             let maxCornerY = centerHit.point.y;
             let invalidCorner = false;
 
             for (let c = 0; c < 4; c++) {
-              const corner = footprintOffsets[c];
-              houseRaycaster.set(new THREE.Vector3(worldHx + corner.dx, 25.0, worldHz + corner.dz), downDir);
-              const cHits = houseRaycaster.intersectObject(terrainClone, true);
+              const corner = this._footprintOffsets[c];
+              this._houseRaycaster.set(new THREE.Vector3(worldHx + corner.dx, 25.0, worldHz + corner.dz), this._downDir);
+              const cHits = this._houseRaycaster.intersectObject(terrainGroup, true);
               if (cHits.length === 0 || cHits[0].point.y <= 0.36) {
                 invalidCorner = true;
                 break;
@@ -2461,14 +2456,24 @@ class InfiniteChunkSystem {
 
           if (!bestOffset) continue;
 
-          const hMesh = new THREE.Mesh(h.geo, h.mat);
-          hMesh.name = `Outpost_${key}_${h.meshName}_${hIdx}`;
-          hMesh.position.set(bestOffset.x, bestY, bestOffset.z);
-          hMesh.rotation.y = this.hashCoord(cx, cz + hIdx, 111) * Math.PI * 2;
-          hMesh.scale.copy(h.scale);
-          hMesh.castShadow = !IS_MOBILE;
-          hMesh.receiveShadow = true;
-          houseGroup.add(hMesh);
+          const rotY = this.hashCoord(cx, cz + hIdx, 111) * Math.PI * 2;
+          const localM = new THREE.Matrix4().compose(
+            new THREE.Vector3(bestOffset.x, bestY, bestOffset.z),
+            new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rotY, 0)),
+            h.scale
+          );
+
+          // Collect geometry for single merged mesh
+          const transformedGeo = h.geo.clone();
+          transformedGeo.applyMatrix4(localM);
+          wildernessHouseGeos.push(transformedGeo);
+          if (!wildernessHouseMat) wildernessHouseMat = h.mat;
+
+          // Dummy node for delivery system target tracking
+          const dummyNode = new THREE.Object3D();
+          dummyNode.name = `Outpost_${key}_${h.meshName}_${hIdx}`;
+          dummyNode.position.set(bestOffset.x, bestY, bestOffset.z);
+          houseGroup.add(dummyNode);
 
           // Clear trees within 1.8m so no trunk ever clips into or spawns under the house
           houseClearings.push({
@@ -2486,12 +2491,22 @@ class InfiniteChunkSystem {
             box.copy(h.geo.boundingBox);
             const m = new THREE.Matrix4().compose(
               new THREE.Vector3(worldHx, bestY, worldHz),
-              new THREE.Quaternion().setFromEuler(new THREE.Euler(0, hMesh.rotation.y, 0)),
+              new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rotY, 0)),
               h.scale
             );
             box.applyMatrix4(m);
             houseColliders.push(box);
           }
+        }
+
+        // Merge all wilderness houses in this chunk into 1 single draw call (casting crisp shadows)
+        if (wildernessHouseGeos.length > 0 && wildernessHouseMat) {
+          const mergedGeo = BufferGeometryUtils.mergeGeometries(wildernessHouseGeos, false);
+          const mergedMesh = new THREE.Mesh(mergedGeo, wildernessHouseMat);
+          mergedMesh.name = `MergedHouses_${key}`;
+          mergedMesh.castShadow = true; // Wilderness houses cast shadows!
+          mergedMesh.receiveShadow = true;
+          chunkGroup.add(mergedMesh);
         }
       }
     }
@@ -2503,10 +2518,10 @@ class InfiniteChunkSystem {
 
     // Initialize instanced arrays per prototype
     this.treePrototypes.forEach((proto, id) => {
-      treeInstances.push([]);
+      treeInstances.push({ matrices: [], positions: [] });
     });
     this.bushPrototypes.forEach((proto, id) => {
-      bushInstances.push([]);
+      bushInstances.push({ matrices: [], positions: [] });
     });
 
     const dummy = new THREE.Object3D();
@@ -2545,7 +2560,8 @@ class InfiniteChunkSystem {
 
       dummy.updateMatrix();
       if (treeInstances[tData.protoId]) {
-        treeInstances[tData.protoId].push(dummy.matrix.clone());
+        treeInstances[tData.protoId].matrices.push(dummy.matrix.clone());
+        treeInstances[tData.protoId].positions.push(dummy.position.clone());
       }
     });
 
@@ -2575,68 +2591,122 @@ class InfiniteChunkSystem {
 
       dummy.updateMatrix();
       if (bushInstances[bData.protoId]) {
-        bushInstances[bData.protoId].push(dummy.matrix.clone());
+        bushInstances[bData.protoId].matrices.push(dummy.matrix.clone());
+        bushInstances[bData.protoId].positions.push(dummy.position.clone());
       }
     });
 
     // Create InstancedMesh objects for foliage
     const instancedMeshes = [];
 
+    // Helper to setup instance matrix storage & culling metadata
+    const setupInstancedFoliage = (proto, matrices, localPositions, name, castShadow) => {
+      const instMesh = new THREE.InstancedMesh(proto.geometry, proto.material, matrices.length);
+      instMesh.name = name;
+      instMesh.castShadow = castShadow;
+      instMesh.receiveShadow = true;
+      for (let i = 0; i < matrices.length; i++) {
+        instMesh.setMatrixAt(i, matrices[i]);
+      }
+      instMesh.instanceMatrix.needsUpdate = true;
+      // Store raw source arrays for real-time camera frustum & distance culling
+      instMesh.userData.allMatrices = matrices;
+      instMesh.userData.localPositions = localPositions;
+      chunkGroup.add(instMesh);
+      instancedMeshes.push(instMesh);
+    };
+
     if (IS_MOBILE) {
       const allFoliageMatrices = [];
+      const allFoliagePositions = [];
+
       for (let id = 0; id < this.treePrototypes.length; id++) {
-        if (treeInstances[id]) allFoliageMatrices.push(...treeInstances[id]);
+        if (treeInstances[id]) {
+          const count = Math.min(treeInstances[id].matrices.length, 64);
+          for (let i = 0; i < count; i++) {
+            allFoliageMatrices.push(treeInstances[id].matrices[i]);
+            allFoliagePositions.push(treeInstances[id].positions[i]);
+          }
+        }
       }
       for (let id = 0; id < this.bushPrototypes.length; id++) {
-        if (bushInstances[id]) allFoliageMatrices.push(...bushInstances[id]);
+        if (bushInstances[id]) {
+          const count = Math.min(bushInstances[id].matrices.length, 32);
+          for (let i = 0; i < count; i++) {
+            allFoliageMatrices.push(bushInstances[id].matrices[i]);
+            allFoliagePositions.push(bushInstances[id].positions[i]);
+          }
+        }
       }
 
       if (allFoliageMatrices.length > 0 && this.treePrototypes.length > 0) {
         const proto = this.treePrototypes[0];
         const foliageMat = proto.material || (this.bushPrototypes.length > 0 ? this.bushPrototypes[0].material : null);
-        const instMesh = new THREE.InstancedMesh(proto.geometry, foliageMat, allFoliageMatrices.length);
-        instMesh.name = `Instanced_Foliage_Unified_${key}`;
-        instMesh.castShadow = isCenter;
-        instMesh.receiveShadow = true;
-        for (let i = 0; i < allFoliageMatrices.length; i++) {
-          instMesh.setMatrixAt(i, allFoliageMatrices[i]);
-        }
-        instMesh.instanceMatrix.needsUpdate = true;
-        chunkGroup.add(instMesh);
-        instancedMeshes.push(instMesh);
+        setupInstancedFoliage(
+          { geometry: proto.geometry, material: foliageMat },
+          allFoliageMatrices,
+          allFoliagePositions,
+          `Instanced_Foliage_Unified_${key}`,
+          true
+        );
       }
     } else {
-      this.treePrototypes.forEach((proto, id) => {
-        const matrices = treeInstances[id];
-        if (matrices.length > 0) {
-          const instMesh = new THREE.InstancedMesh(proto.geometry, proto.material, matrices.length);
-          instMesh.name = `Instanced_Trees_${proto.name}_${key}`;
-          instMesh.castShadow = isCenter;
-          instMesh.receiveShadow = true;
-          for (let i = 0; i < matrices.length; i++) {
-            instMesh.setMatrixAt(i, matrices[i]);
+      // Group trees into 2 main varieties (Pine & Fir) to collapse 6 draw calls down to 2
+      const treeGroup0 = [];
+      const treePos0 = [];
+      const treeGroup1 = [];
+      const treePos1 = [];
+
+      for (let id = 0; id < this.treePrototypes.length; id++) {
+        const targetList = (id % 2 === 0) ? treeGroup0 : treeGroup1;
+        const targetPos = (id % 2 === 0) ? treePos0 : treePos1;
+        if (treeInstances[id]) {
+          for (let i = 0; i < treeInstances[id].matrices.length; i++) {
+            targetList.push(treeInstances[id].matrices[i]);
+            targetPos.push(treeInstances[id].positions[i]);
           }
-          instMesh.instanceMatrix.needsUpdate = true;
-          chunkGroup.add(instMesh);
-          instancedMeshes.push(instMesh);
+        }
+      }
+
+      [
+        { matrices: treeGroup0, positions: treePos0, gIdx: 0 },
+        { matrices: treeGroup1, positions: treePos1, gIdx: 1 }
+      ].forEach(({ matrices, positions, gIdx }) => {
+        if (matrices.length > 0 && this.treePrototypes[gIdx]) {
+          const proto = this.treePrototypes[gIdx];
+          setupInstancedFoliage(
+            proto,
+            matrices,
+            positions,
+            `Instanced_Trees_Group_${gIdx}_${key}`,
+            true
+          );
         }
       });
 
-      this.bushPrototypes.forEach((proto, id) => {
-        const matrices = bushInstances[id];
-        if (matrices.length > 0) {
-          const instMesh = new THREE.InstancedMesh(proto.geometry, proto.material, matrices.length);
-          instMesh.name = `Instanced_Bushes_${proto.name}_${key}`;
-          instMesh.castShadow = true;
-          instMesh.receiveShadow = true;
-          for (let i = 0; i < matrices.length; i++) {
-            instMesh.setMatrixAt(i, matrices[i]);
+      // Combine all bushes into 1 unified InstancedMesh to collapse 4 draw calls down to 1
+      const allBushMatrices = [];
+      const allBushPositions = [];
+
+      for (let id = 0; id < this.bushPrototypes.length; id++) {
+        if (bushInstances[id]) {
+          for (let i = 0; i < bushInstances[id].matrices.length; i++) {
+            allBushMatrices.push(bushInstances[id].matrices[i]);
+            allBushPositions.push(bushInstances[id].positions[i]);
           }
-          instMesh.instanceMatrix.needsUpdate = true;
-          chunkGroup.add(instMesh);
-          instancedMeshes.push(instMesh);
         }
-      });
+      }
+
+      if (allBushMatrices.length > 0 && this.bushPrototypes.length > 0) {
+        const proto = this.bushPrototypes[0];
+        setupInstancedFoliage(
+          proto,
+          allBushMatrices,
+          allBushPositions,
+          `Instanced_Bushes_Unified_${key}`,
+          false
+        );
+      }
     }
     chunkGroup.add(houseGroup);
 
@@ -2704,15 +2774,21 @@ class InfiniteChunkSystem {
     }
 
     this.chunks.delete(key);
+
+    // Notify delivery system to unload visual markers for this chunk
+    if (window.deliverySystem && window.deliverySystem.unloadChunkTargets) {
+      window.deliverySystem.unloadChunkTargets(key);
+    }
   }
 
-  // Helper to test if chunk bounding box is inside or intersecting the camera frustum
+  // Helper to test if chunk bounding box is inside or intersecting the camera frustum (with generous margin)
   isChunkInView(cx, cz) {
     const half = this.chunkSize * 0.5;
     const wx = cx * this.chunkSize;
     const wz = cz * this.chunkSize;
-    this.chunkBox.min.set(wx - half, -1.0, wz - half);
-    this.chunkBox.max.set(wx + half, 12.0, wz + half);
+    const pad = 6.0; // Margin ensures chunks at screen borders don't vanish or pop
+    this.chunkBox.min.set(wx - half - pad, -4.0, wz - half - pad);
+    this.chunkBox.max.set(wx + half + pad, 20.0, wz + half + pad);
     return this.frustum.intersectsBox(this.chunkBox);
   }
 
@@ -2763,10 +2839,10 @@ class InfiniteChunkSystem {
     // 1. Process progressive loading queue: closest chunks in camera view load first
     if (candidates.length > 0) {
       candidates.sort((a, b) => a.distSq - b.distSq);
-      // On mobile, permit up to 9 active chunks (3x3 grid around player) with forward lookahead into fog
-      const maxActiveChunks = IS_MOBILE ? 9 : 25;
+      // Strict mobile budget: 6 active chunks on mobile, 9 on desktop (covering the 22m fog horizon)
+      const maxActiveChunks = IS_MOBILE ? 6 : 9;
       if (this.chunks.size < maxActiveChunks) {
-        // Stagger loading: load up to maxLoadsPerFrame per tick to maintain 60-120+ FPS without hitching
+        // Stagger loading: load max 1 chunk per tick to maintain 60 FPS without hitching
         const loadBatch = candidates.slice(0, this.maxLoadsPerFrame);
         for (const c of loadBatch) {
           if (this.chunks.size >= maxActiveChunks) break;
@@ -2775,15 +2851,63 @@ class InfiniteChunkSystem {
       }
     }
 
-    // 2. Unload chunks that have moved completely behind the camera or beyond unload radius
-    // (Preserve origin chunk 0,0 for instant backtracking)
+    // 2. Frustum-cull active chunks and unload chunks out of radius
     const keysToRemove = [];
     for (const [key, chunk] of this.chunks.entries()) {
-      if (chunk.cx === 0 && chunk.cz === 0) continue; // Keep main village anchor cached
+      // Smooth vertical emergence into the atmospheric fog
+      // Chunk sits solidly at y = 0
       const dist = Math.max(Math.abs(chunk.cx - centerCx), Math.abs(chunk.cz - centerCz));
       const inView = this.isChunkInView(chunk.cx, chunk.cz);
+      const isPlayerChunk = (chunk.cx === centerCx && chunk.cz === centerCz);
+      const isOriginChunk = (chunk.cx === 0 && chunk.cz === 0);
 
-      // Unload if out of unload radius, or if not in camera view (keep immediate radius 1 neighbors so quick turns don't pop)
+      // Keep immediate 3x3 neighbor chunks around Santa always active to prevent aggressive edge popping
+      const isNeighbor = (Math.abs(chunk.cx - centerCx) <= 1 && Math.abs(chunk.cz - centerCz) <= 1);
+      const cwx = chunk.cx * this.chunkSize;
+      const cwz = chunk.cz * this.chunkSize;
+      const chunkDistToCam = Math.hypot(cwx - cam.position.x, cwz - cam.position.z);
+      const shouldBeVisible = (isNeighbor || (inView && chunkDistToCam <= 65.0));
+      chunk.group.visible = shouldBeVisible;
+
+      // Dynamic Distance Culling for foliage: smoothly cull only distant trees submerged in atmospheric fog
+      if (chunk.group.visible && chunk.instancedMeshes && chunk.instancedMeshes.length > 0) {
+        const cwx = chunk.cx * this.chunkSize;
+        const cwz = chunk.cz * this.chunkSize;
+        // Fog starts around 20m and blocks view by 35-40m; keep all trees within 42m
+        const maxDistSq = 58.0 * 58.0; // Smooth radial distance: no harsh chunk-grid cutoffs! 
+
+        for (let m = 0; m < chunk.instancedMeshes.length; m++) {
+          const im = chunk.instancedMeshes[m];
+          const allMatrices = im.userData.allMatrices;
+          const localPositions = im.userData.localPositions;
+          if (!allMatrices || !localPositions) continue;
+
+          let visibleCount = 0;
+          for (let i = 0; i < allMatrices.length; i++) {
+            const lp = localPositions[i];
+            this._cullVec.set(cwx + lp.x, lp.y, cwz + lp.z);
+
+            // Cull distant trees that are submerged deep in fog or far away
+            const dSq = this._cullVec.distanceToSquared(cam.position);
+            if (dSq > maxDistSq) continue;
+
+            // Compact visible matrices to front of instanced buffer
+            if (visibleCount !== i) {
+              im.setMatrixAt(visibleCount, allMatrices[i]);
+            }
+            visibleCount++;
+          }
+
+          if (im.count !== visibleCount) {
+            im.count = visibleCount;
+            im.instanceMatrix.needsUpdate = true;
+          }
+        }
+      }
+
+      if (isOriginChunk) continue; // Keep main village anchor cached so houses are never permanently deleted
+
+      // Unload if out of radius, or if not in camera view and beyond immediate neighbors
       if (dist > un || (!inView && dist > 1)) {
         keysToRemove.push(key);
       }
@@ -2791,13 +2915,6 @@ class InfiniteChunkSystem {
 
     if (keysToRemove.length > 0) {
       keysToRemove.forEach((key) => this.unloadChunk(key));
-    }
-
-    // Notify lighting system of active houses if scene graph changed
-    if (candidates.length > 0 || keysToRemove.length > 0) {
-      if (window.lightingSystem && window.lightingSystem.scanScene) {
-        window.lightingSystem.scanScene();
-      }
     }
   }
 
@@ -2816,10 +2933,10 @@ class InfiniteChunkSystem {
   }
 }
 
-// Instantiate infinite chunk manager (Desktop & Mobile: 5x5 potential grid with focused forward frustum streaming)
+// Instantiate infinite chunk manager (Desktop & Mobile: 3x3 focused grid = 60m x 60m)
 const chunkSystem = new InfiniteChunkSystem(scene, {
-  loadRadius: 2,
-  unloadRadius: 2
+  loadRadius: 1,
+  unloadRadius: 1
 });
 window.chunkSystem = chunkSystem;
 window.game.chunkSystem = chunkSystem;
@@ -3112,7 +3229,7 @@ gltfLoader.load(
                 vec3 snowFinal = snowCrest + vec3(0.12, 0.16, 0.28) * fresnel * 0.50;
 
                 // Subsurface forward scattering in view of moonlight
-                vec3 moonDir = normalize(vec3(28.0, 48.0, -22.0));
+                vec3 moonDir = normalize(vec3(24.0, 42.0, -18.0));
                 float sssScatter = pow(clamp(dot(viewDir, -moonDir), 0.0, 1.0), 3.0) * (1.0 - sSlope * 0.45);
                 snowFinal += vec3(0.14, 0.18, 0.32) * sssScatter * 0.45;
 
@@ -3154,6 +3271,32 @@ gltfLoader.load(
                 float aMod = (aWave1 * 0.5 + aWave2 * 0.5) * 0.25 + 0.75; // 0.50 to 1.0 breathing factor
                 vec3 auroraGlow = uAuroraColor * (skyFacing * aMod * uAuroraGroundIntensity * sSnowCoverage);
                 auroraGlow *= (texLum * 0.40 + 0.60);
+
+                // 7. Shadow-aware additive glows.
+                // The runtime shadow map only attenuates the DIRECT moonlight term. The aurora and
+                // village glows are additive, so they keep re-lighting the snow inside a shadow and
+                // flatten every tree/house shadow out. Sampling the same shadow map here and
+                // attenuating the glows restores the contrast the moon key is supposed to give.
+                float terrainShadow = 1.0;
+                #if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
+                {
+                  vec4 shadowCoord = vDirectionalShadowCoord[ 0 ];
+                  shadowCoord.xyz /= shadowCoord.w;
+                  shadowCoord.z += directionalLightShadows[ 0 ].shadowBias;
+                  vec2 shadowTexel = 1.0 / directionalLightShadows[ 0 ].shadowMapSize;
+                  // 4-tap cross PCF (4 extra fetches) keeps the shadow edge soft without paying
+                  // for the full 9-tap PCF_SOFT kernel twice on every terrain pixel
+                  float lit = step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy ) ) );
+                  lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy + vec2( shadowTexel.x, 0.0 ) ) ) );
+                  lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy - vec2( shadowTexel.x, 0.0 ) ) ) );
+                  lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy + vec2( 0.0, shadowTexel.y ) ) ) );
+                  lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy - vec2( 0.0, shadowTexel.y ) ) ) );
+                  terrainShadow = lit * 0.2;
+                }
+                #endif
+                float glowShadow = mix( 1.0, terrainShadow, 0.85 );
+                auroraGlow *= glowShadow;
+                warmGlow *= mix( 1.0, glowShadow, 0.45 );
 
                 diffuseColor.rgb = blendedDiffuse + warmGlow + auroraGlow;
                 `
@@ -3231,8 +3374,10 @@ gltfLoader.load(
     // Initialize automatic adaptive VillageLightingSystem once scene is loaded
     lightingSystem.scanScene();
 
-    // Adjust shadow frustum to encompass the active play area (mobile tightens to 36m to maximize texel density on 2K map)
-    const shadowExtent = IS_MOBILE ? 36 : 65;
+    // Shadow frustum tightened around the ground under Santa for maximum texel density.
+    // Desktop: 88m across a 2048 map => ~4.3cm per texel (tree/house shadows stay crisp).
+    // Mobile: 52m across a 1024 map => ~5.1cm per texel.
+    const shadowExtent = IS_MOBILE ? 26 : 44;
     moonLight.shadow.camera.left = -shadowExtent;
     moonLight.shadow.camera.right = shadowExtent;
     moonLight.shadow.camera.top = shadowExtent;
@@ -3352,11 +3497,28 @@ function animate(currentTime) {
   }
   if (starlightHemiLight) {
     const hemiBreath = Math.sin(elapsedTime * 0.22) * 0.04;
-    starlightHemiLight.intensity = (0.72 + hemiBreath) * (0.65 + 0.35 * weatherDim);
+    starlightHemiLight.intensity = (0.56 + hemiBreath) * (0.65 + 0.35 * weatherDim);
   }
   if (moonLight) {
+    if (sleighController) {
+      const sp = sleighController.position;
+      // Ground-projected focus: the tight shadow frustum rides along the snow the player can
+      // actually see (the sleigh flies far above it), while the light offset stays constant
+      // so the moonlight direction - and therefore the shadow angle - never changes.
+      const focusLerp = 1.0 - Math.exp(-delta * 4.0);
+      shadowFocus.x += (sp.x - shadowFocus.x) * focusLerp;
+      shadowFocus.z += (sp.z - shadowFocus.z) * focusLerp;
+      shadowFocus.y = 0;
+      moonLight.position.set(
+        shadowFocus.x + MOON_OFFSET.x,
+        shadowFocus.y + MOON_OFFSET.y,
+        shadowFocus.z + MOON_OFFSET.z
+      );
+      moonLight.target.position.copy(shadowFocus);
+      moonLight.target.updateMatrixWorld();
+    }
     // Softly diffuse moonlight during blizzards
-    moonLight.intensity = 0.70 * (0.60 + 0.40 * weatherDim);
+    moonLight.intensity = 0.95 * (0.60 + 0.40 * weatherDim);
   }
 
   // Physical snowfall update with dynamic wind gusts and blizzard turbulence

@@ -21,12 +21,12 @@ export class SleighController {
     this.rotationY = 0.0; // Heading north (-Z) toward village center
     this.pitch = 0.0;
     this.bank = 0.0;
-    this.speed = 3.0;
+    this.speed = 1.5;
 
     // Movement & Non-Linear Aerodynamics Parameters
-    this.baseCruiseSpeed = 3.0; // Gentle forward cruising speed calibrated for miniature rig
-    this.maxSpeed = 5.2;        // Maximum speed during steep dives or boost
-    this.minSpeed = 1.6;        // Minimum speed during steep climbs or tight turns
+    this.baseCruiseSpeed = 1.5; // Gentle forward cruising speed calibrated for miniature rig
+    this.maxSpeed = 2.6;        // Maximum speed during steep dives or boost
+    this.minSpeed = 0.8;        // Minimum speed during steep climbs or tight turns
     this.turnSpeed = 1.9;
     this.climbSpeed = 3.5;
     this.bankMax = 0.42;
@@ -56,8 +56,8 @@ export class SleighController {
     this.verticalInput = 0.0;
 
     // Configurable flight simulation dynamics
-    this.climbRate = 3.5;
-    this.descendRate = 3.2;
+    this.climbRate = 1.8;
+    this.descendRate = 1.6;
     this.verticalSpeed = 0.0;
     this.verticalAccel = 8.0;
     this.verticalDecel = 6.0;
@@ -321,10 +321,13 @@ export class SleighController {
     });
     if (!headBone) return;
 
+    // Only front lead reindeer get fairy lights for clean visual clarity
+    const deerLeadPair = ['Reindeer_Lead_L', 'Reindeer_Lead_R'];
+    if (!deerLeadPair.includes(deerObject.name)) return;
+
     const fairyLightsGroup = new THREE.Group();
     fairyLightsGroup.name = 'AntlerFairyLights';
 
-    // Festive jewel tones: Warm Amber, Emerald Green, Ruby Red, Frosted Cyan, Amethyst Violet, Golden Candlelight
     const colors = [
       0xffaa22, // Warm Amber
       0x27ae60, // Emerald Green
@@ -334,89 +337,83 @@ export class SleighController {
       0xf1c40f  // Golden Candlelight
     ];
 
-    // High quality smooth teardrop/candle mini bulb geometry with brass socket
-    const bulbGeo = new THREE.SphereGeometry(0.0028, 16, 12);
-    bulbGeo.scale(1.0, 1.4, 1.0); // Natural classic Christmas bulb elongation
-    const socketGeo = new THREE.CylinderGeometry(0.0015, 0.0017, 0.0022, 8);
-    const socketMat = new THREE.MeshStandardMaterial({
-      color: 0x273024, // Vintage green braided socket collar
-      roughness: 0.6,
-      metalness: 0.3
-    });
-
-    // Dark green twisted garland wire connecting the bulbs along the antlers (opaque to eliminate alpha depth-box artifacts)
-    const wireMat = new THREE.LineBasicMaterial({
-      color: 0x1b3820,
-      transparent: false,
-      depthWrite: true
-    });
-
-    // Antler prong coordinate paths in head bone local space (smooth contouring along the main beam and tines)
     const leftBranch = [
-      { x: -0.012, y: -0.038, z: -0.012, colorIdx: 0, phase: 0.0 },
-      { x: -0.022, y: -0.048, z: -0.008, colorIdx: 1, phase: 1.2 },
-      { x: -0.034, y: -0.058, z: -0.002, colorIdx: 2, phase: 2.4 },
-      { x: -0.046, y: -0.068, z:  0.006, colorIdx: 3, phase: 3.6 },
-      { x: -0.058, y: -0.076, z:  0.012, colorIdx: 4, phase: 4.8 },
-      { x: -0.068, y: -0.062, z: -0.014, colorIdx: 5, phase: 0.8 },
-      { x: -0.038, y: -0.082, z:  0.020, colorIdx: 0, phase: 1.6 }
+      { x: -0.012, y: -0.038, z: -0.012, colorIdx: 0 },
+      { x: -0.022, y: -0.048, z: -0.008, colorIdx: 1 },
+      { x: -0.034, y: -0.058, z: -0.002, colorIdx: 2 },
+      { x: -0.046, y: -0.068, z:  0.006, colorIdx: 3 },
+      { x: -0.058, y: -0.076, z:  0.012, colorIdx: 4 },
+      { x: -0.068, y: -0.062, z: -0.014, colorIdx: 5 },
+      { x: -0.038, y: -0.082, z:  0.020, colorIdx: 0 }
     ];
 
     const rightBranch = [
-      { x:  0.012, y: -0.038, z: -0.012, colorIdx: 2, phase: 0.6 },
-      { x:  0.022, y: -0.048, z: -0.008, colorIdx: 0, phase: 1.8 },
-      { x:  0.034, y: -0.058, z: -0.002, colorIdx: 4, phase: 3.0 },
-      { x:  0.046, y: -0.068, z:  0.006, colorIdx: 1, phase: 4.2 },
-      { x:  0.058, y: -0.076, z:  0.012, colorIdx: 3, phase: 5.4 },
-      { x:  0.068, y: -0.062, z: -0.014, colorIdx: 2, phase: 1.0 },
-      { x:  0.038, y: -0.082, z:  0.020, colorIdx: 5, phase: 2.2 }
+      { x:  0.012, y: -0.038, z: -0.012, colorIdx: 2 },
+      { x:  0.022, y: -0.048, z: -0.008, colorIdx: 0 },
+      { x:  0.034, y: -0.058, z: -0.002, colorIdx: 4 },
+      { x:  0.046, y: -0.068, z:  0.006, colorIdx: 1 },
+      { x:  0.058, y: -0.076, z:  0.012, colorIdx: 3 },
+      { x:  0.068, y: -0.062, z: -0.014, colorIdx: 2 },
+      { x:  0.038, y: -0.082, z:  0.020, colorIdx: 5 }
     ];
 
-    [leftBranch, rightBranch].forEach((branch) => {
-      // Create connecting string wire between bulbs
-      const wirePoints = branch.map(pt => new THREE.Vector3(pt.x, pt.y, pt.z));
-      const wireCurve = new THREE.CatmullRomCurve3(wirePoints);
-      const wireGeo = new THREE.BufferGeometry().setFromPoints(wireCurve.getPoints(24));
-      const wireLine = new THREE.Line(wireGeo, wireMat);
-      fairyLightsGroup.add(wireLine);
+    const allPts = [...leftBranch, ...rightBranch];
+    const totalBulbs = allPts.length;
 
-      // Create each individual candle mini bulb with metal socket
-      branch.forEach((pt) => {
-        const col = colors[pt.colorIdx];
-        const mat = new THREE.MeshStandardMaterial({
-          color: col,
-          emissive: new THREE.Color(col),
-          emissiveIntensity: 1.6,
-          roughness: 0.15,
-          metalness: 0.05
-        });
+    // Single InstancedMesh for all bulbs with instance colors: collapses 28 draws into 1 draw call!
+    const bulbGeo = new THREE.SphereGeometry(0.0028, 8, 6);
+    bulbGeo.scale(1.0, 1.3, 1.0);
+    const bulbMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      fog: false
+    });
+    const instBulbs = new THREE.InstancedMesh(bulbGeo, bulbMat, totalBulbs);
+    instBulbs.castShadow = false;
+    instBulbs.receiveShadow = false;
 
-        const bulbContainer = new THREE.Group();
-        bulbContainer.position.set(pt.x, pt.y, pt.z);
+    // Single InstancedMesh for all brass sockets: collapses 28 draws into 1 draw call!
+    const socketGeo = new THREE.CylinderGeometry(0.0014, 0.0016, 0.0020, 6);
+    const socketMat = new THREE.MeshBasicMaterial({ color: 0x273024 });
+    const instSockets = new THREE.InstancedMesh(socketGeo, socketMat, totalBulbs);
+    instSockets.castShadow = false;
+    instSockets.receiveShadow = false;
 
-        const socket = new THREE.Mesh(socketGeo, socketMat);
-        socket.position.y = -0.002;
-        bulbContainer.add(socket);
+    const dummy = new THREE.Object3D();
+    const colHelper = new THREE.Color();
 
-        const bulb = new THREE.Mesh(bulbGeo, mat);
-        bulbContainer.add(bulb);
+    allPts.forEach((pt, i) => {
+      // Position bulb
+      dummy.position.set(pt.x, pt.y, pt.z);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      instBulbs.setMatrixAt(i, dummy.matrix);
+      colHelper.setHex(colors[pt.colorIdx]);
+      instBulbs.setColorAt(i, colHelper);
 
-        fairyLightsGroup.add(bulbContainer);
-
-        this.fairyLights.push({
-          material: mat,
-          baseIntensity: 1.6,
-          freq: 1.8 + (pt.colorIdx % 3) * 1.2,
-          phase: pt.phase + Math.random() * 0.4
-        });
-      });
+      // Position socket
+      dummy.position.set(pt.x, pt.y - 0.002, pt.z);
+      dummy.updateMatrix();
+      instSockets.setMatrixAt(i, dummy.matrix);
     });
 
-    // Front lead reindeer only get the festive antler lights for clean, elegant clarity
-    const deerLeadPair = ['Reindeer_Lead_L', 'Reindeer_Lead_R'];
-    if (deerLeadPair.includes(deerObject.name)) {
-      headBone.add(fairyLightsGroup);
-    }
+    instBulbs.instanceMatrix.needsUpdate = true;
+    if (instBulbs.instanceColor) instBulbs.instanceColor.needsUpdate = true;
+    instSockets.instanceMatrix.needsUpdate = true;
+
+    fairyLightsGroup.add(instSockets);
+    fairyLightsGroup.add(instBulbs);
+
+    // Connecting wires
+    const wireMat = new THREE.LineBasicMaterial({ color: 0x1b3820 });
+    [leftBranch, rightBranch].forEach((branch) => {
+      const wirePoints = branch.map(pt => new THREE.Vector3(pt.x, pt.y, pt.z));
+      const wireCurve = new THREE.CatmullRomCurve3(wirePoints);
+      const wireGeo = new THREE.BufferGeometry().setFromPoints(wireCurve.getPoints(12));
+      const wireLine = new THREE.Line(wireGeo, wireMat);
+      fairyLightsGroup.add(wireLine);
+    });
+
+    headBone.add(fairyLightsGroup);
   }
 
   /**
@@ -931,11 +928,11 @@ export class SleighController {
     if (normVertRate < -0.05) {
       // Non-linear quadratic acceleration during dives (swooping momentum)
       const diveFactor = -normVertRate;
-      targetSpeed += (diveFactor * diveFactor * 1.8 + diveFactor * 0.6);
+      targetSpeed += (diveFactor * diveFactor * 0.9 + diveFactor * 0.3);
     } else if (normVertRate > 0.05) {
       // Natural aerodynamic drag & gravity work during steep climbs
       const climbFactor = Math.min(normVertRate, 1.0);
-      targetSpeed -= (climbFactor * 0.95);
+      targetSpeed -= (climbFactor * 0.48);
     }
 
     // Induced Drag during Banked Turns (non-linear ease into turns):
@@ -946,7 +943,7 @@ export class SleighController {
 
     // Player Sprint / Boost (Shift or KeyF)
     if (this.inputs.boost) {
-      targetSpeed += 1.8;
+      targetSpeed += 0.9;
     }
 
     // Clamp target within dynamic flight envelope [minSpeed..maxSpeed]
@@ -957,7 +954,9 @@ export class SleighController {
     this.speed += (targetSpeed - this.speed) * (1.0 - Math.exp(-speedResponseRate * delta));
 
     // 4. Free 3D Displacement along X and Z
-    this.position.addScaledVector(heading, this.speed * delta);
+    if (!this.isPaused) {
+      this.position.addScaledVector(heading, this.speed * delta);
+    }
 
     // 5. House & Structure Collision Avoidance
     // Checks nearby building bounding boxes with safety margins and pushes sleigh smoothly outward
@@ -1064,6 +1063,15 @@ export class SleighController {
   }
 
   _updateFollowCamera(delta) {
+    if (this.cameraOverride) {
+      this.camera.position.copy(this.cameraOverride.pos);
+      this.camera.lookAt(this.cameraOverride.lookAt);
+      if (this.controls) {
+        this.controls.target.copy(this.cameraOverride.lookAt);
+      }
+      return;
+    }
+
     // Position camera smoothly behind and slightly above the sleigh
     const backVec = new THREE.Vector3(
       Math.sin(this.rotationY),

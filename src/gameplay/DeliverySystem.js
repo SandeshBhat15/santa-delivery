@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { soundManager } from './SoundManager.js';
 
 export class DeliverySystem {
@@ -34,10 +35,10 @@ export class DeliverySystem {
     this.closestTarget = null;
     this.closestDistance = Infinity;
 
-    // Delivery thresholds
-    this.deliveryRadius = 10.0; // Horizontal proximity to house center for valid drop
-    this.minDropHeight = 0.4;   // Minimum height above roof target for natural drop
-    this.maxDropHeight = 6.5;   // Maximum height above roof target for accurate drop (tuned to rooftop flight corridor)
+    // Delivery thresholds tuned to miniature house proportions (~0.28m wide) and flight corridor
+    this.deliveryRadius = 1.8; // Horizontal proximity to house center for valid drop
+    this.minDropHeight = 0.04; // Minimum height above roof target for natural drop
+    this.maxDropHeight = 0.85; // Maximum height above roof target for accurate drop (calibrated to low flight level)
 
     // UI elements
     this._createHUD();
@@ -52,30 +53,245 @@ export class DeliverySystem {
       { box: 0x8e44ad, ribbon: 0x2ecc71 }  // Purple & Green
     ];
 
-    // Marker beacon visuals (floating glowing gift + vertical beam)
+    // Marker beacon visuals (textures, geometries & materials matching reference image)
     this._initMarkerTemplate();
   }
 
   _initMarkerTemplate() {
-    this.markerMat = new THREE.MeshBasicMaterial({
-      color: 0xffe066,
-      transparent: true,
-      opacity: 0.85
-    });
+    // 1. Procedural High-DPI Canvas Textures matching the reference artwork
+    this._beamTexture = this._createLightBeamTexture();
+    this._starGlintTexture = this._createStarGlintTexture();
+    this._haloTexture = this._createHaloTexture();
+    this._checkmarkTexture = this._createCheckmarkTexture();
+    this._snowflakeIconTexture = this._createSnowflakeIconTexture();
 
-    this.beamMat = new THREE.MeshBasicMaterial({
-      color: 0xffd152,
-      transparent: true,
-      opacity: 0.35,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false
-    });
+    // 2. 3D Volumetric Geometries calibrated to the miniature house models (~0.28m wide)
+    // Slender vertical atmospheric light beam pillar: 14.0m high, 0.075m base radius
+    this._beamGeo = new THREE.CylinderGeometry(0.045, 0.075, 14.0, 24, 1, true);
+    this._beamGeo.translate(0, 7.0, 0);
 
     this.deliveredMat = new THREE.MeshBasicMaterial({
       color: 0x2ecc71,
       transparent: true,
-      opacity: 0.75
+      opacity: 0.75,
+      fog: false
     });
+  }
+
+  // Generates a crisp, luminous circular neon badge enclosing a 6-arm crystal snowflake with rich gold tones
+  _createSnowflakeIconTexture() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d');
+    const cx = 128, cy = 128;
+
+    // Outer soft atmospheric glow for the circular badge
+    const glowGrad = ctx.createRadialGradient(cx, cy, 70, cx, cy, 126);
+    glowGrad.addColorStop(0, 'rgba(255, 179, 0, 0.35)');
+    glowGrad.addColorStop(0.6, 'rgba(255, 140, 0, 0.15)');
+    glowGrad.addColorStop(1, 'rgba(255, 140, 0, 0.0)');
+    ctx.fillStyle = glowGrad;
+    ctx.fillRect(0, 0, 256, 256);
+
+    // Subtle dark-amber inner disc backing for high contrast against snow
+    const backingGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 96);
+    backingGrad.addColorStop(0, 'rgba(255, 200, 50, 0.18)');
+    backingGrad.addColorStop(0.75, 'rgba(255, 160, 0, 0.10)');
+    backingGrad.addColorStop(1, 'rgba(255, 140, 0, 0.0)');
+    ctx.fillStyle = backingGrad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 96, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Crisp neon outer circle ring
+    ctx.beginPath();
+    ctx.arc(cx, cy, 96, 0, Math.PI * 2);
+    ctx.lineWidth = 9;
+    ctx.strokeStyle = '#ffca28';
+    ctx.shadowColor = '#ff8f00';
+    ctx.shadowBlur = 12;
+    ctx.stroke();
+
+    // Inner bright gold highlight stroke
+    ctx.lineWidth = 3.5;
+    ctx.strokeStyle = '#fff8e1';
+    ctx.shadowBlur = 6;
+    ctx.stroke();
+
+    // Central 6-pointed crystal snowflake
+    ctx.shadowColor = '#ff8f00';
+    ctx.shadowBlur = 10;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    const drawArm = (angle) => {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(angle);
+
+      // Clean bold arm stem without busy micro-branching
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(0, -74);
+      ctx.lineWidth = 6.5;
+      ctx.strokeStyle = '#fff9c4';
+      ctx.stroke();
+
+      // Clean diamond star tip
+      ctx.beginPath();
+      ctx.moveTo(0, -78);
+      ctx.lineTo(10, -66);
+      ctx.lineTo(0, -54);
+      ctx.lineTo(-10, -66);
+      ctx.closePath();
+      ctx.fillStyle = '#ffca28';
+      ctx.fill();
+
+      ctx.restore();
+    };
+
+    for (let i = 0; i < 6; i++) {
+      drawArm((i * Math.PI) / 3);
+    }
+
+    // Central sparkling diamond core
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - 13);
+    ctx.lineTo(cx + 13, cy);
+    ctx.lineTo(cx, cy + 13);
+    ctx.lineTo(cx - 13, cy);
+    ctx.closePath();
+    ctx.fillStyle = '#ffffff';
+    ctx.shadowBlur = 14;
+    ctx.shadowColor = '#ffb300';
+    ctx.fill();
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  // Slender vertical atmospheric light beam with subtle god-ray streaks
+  _createLightBeamTexture() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 512;
+    const ctx = canvas.getContext('2d');
+
+    const grad = ctx.createLinearGradient(0, 512, 0, 0);
+    grad.addColorStop(0.0, 'rgba(255, 209, 82, 0.0)');
+    grad.addColorStop(0.04, 'rgba(255, 220, 110, 0.55)');
+    grad.addColorStop(0.12, 'rgba(255, 209, 82, 0.65)');
+    grad.addColorStop(0.35, 'rgba(255, 195, 60, 0.35)');
+    grad.addColorStop(0.70, 'rgba(255, 180, 40, 0.18)');
+    grad.addColorStop(1.0, 'rgba(255, 170, 30, 0.0)');
+
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 128, 512);
+
+    ctx.globalCompositeOperation = 'overlay';
+    for (let x = 0; x < 128; x += 6) {
+      const rayAlpha = 0.15 + Math.sin(x * 0.4) * 0.12;
+      ctx.fillStyle = `rgba(255, 255, 240, ${rayAlpha})`;
+      ctx.fillRect(x, 0, 3, 512);
+    }
+
+    return new THREE.CanvasTexture(canvas);
+  }
+
+  // 4-point diamond star glint for magical sparkle motes
+  _createStarGlintTexture() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    const cx = 32, cy = 32;
+
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 28);
+    grad.addColorStop(0, 'rgba(255, 255, 255, 1.0)');
+    grad.addColorStop(0.2, 'rgba(255, 225, 120, 0.85)');
+    grad.addColorStop(0.5, 'rgba(255, 185, 40, 0.3)');
+    grad.addColorStop(1, 'rgba(255, 185, 40, 0.0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 64, 64);
+
+    ctx.fillStyle = '#ffffff';
+    // Vertical diamond spike
+    ctx.beginPath();
+    ctx.moveTo(cx, 2);
+    ctx.lineTo(cx + 3, cy);
+    ctx.lineTo(cx, 62);
+    ctx.lineTo(cx - 3, cy);
+    ctx.closePath();
+    ctx.fill();
+
+    // Horizontal diamond spike
+    ctx.beginPath();
+    ctx.moveTo(2, cy);
+    ctx.lineTo(cx, cy + 3);
+    ctx.lineTo(62, cy);
+    ctx.lineTo(cx, cy - 3);
+    ctx.closePath();
+    ctx.fill();
+
+    return new THREE.CanvasTexture(canvas);
+  }
+
+  // Celestial halo glow behind the floating icon
+  _createHaloTexture() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    const grad = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    grad.addColorStop(0, 'rgba(255, 255, 235, 1.0)');
+    grad.addColorStop(0.35, 'rgba(255, 214, 90, 0.65)');
+    grad.addColorStop(0.7, 'rgba(255, 185, 0, 0.2)');
+    grad.addColorStop(1, 'rgba(255, 185, 0, 0.0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 64, 64);
+    return new THREE.CanvasTexture(canvas);
+  }
+
+  // Green circular checkmark badge displayed when player is in drop range (Panel 4)
+  _createCheckmarkTexture() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    const cx = 64, cy = 64;
+
+    const glowGrad = ctx.createRadialGradient(cx, cy, 40, cx, cy, 64);
+    glowGrad.addColorStop(0, 'rgba(46, 204, 113, 0.6)');
+    glowGrad.addColorStop(1, 'rgba(46, 204, 113, 0.0)');
+    ctx.fillStyle = glowGrad;
+    ctx.fillRect(0, 0, 128, 128);
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, 48, 0, Math.PI * 2);
+    ctx.fillStyle = '#2ecc71';
+    ctx.shadowColor = '#27ae60';
+    ctx.shadowBlur = 10;
+    ctx.fill();
+
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = '#ffffff';
+    ctx.shadowColor = '#ffffff';
+    ctx.shadowBlur = 8;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(38, 64);
+    ctx.lineTo(54, 82);
+    ctx.lineTo(90, 44);
+    ctx.lineWidth = 11;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+
+    return new THREE.CanvasTexture(canvas);
   }
 
   _createHUD() {
@@ -290,124 +506,243 @@ export class DeliverySystem {
     }, 2400);
   }
 
-  // Deterministic target selection for a chunk
+  // Deterministic target selection for a chunk (3 to 4 houses per chunk)
   syncChunkTargets(chunkKey, cx, cz) {
-    if (!this.chunkSystem || !this.chunkSystem.templateHouses) return;
+    if (!this.chunkSystem) return;
 
     const isCenter = (cx === 0 && cz === 0);
-    const chunkSize = this.chunkSystem.chunkSize;
+    const chunkSize = this.chunkSystem.chunkSize || 20.0;
     const worldChunkOrigin = new THREE.Vector3(cx * chunkSize, 0, cz * chunkSize);
 
     // Retrieve eligible house instances in this chunk
     let candidatePositions = [];
 
-    if (isCenter) {
-      // Pick 5 distinct houses evenly distributed around the central village
-      const templateHouses = this.chunkSystem.templateHouses;
-      // Filter out houses with suitable roof heights
-      const sorted = [...templateHouses].sort((a, b) => {
-        return (a.pos.x * 3.1 + a.pos.z * 7.3) - (b.pos.x * 3.1 + b.pos.z * 7.3);
-      });
+    if (isCenter && this.chunkSystem.templateHouses) {
+      // Pick 4 signature houses across the 4 flight quadrants with exact rooftop surface contact positions right beside the chimney
+      const targetSpecs = [
+        { name: 'house4',    exactRoof: new THREE.Vector3(-1.140, 0.735, -5.080) }, // 1. Lakeside Chalet (North quadrant signature)
+        { name: 'houseP_11', exactRoof: new THREE.Vector3(-2.880, 0.510, -2.420) }, // 2. South Street Chalet (South quadrant signature)
+        { name: 'houseP_70', exactRoof: new THREE.Vector3(5.500, 0.768, -2.150) },  // 3. East Ridge Chalet (East quadrant signature)
+        { name: 'houseP_23', exactRoof: new THREE.Vector3(-6.920, 0.490, -6.560) }  // 4. West Meadow Chalet (West quadrant signature)
+      ];
 
-      // Deterministically pick exactly 5 houses using pseudo-random stride
-      const step = Math.floor(sorted.length / 5);
-      for (let i = 0; i < 5; i++) {
-        const h = sorted[(i * step + 3) % sorted.length];
-        const worldPos = new THREE.Vector3().copy(h.pos);
-        // Roof drop target point (top of chimney / roof peak)
-        worldPos.y += 1.8;
+      targetSpecs.forEach((spec, i) => {
         candidatePositions.push({
           houseId: `center_village_house_${i}`,
-          worldPos: worldPos
+          worldPos: spec.exactRoof.clone()
         });
-      }
+      });
     } else {
-      // Wilderness chunk settlement
+      // Wilderness chunk settlement: pick 3 or 4 houses deterministically
       const chunkData = this.chunkSystem.chunks.get(chunkKey);
       if (chunkData && chunkData.houseGroup && chunkData.houseGroup.children.length > 0) {
-        chunkData.houseGroup.children.forEach((mesh, idx) => {
+        const children = chunkData.houseGroup.children;
+        // Deterministic target count: 3 or 4 houses based on chunk coordinates
+        const targetCount = Math.min(children.length, (Math.abs(cx * 7 + cz * 13) % 2 === 0 ? 4 : 3));
+        for (let idx = 0; idx < targetCount; idx++) {
+          const mesh = children[idx];
           const worldPos = new THREE.Vector3(
-            worldChunkOrigin.x + mesh.position.x,
-            mesh.position.y + 1.8,
-            worldChunkOrigin.z + mesh.position.z
+            worldChunkOrigin.x + mesh.position.x + 0.025,
+            mesh.position.y + 0.334,
+            worldChunkOrigin.z + mesh.position.z + 0.003
           );
           candidatePositions.push({
             houseId: `wilderness_${chunkKey}_house_${idx}`,
             worldPos: worldPos
           });
-        });
+        }
       }
     }
 
-    // Register or restore tracked houses
+    // Register or restore tracked houses and spawn their stylized drop markers
     candidatePositions.forEach((cand) => {
-      if (!this.trackedHouses.has(cand.houseId)) {
-        this.trackedHouses.set(cand.houseId, {
+      let houseData = this.trackedHouses.get(cand.houseId);
+      if (!houseData) {
+        houseData = {
           houseId: cand.houseId,
           chunkKey: chunkKey,
-          worldPos: cand.worldPos,
+          worldPos: cand.worldPos.clone(),
           delivered: false,
           marker: null
-        });
+        };
+        this.trackedHouses.set(cand.houseId, houseData);
+      } else {
+        houseData.worldPos.copy(cand.worldPos);
+      }
+
+      // If not delivered and doesn't currently have an active visual marker in the scene, create one
+      if (!houseData.delivered && !houseData.marker) {
+        const marker = this._createTargetMarker(houseData);
+        houseData.marker = marker;
+        this.markersGroup.add(marker);
       }
     });
 
     this._updateVisualMarkers();
   }
 
-  _updateVisualMarkers() {
-    // Drop markers removed as requested for an immersive, clean environment.
-    // Clean up any remaining markers from the scene
-    if (this.markersGroup && this.markersGroup.children.length > 0) {
-      this.markersGroup.clear();
-    }
+  // Clean up visual markers when a chunk unloads while preserving delivery progress
+  unloadChunkTargets(chunkKey) {
+    this.trackedHouses.forEach((houseData) => {
+      if (houseData.chunkKey === chunkKey && houseData.marker) {
+        this.markersGroup.remove(houseData.marker);
+        houseData.marker = null;
+      }
+    });
   }
 
-  _createTargetMarker(worldPos) {
+  _updateVisualMarkers() {
+    // Only maintain visual markers for current active chunk targets and closest target house
+    this.trackedHouses.forEach((houseData) => {
+      const isChunkActive = this.chunkSystem.chunks.has(houseData.chunkKey);
+      const isRelevant = isChunkActive && (
+        houseData.chunkKey === this.currentChunkKey ||
+        (this.closestTarget && this.closestTarget.houseId === houseData.houseId)
+      );
+
+      if (isRelevant && !houseData.delivered && !houseData.marker) {
+        const marker = this._createTargetMarker(houseData);
+        houseData.marker = marker;
+        this.markersGroup.add(marker);
+      } else if ((!isRelevant || houseData.delivered) && houseData.marker && !houseData.marker.userData?.isFading) {
+        this.markersGroup.remove(houseData.marker);
+        houseData.marker = null;
+      }
+    });
+  }
+
+  _createTargetMarker(houseData) {
+    const worldPos = houseData.worldPos;
     const marker = new THREE.Group();
     marker.position.copy(worldPos);
+    marker.name = `Marker_${houseData.houseId}`;
 
-    // 1. Floating glowing gift box
-    const boxMat = new THREE.MeshBasicMaterial({ color: 0xffd700 });
-    const box = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.45, 0.45), boxMat);
-    box.position.y = 1.0;
-    marker.add(box);
-
-    const ribbon = new THREE.Mesh(
-      new THREE.BoxGeometry(0.48, 0.48, 0.12),
-      new THREE.MeshBasicMaterial({ color: 0xe74c3c })
-    );
-    ribbon.position.y = 1.0;
-    marker.add(ribbon);
-
-    // 2. Soft atmospheric beacon pillar (tapered cone with soft additive blend)
-    const beamGeo = new THREE.ConeGeometry(0.45, 2.8, 12, 1, true);
-    beamGeo.translate(0, 1.4, 0); // Ground to top
+    // 1. Tall vertical atmospheric light beam reaching high into the night sky (Panel 1, 2, 3)
     const beamMat = new THREE.MeshBasicMaterial({
-      color: 0xffb300,
+      map: this._beamTexture,
+      color: 0xffd152,
       transparent: true,
-      opacity: 0.18,
+      opacity: 0.28,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
-      side: THREE.DoubleSide
-    });
-    const beam = new THREE.Mesh(beamGeo, beamMat);
-    marker.add(beam);
-
-    // 3. Pulsing targeting circle on the roof
-    const ringGeo = new THREE.RingGeometry(0.45, 0.75, 16);
-    ringGeo.rotateX(-Math.PI / 2);
-    const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({
-      color: 0xffd700,
       side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.5,
-      depthWrite: false
-    }));
-    ring.position.y = 0.05;
-    marker.add(ring);
+      fog: false
+    });
+    beamMat.userData = { baseOpacity: 0.28 };
+    const beamMesh = new THREE.Mesh(this._beamGeo, beamMat);
+    marker.add(beamMesh);
 
-    marker.userData = { box, ribbon, ring, beam, basePos: worldPos.clone() };
+    // 2. Subtle warm PointLight illuminating the snow on the roof beside the chimney
+    const snowLight = new THREE.PointLight(0xffa63b, 0.015, 0.50, 1.0);
+    snowLight.position.set(0, 0.04, 0);
+    marker.add(snowLight);
+
+    // 3. Floating Holographic Snowflake Medallion (Panel 2, 3, 4)
+    const floatingIconGroup = new THREE.Group();
+    floatingIconGroup.position.y = 0.18; // Hovering 18cm above roof ring
+
+    // Soft celestial halo aura
+    const haloMat = new THREE.SpriteMaterial({
+      map: this._haloTexture,
+      color: 0xffd152,
+      blending: THREE.AdditiveBlending,
+      transparent: true,
+      opacity: 0.35,
+      depthWrite: false,
+      fog: false
+    });
+    haloMat.userData = { baseOpacity: 0.35 };
+    const haloSprite = new THREE.Sprite(haloMat);
+    haloSprite.scale.set(0.20, 0.20, 0.20);
+    floatingIconGroup.add(haloSprite);
+
+    // Snowflake Medallion (crisp high-DPI sprite facing camera)
+    const snowflakeMat = new THREE.SpriteMaterial({
+      map: this._snowflakeIconTexture,
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      fog: false
+    });
+    snowflakeMat.userData = { baseOpacity: 0.95 };
+    const snowflakeSprite = new THREE.Sprite(snowflakeMat);
+    snowflakeSprite.scale.set(0.14, 0.14, 0.14);
+    floatingIconGroup.add(snowflakeSprite);
+
+    // In-Range Indicator: Floating Green Checkmark Badge (Panel 4)
+    const checkmarkMat = new THREE.SpriteMaterial({
+      map: this._checkmarkTexture,
+      transparent: true,
+      opacity: 0.98,
+      depthWrite: false,
+      fog: false
+    });
+    checkmarkMat.userData = { baseOpacity: 0.98 };
+    const checkmarkSprite = new THREE.Sprite(checkmarkMat);
+    checkmarkSprite.scale.set(0.065, 0.065, 0.065);
+    checkmarkSprite.position.y = 0.09; // Perched directly atop snowflake medallion
+    checkmarkSprite.visible = false;
+    floatingIconGroup.add(checkmarkSprite);
+
+    marker.add(floatingIconGroup);
+
+    // 4. Sparkle Particles: 4-Point Diamond Stars (Panel 2 & 3 callout)
+    const sparkleCount = 18;
+    const sparkleGeo = new THREE.BufferGeometry();
+    const positions = new Float32Array(sparkleCount * 3);
+    const sparkleVelocities = [];
+
+    for (let p = 0; p < sparkleCount; p++) {
+      const angle = Math.random() * Math.PI * 2;
+      const rad = Math.random() * 0.065;
+      positions[p * 3]     = Math.cos(angle) * rad;
+      positions[p * 3 + 1] = 0.02 + Math.random() * 8.5;
+      positions[p * 3 + 2] = Math.sin(angle) * rad;
+      sparkleVelocities.push({
+        y: 0.35 + Math.random() * 0.55,
+        phase: Math.random() * Math.PI * 2
+      });
+    }
+    sparkleGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+    const sparklesMat = new THREE.PointsMaterial({
+      map: this._starGlintTexture,
+      color: 0xffeb85,
+      size: 0.055,
+      transparent: true,
+      opacity: 0.85,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      fog: false
+    });
+    sparklesMat.userData = { baseOpacity: 0.85 };
+    const sparklesMesh = new THREE.Points(sparkleGeo, sparklesMat);
+    marker.add(sparklesMesh);
+
+    marker.userData = {
+      houseData,
+      basePos: worldPos.clone(),
+      beamMesh,
+      beamMat,
+      snowLight,
+      floatingIconGroup,
+      snowflakeSprite,
+      snowflakeMat,
+      haloSprite,
+      haloMat,
+      checkmarkSprite,
+      checkmarkMat,
+      sparklesMesh,
+      sparklesGeo: sparkleGeo,
+      sparklesMat,
+      sparkleCount,
+      sparkleVelocities,
+      inRange: false,
+      isFading: false,
+      fadeProgress: 0.0
+    };
+
     return marker;
   }
 
@@ -537,22 +872,117 @@ export class DeliverySystem {
   update(delta, elapsedTime) {
     if (delta <= 0) return;
 
-    // 1. Animate active beacons
-    this.markersGroup.children.forEach((marker) => {
-      const u = marker.userData;
-      if (u) {
-        u.box.rotation.y = elapsedTime * 2.2;
-        u.ribbon.rotation.y = elapsedTime * 2.2;
-        u.box.position.y = 1.0 + Math.sin(elapsedTime * 3.5) * 0.12;
-        u.ribbon.position.y = u.box.position.y;
-        u.ring.scale.setScalar(0.95 + Math.sin(elapsedTime * 4.0) * 0.15);
-      }
-    });
+    // 0. Update target compass and active target selection first
+    this._updateTargetCompass();
 
-    // 2. Animate falling gifts (smooth parabolic trajectory toward chimney)
+    const sleighPos = this.sleighController.position;
+    const camera = this.sleighController?.camera;
+
+    // 1. Animate active stylized drop markers
+    for (let i = this.markersGroup.children.length - 1; i >= 0; i--) {
+      const marker = this.markersGroup.children[i];
+      const u = marker.userData;
+      if (!u) continue;
+
+      // Handle delivery completion smooth fade-out (Panel 7)
+      if (u.isFading) {
+        u.fadeProgress += delta * 1.5; // ~0.7s smooth dissolve
+        const alpha = Math.max(0.0, 1.0 - u.fadeProgress);
+        marker.traverse((child) => {
+          if (child.material) {
+            const baseOp = child.userData?.baseOpacity !== undefined ? child.userData.baseOpacity : 0.85;
+            child.material.opacity = baseOp * alpha;
+          }
+        });
+        if (u.fadeProgress >= 1.0) {
+          this.markersGroup.remove(marker);
+          if (u.houseData) u.houseData.marker = null;
+        }
+        continue;
+      }
+
+      // Billboard the floating holographic icon group towards camera
+      if (camera && u.floatingIconGroup) {
+        u.floatingIconGroup.quaternion.copy(camera.quaternion);
+      }
+
+      // Proximity & vertical altitude check to Santa's current position
+      const horizDist = Math.hypot(sleighPos.x - u.basePos.x, sleighPos.z - u.basePos.z);
+      const vertDist = sleighPos.y - u.basePos.y;
+      const isInRange = (
+        !u.houseData.delivered &&
+        horizDist <= this.deliveryRadius &&
+        vertDist >= this.minDropHeight &&
+        vertDist <= this.maxDropHeight
+      );
+
+      // Clean visual hierarchy matching Panel 1 (Distant View):
+      // Only the active primary target displays the vertical sky beam!
+      const isActiveTarget = (this.closestTarget && this.closestTarget.houseId === u.houseData.houseId);
+      if (isActiveTarget) {
+        u.beamMesh.visible = true;
+        u.beamMat.opacity = u.beamMat.userData.baseOpacity * (u.inRange ? 0.85 : 0.58);
+        u.beamMesh.scale.set(1.0, 1.0, 1.0);
+      } else {
+        u.beamMesh.visible = false;
+      }
+
+      // Dynamic State Transitions: Default (Warm Gold) <-> In-Range (Vibrant Emerald Green)
+      if (isInRange !== u.inRange) {
+        u.inRange = isInRange;
+        if (isInRange) {
+          u.snowflakeMat.color.setHex(0x2ecc71);
+          u.haloMat.color.setHex(0x2ecc71);
+          u.beamMat.color.setHex(0x2ecc71);
+          u.snowLight.color.setHex(0x2ecc71);
+          u.checkmarkSprite.visible = true;
+        } else {
+          u.snowflakeMat.color.setHex(0xffffff);
+          u.haloMat.color.setHex(0xffd152);
+          u.beamMat.color.setHex(0xffd152);
+          u.snowLight.color.setHex(0xffa63b);
+          u.checkmarkSprite.visible = false;
+        }
+      }
+
+      // Floating Snowflake smooth vertical sinusoidal bobbing
+      const bobFreq = u.inRange ? 4.5 : 2.5;
+      const bobAmp = u.inRange ? 0.024 : 0.016;
+      u.floatingIconGroup.position.y = 0.22 + Math.sin(elapsedTime * bobFreq) * bobAmp;
+
+      // Animated checkmark pulse when in range (Panel 4)
+      if (u.inRange) {
+        const pulse = 0.08 * (1.0 + Math.sin(elapsedTime * 6.0) * 0.18);
+        u.checkmarkSprite.scale.set(pulse, pulse, pulse);
+      }
+
+      // Light beam slow rotation for ethereal god rays
+      u.beamMesh.rotation.y += delta * 0.22;
+
+      // Ambient 4-point diamond star particles drifting upward inside the light beam
+      const posAttr = u.sparklesGeo.attributes.position;
+      const vels = u.sparkleVelocities;
+      for (let p = 0; p < u.sparkleCount; p++) {
+        let y = posAttr.getY(p) + vels[p].y * delta;
+        if (y > 7.5) y = 0.02;
+        posAttr.setY(p, y);
+        const wobbleX = Math.sin(elapsedTime * 1.5 + vels[p].phase) * 0.001;
+        const wobbleZ = Math.cos(elapsedTime * 1.5 + vels[p].phase) * 0.001;
+        posAttr.setX(p, posAttr.getX(p) + wobbleX);
+        posAttr.setZ(p, posAttr.getZ(p) + wobbleZ);
+      }
+      posAttr.needsUpdate = true;
+    }
+
+    // 2. Animate falling gifts with golden sparkle trailing motes (Panel 5)
     for (let i = this.activeGifts.length - 1; i >= 0; i--) {
       const gift = this.activeGifts[i];
       gift.progress += gift.dropSpeed * delta;
+
+      // Spawn golden diamond particle trail behind tumbling gift (Panel 5)
+      if (Math.random() < 0.75) {
+        this._spawnTrailSparkle(gift.mesh.position);
+      }
 
       if (gift.progress >= 1.0) {
         // Impact
@@ -566,9 +996,9 @@ export class DeliverySystem {
         }
       } else {
         const t = gift.progress;
-        // Parabolic arc lerp
+        // Parabolic arc lerp toward chimney
         gift.mesh.position.lerpVectors(gift.startPos, gift.targetPos, t);
-        // Add subtle arc bounce
+        // Add parabolic gravity arc
         const arc = Math.sin(t * Math.PI) * 1.2;
         gift.mesh.position.y += arc;
 
@@ -578,7 +1008,7 @@ export class DeliverySystem {
       }
     }
 
-    // 3. Update sparkle particle effects
+    // 4. Update sparkle particle effects
     for (let i = this.activeSparkles.length - 1; i >= 0; i--) {
       const sp = this.activeSparkles[i];
       sp.age += delta;
@@ -597,9 +1027,137 @@ export class DeliverySystem {
         sp.mesh.material.opacity = (1.0 - t);
       }
     }
+  }
 
-    // 4. Update HUD and closest target compass
-    this._updateTargetCompass();
+  // Trailing golden 4-point diamond star particles emitted behind falling gifts (Panel 5)
+  _spawnTrailSparkle(worldPos) {
+    const geo = new THREE.BufferGeometry();
+    const positions = new Float32Array([
+      worldPos.x + (Math.random() - 0.5) * 0.08,
+      worldPos.y + (Math.random() - 0.5) * 0.08,
+      worldPos.z + (Math.random() - 0.5) * 0.08
+    ]);
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+    const mat = new THREE.PointsMaterial({
+      map: this._starGlintTexture,
+      color: 0xffea78,
+      size: this.isMobile ? 0.06 : 0.08,
+      transparent: true,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      fog: false
+    });
+
+    const mesh = new THREE.Points(geo, mat);
+    this.scene.add(mesh);
+
+    this.activeSparkles.push({
+      mesh,
+      velocities: [{
+        x: (Math.random() - 0.5) * 0.2,
+        y: 0.1 + Math.random() * 0.25,
+        z: (Math.random() - 0.5) * 0.2
+      }],
+      age: 0.0,
+      maxAge: 0.5
+    });
+  }
+
+  // Radial sunburst light rays shooting outward from chimney upon impact (Panel 6)
+  _spawnDeliverySunburst(worldPos) {
+    const rayCount = 12;
+    const rayGeo = new THREE.BufferGeometry();
+    const positions = new Float32Array(rayCount * 2 * 3);
+    const colors = new Float32Array(rayCount * 2 * 3);
+    const rayDirs = [];
+
+    for (let r = 0; r < rayCount; r++) {
+      const angle = (r / rayCount) * Math.PI * 2;
+      const elev = 0.2 + (r % 3) * 0.35;
+      const dx = Math.cos(angle);
+      const dz = Math.sin(angle);
+      const dy = elev;
+      const len = Math.hypot(dx, dy, dz);
+      rayDirs.push(new THREE.Vector3(dx / len, dy / len, dz / len));
+
+      positions[r * 6]     = worldPos.x;
+      positions[r * 6 + 1] = worldPos.y;
+      positions[r * 6 + 2] = worldPos.z;
+      colors[r * 6]     = 1.0;
+      colors[r * 6 + 1] = 0.95;
+      colors[r * 6 + 2] = 0.65;
+
+      positions[r * 6 + 3] = worldPos.x + dx * 0.06;
+      positions[r * 6 + 4] = worldPos.y + dy * 0.06;
+      positions[r * 6 + 5] = worldPos.z + dz * 0.06;
+      colors[r * 6 + 3] = 1.0;
+      colors[r * 6 + 4] = 0.75;
+      colors[r * 6 + 5] = 0.15;
+    }
+
+    rayGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    rayGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    const rayMat = new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      fog: false
+    });
+
+    const rayLines = new THREE.LineSegments(rayGeo, rayMat);
+    this.scene.add(rayLines);
+
+    const startTime = performance.now();
+    const duration = 800; // 0.8s burst
+
+    const animateRays = () => {
+      const elapsed = performance.now() - startTime;
+      const progress = elapsed / duration;
+      if (progress >= 1.0) {
+        this.scene.remove(rayLines);
+        rayLines.geometry.dispose();
+        rayMat.dispose();
+      } else {
+        const expand = Math.sin(progress * Math.PI * 0.5) * 0.55;
+        const posAttr = rayLines.geometry.attributes.position;
+        for (let r = 0; r < rayCount; r++) {
+          const dir = rayDirs[r];
+          posAttr.setXYZ(r * 2 + 1, worldPos.x + dir.x * expand, worldPos.y + dir.y * expand, worldPos.z + dir.z * expand);
+        }
+        posAttr.needsUpdate = true;
+        rayMat.opacity = Math.max(0, 1.0 - progress);
+        requestAnimationFrame(animateRays);
+      }
+    };
+    requestAnimationFrame(animateRays);
+  }
+
+  // Cozy warm facade and roof light pulse illuminating house upon successful delivery (Panel 6)
+  _pulseHouseGlow(worldPos) {
+    const light = new THREE.PointLight(0xffa63b, 3.5, 9.0, 1.8);
+    light.position.copy(worldPos).add(new THREE.Vector3(0, 0.4, 0));
+    this.scene.add(light);
+
+    const startTime = performance.now();
+    const duration = 2500; // 2.5 seconds warm house illumination
+
+    const animateLight = () => {
+      const elapsed = performance.now() - startTime;
+      const progress = elapsed / duration;
+      if (progress >= 1.0) {
+        this.scene.remove(light);
+        light.dispose();
+      } else {
+        light.intensity = 3.5 * (1.0 - Math.pow(progress, 0.7));
+        requestAnimationFrame(animateLight);
+      }
+    };
+    requestAnimationFrame(animateLight);
   }
 
   _handleSuccessfulDelivery(houseData) {
@@ -613,14 +1171,15 @@ export class DeliverySystem {
     const points = basePoints + comboBonus;
     this.score += points;
 
-    // Remove marker
-    if (houseData.marker) {
-      this.markersGroup.remove(houseData.marker);
-      houseData.marker = null;
+    // Start smooth fade-out of marker (Panel 7)
+    if (houseData.marker && houseData.marker.userData) {
+      houseData.marker.userData.isFading = true;
     }
 
-    // Create celebratory sparkle burst at chimney
+    // Create celebratory sparkle burst, radial sunburst rays & warm house light pulse (Panel 6)
     this._spawnSparkleBurst(houseData.worldPos);
+    this._spawnDeliverySunburst(houseData.worldPos);
+    this._pulseHouseGlow(houseData.worldPos);
     soundManager.playSuccess();
 
     this.showBanner(`GIFT DELIVERED! +${points} PTS (x${this.combo} COMBO)`, 'success');
@@ -772,13 +1331,14 @@ export class DeliverySystem {
     const progEl = document.getElementById('hud-chunk-progress');
     if (progEl) progEl.textContent = `${deliveredCount} / ${totalCount}`;
 
-    // Find closest undelivered target
+    // Find closest undelivered target: prioritize current chunk goals first
     let nearest = null;
     let nearestDist = Infinity;
 
     this.trackedHouses.forEach((houseData) => {
       if (houseData.delivered) return;
       if (!this.chunkSystem.chunks.has(houseData.chunkKey)) return;
+      if (houseData.chunkKey !== this.currentChunkKey) return;
 
       const d = sleighPos.distanceTo(houseData.worldPos);
       if (d < nearestDist) {
@@ -786,6 +1346,20 @@ export class DeliverySystem {
         nearest = houseData;
       }
     });
+
+    // If current chunk is completed, locate closest undelivered house across any loaded chunk
+    if (!nearest) {
+      this.trackedHouses.forEach((houseData) => {
+        if (houseData.delivered) return;
+        if (!this.chunkSystem.chunks.has(houseData.chunkKey)) return;
+
+        const d = sleighPos.distanceTo(houseData.worldPos);
+        if (d < nearestDist) {
+          nearestDist = d;
+          nearest = houseData;
+        }
+      });
+    }
 
     this.closestTarget = nearest;
     this.closestDistance = nearestDist;
