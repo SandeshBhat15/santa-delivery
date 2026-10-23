@@ -24,9 +24,14 @@ export class SleighController {
     this.speed = 1.5;
 
     // Movement & Non-Linear Aerodynamics Parameters
-    this.baseCruiseSpeed = 1.5; // Gentle forward cruising speed calibrated for miniature rig
-    this.maxSpeed = 2.6;        // Maximum speed during steep dives or boost
-    this.minSpeed = 0.8;        // Minimum speed during steep climbs or tight turns
+    // ── Speed Constants (tune here) ─────────────────────────────────────────
+    this.baseCruiseSpeed = 1.5;   // m/s: normal forward cruise
+    this.minSpeed        = 0.5;   // m/s: slowest possible (steep climbs / tight turns)
+    this.maxSpeed        = 2.6;   // m/s: top speed without boost
+    this.boostSpeed      = 4.0;   // m/s: top speed while Shift / F held
+    this.boostAccelRate  = 3.5;   // exponential ramp-up rate during boost
+    this.boostDecelRate  = 2.5;   // exponential ramp-down rate after releasing boost
+    // ────────────────────────────────────────────────────────────────────────
     this.turnSpeed = 1.9;
     this.climbSpeed = 3.5;
     this.bankMax = 0.42;
@@ -66,8 +71,9 @@ export class SleighController {
     // Dynamic Terrain-Relative Altitude Limits (meters above local terrain)
     this.minAltitudeAboveTerrain = 0.01; // Skims ground level with runners directly in the snow
     this.targetFlightAltitude = 0.40;    // Player-controlled cruising flight level above terrain (scaled for mini rig)
-    this.maxAltitudeAboveTerrain = 1.40;  // Maximum ceiling for village flight
-    this.altitudeSoftBuffer = 0.06;      // Distance from boundary where vertical damping begins
+    // NOTE: maxAltitudeAboveTerrain is intentionally removed — the sleigh can now climb freely.
+    // Only the terrain floor (minAltitudeAboveTerrain) is enforced for safety.
+    this.altitudeSoftBuffer = 0.06;      // Distance from ground floor where vertical damping begins
 
     // Sleigh & Reindeer Collision Bounds (meters)
     // Sleigh body + reindeer team total footprint calibrated for the half-size rig
@@ -853,7 +859,6 @@ export class SleighController {
 
     const currentAltitude = this.position.y - localGroundH;
     const minAlt = this.minAltitudeAboveTerrain;
-    const maxAlt = this.maxAltitudeAboveTerrain;
     const buffer = this.altitudeSoftBuffer;
 
     let vertCommand = 0.0;
@@ -867,14 +872,9 @@ export class SleighController {
     }
     vertCommand = Math.max(-1.0, Math.min(1.0, vertCommand));
 
-    // Smooth soft-damping near min and max flight boundaries (no jarring snaps)
-    let climbFactor = 1.0;
+    // Smooth soft-damping near the ground floor only (no upper ceiling)
     let descendFactor = 1.0;
 
-    if (currentAltitude > maxAlt - buffer) {
-      // Approaching upper altitude limit: softly taper climb rate to zero
-      climbFactor = Math.max(0.0, (maxAlt - currentAltitude) / buffer);
-    }
     if (currentAltitude < minAlt + buffer) {
       // Approaching terrain: softly taper descend rate to zero
       descendFactor = Math.max(0.0, (currentAltitude - minAlt) / buffer);
@@ -882,8 +882,9 @@ export class SleighController {
 
     let targetVertSpeed = 0.0;
     if (vertCommand > 0) {
-      targetVertSpeed = this.climbRate * vertCommand * climbFactor;
-      this.targetFlightAltitude = Math.min(maxAlt, this.targetFlightAltitude + this.climbRate * vertCommand * delta * 0.9);
+      // Climb freely — no ceiling clamp
+      targetVertSpeed = this.climbRate * vertCommand;
+      this.targetFlightAltitude = this.targetFlightAltitude + this.climbRate * vertCommand * delta * 0.9;
     } else if (vertCommand < 0) {
       targetVertSpeed = -this.descendRate * Math.abs(vertCommand) * descendFactor;
       this.targetFlightAltitude = Math.max(minAlt, this.targetFlightAltitude - this.descendRate * Math.abs(vertCommand) * delta * 0.9);
@@ -899,9 +900,6 @@ export class SleighController {
       // Smooth proportional lift avoids sudden velocity shocks
       const predictiveClimb = terrainClimbDeficit * 4.5;
       targetVertSpeed = Math.max(targetVertSpeed, predictiveClimb);
-    } else if (currentAltitude > maxAlt) {
-      const overHeight = currentAltitude - maxAlt;
-      targetVertSpeed = Math.min(targetVertSpeed, -overHeight * 2.8);
     }
 
     // Smooth vertical acceleration / deceleration with critically damped spring
@@ -946,16 +944,19 @@ export class SleighController {
       targetSpeed -= Math.pow(bankRatio, 1.6) * 0.75;
     }
 
-    // Player Sprint / Boost (Shift or KeyF)
+    // Player Sprint / Boost (Shift or KeyF) — smooth ramp to boostSpeed
     if (this.inputs.boost) {
-      targetSpeed += 0.9;
+      targetSpeed = this.boostSpeed;
     }
 
-    // Clamp target within dynamic flight envelope [minSpeed..maxSpeed]
-    targetSpeed = THREE.MathUtils.clamp(targetSpeed, this.minSpeed, this.maxSpeed);
+    // Clamp within active flight envelope (boosted or normal ceiling)
+    const effectiveMax = this.inputs.boost ? this.boostSpeed : this.maxSpeed;
+    targetSpeed = THREE.MathUtils.clamp(targetSpeed, this.minSpeed, effectiveMax);
 
-    // Asymptotic non-linear exponential damping (no robotic linear steps or hard corner clamps)
-    const speedResponseRate = (targetSpeed > this.speed) ? 2.5 : 2.0;
+    // Differentiated response rate: fast ramp-up during boost, smooth coast-down after releasing
+    const speedResponseRate = targetSpeed > this.speed
+      ? (this.inputs.boost ? this.boostAccelRate : 2.5)
+      : this.boostDecelRate;
     this.speed += (targetSpeed - this.speed) * (1.0 - Math.exp(-speedResponseRate * delta));
 
     // 4. Free 3D Displacement along X and Z
@@ -1151,12 +1152,10 @@ export class SleighController {
     const groundY = this.chunkSystem.getHeight
       ? this.chunkSystem.getHeight(this.position.x, this.position.z)
       : 0.5;
-    const ceiling = groundY + this.maxAltitudeAboveTerrain;
-    if (this.position.y >= ceiling) return;
-
+    // No artificial altitude ceiling — obstacle updraft can lift the sleigh as needed.
     // Smooth, bounded lift (max ~1.5 m/s) so it feels like a guiding updraft.
     const step = Math.min(lift, 1.5 * delta);
-    this.position.y = Math.min(this.position.y + step, ceiling);
+    this.position.y = this.position.y + step;
     this.verticalSpeed = Math.max(
       this.verticalSpeed,
       (step / Math.max(delta, 1e-4)) * 0.35
