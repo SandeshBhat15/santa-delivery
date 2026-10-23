@@ -2400,7 +2400,7 @@ class InfiniteChunkSystem {
       }
     } else {
       // Deterministically place outpost/cabin settlements on wilderness chunks (merged into 1 draw call)
-      const houseCount = Math.floor(4 + this.hashCoord(cx, cz, 819) * 2); // 4 or 5
+      const houseCount = Math.floor(3 + this.hashCoord(cx, cz, 819) * 3); // 3, 4, or 5
       const candidates = this.templateHouses.filter(h => h.meshName.startsWith('house'));
       const wildernessHouseGeos = [];
       let wildernessHouseMat = null;
@@ -2413,12 +2413,12 @@ class InfiniteChunkSystem {
           let bestOffset = null;
           let bestY = null;
 
-          for (let attempt = 0; attempt < 5; attempt++) {
-            const seedOffset = attempt * 3.7;
+          for (let attempt = 0; attempt < 12; attempt++) {
+            const seedOffset = attempt * 2.1;
             const candOffset = new THREE.Vector3(
-              (this.hashCoord(cx + hIdx * 1.7 + seedOffset, cz, 921) - 0.5) * 11.0,
+              (this.hashCoord(cx + hIdx * 1.7 + seedOffset, cz, 921) - 0.5) * 15.0,
               0,
-              (this.hashCoord(cx, cz + hIdx * 1.7 + seedOffset, 923) - 0.5) * 11.0
+              (this.hashCoord(cx, cz + hIdx * 1.7 + seedOffset, 923) - 0.5) * 15.0
             );
 
             const worldHx = worldX + candOffset.x;
@@ -2430,8 +2430,8 @@ class InfiniteChunkSystem {
             if (hits.length === 0) continue;
 
             const centerHit = hits[0];
-            // Reject if inside frozen lake depression (y <= 0.36) or on steep cliff face
-            if (centerHit.point.y <= 0.36 || (centerHit.face && centerHit.face.normal.y < 0.78)) continue;
+            // Reject if inside frozen lake depression (y <= 0.28) or on steep cliff face
+            if (centerHit.point.y <= 0.28 || (centerHit.face && centerHit.face.normal.y < 0.72)) continue;
 
             // Test 4 footprint corners in world coordinates to ensure ground is reasonably flat
             let minCornerY = centerHit.point.y;
@@ -2442,7 +2442,7 @@ class InfiniteChunkSystem {
               const corner = this._footprintOffsets[c];
               this._houseRaycaster.set(new THREE.Vector3(worldHx + corner.dx, 25.0, worldHz + corner.dz), this._downDir);
               const cHits = this._houseRaycaster.intersectObject(terrainGroup, true);
-              if (cHits.length === 0 || cHits[0].point.y <= 0.36) {
+              if (cHits.length === 0 || cHits[0].point.y <= 0.28) {
                 invalidCorner = true;
                 break;
               }
@@ -2450,8 +2450,8 @@ class InfiniteChunkSystem {
               maxCornerY = Math.max(maxCornerY, cHits[0].point.y);
             }
 
-            // Reject if terrain slope across footprint varies by more than 7cm (cliff edge or steep ditch)
-            if (invalidCorner || (maxCornerY - minCornerY) > 0.07) continue;
+            // Reject if terrain slope across footprint varies excessively
+            if (invalidCorner || (maxCornerY - minCornerY) > 0.12) continue;
 
             // Bed foundation 0.01m into snow surface to guarantee zero gap beneath base sills
             bestOffset = candOffset;
@@ -2504,6 +2504,49 @@ class InfiniteChunkSystem {
           }
         }
 
+        // Fallback: guarantee at least 1 house per wilderness chunk if all raycast attempts failed
+        if (wildernessHouseGeos.length === 0 && candidates.length > 0) {
+          const h = candidates[0];
+          const groundY = this.getHeight ? this.getHeight(worldX, worldZ) : 0.5;
+          if (groundY > 0.28) {
+            const fallbackOffset = new THREE.Vector3(0, groundY - 0.01, 0);
+            const rotY = this.hashCoord(cx, cz, 111) * Math.PI * 2;
+            const fallbackM = new THREE.Matrix4().compose(
+              fallbackOffset,
+              new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rotY, 0)),
+              h.scale
+            );
+            const transformedGeo = h.geo.clone();
+            transformedGeo.applyMatrix4(fallbackM);
+            wildernessHouseGeos.push(transformedGeo);
+            wildernessHouseMat = h.mat;
+
+            const dummyNode = new THREE.Object3D();
+            dummyNode.name = `Outpost_${key}_${h.meshName}_fallback`;
+            dummyNode.position.copy(fallbackOffset);
+            houseGroup.add(dummyNode);
+
+            houseClearings.push({
+              x: 0,
+              z: 0,
+              radius: 1.8
+            });
+
+            const box = new THREE.Box3();
+            if (h.geo && !h.geo.boundingBox) h.geo.computeBoundingBox();
+            if (h.geo && h.geo.boundingBox) {
+              box.copy(h.geo.boundingBox);
+              const m = new THREE.Matrix4().compose(
+                new THREE.Vector3(worldX, groundY - 0.01, worldZ),
+                new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rotY, 0)),
+                h.scale
+              );
+              box.applyMatrix4(m);
+              houseColliders.push(box);
+            }
+          }
+        }
+
         // Merge all wilderness houses in this chunk into 1 single draw call (casting crisp shadows)
         if (wildernessHouseGeos.length > 0 && wildernessHouseMat) {
           const mergedGeo = BufferGeometryUtils.mergeGeometries(wildernessHouseGeos, false);
@@ -2536,12 +2579,14 @@ class InfiniteChunkSystem {
     const rotMat = new THREE.Matrix4().makeRotationY(angle);
 
     // Populate trees with deterministic variance and house clearing check
-    // Preserve full lush vegetation in village (isCenter), heavily decimate in distant wilderness chunks (LOD)
-    const treeDensity = isCenter ? 1.0 : (0.45 + this.hashCoord(cx, cz, 71) * 0.35);
-    const maxTreesPerProto = isCenter ? (IS_MOBILE ? 48 : 96) : (IS_MOBILE ? 3 : 5);
+    // Total budget per chunk rather than per-prototype to ensure wilderness chunks have natural vegetation
+    const treeDensity = isCenter ? 1.0 : (0.50 + this.hashCoord(cx, cz, 71) * 0.35);
+    const maxTotalTrees = isCenter ? Infinity : (IS_MOBILE ? 32 : 64);
+    let totalTreesPlaced = 0;
+
     this.templateTrees.forEach((tData, idx) => {
+      if (totalTreesPlaced >= maxTotalTrees) return;
       if (this.hashCoord(cx + idx * 0.1, cz + idx * 0.1, 99) > treeDensity) return;
-      if (treeInstances[tData.protoId] && treeInstances[tData.protoId].matrices.length >= maxTreesPerProto) return;
 
       dummy.position.copy(tData.pos);
       dummy.rotation.copy(tData.rot);
@@ -2573,15 +2618,17 @@ class InfiniteChunkSystem {
       if (treeInstances[tData.protoId]) {
         treeInstances[tData.protoId].matrices.push(dummy.matrix.clone());
         treeInstances[tData.protoId].positions.push(dummy.position.clone());
+        totalTreesPlaced++;
       }
     });
 
     // Populate bushes with deterministic variance and house clearing check
-    // Preserve full lush bushes in village (isCenter), heavily decimate in distant wilderness chunks (LOD)
-    const maxBushesPerProto = isCenter ? (IS_MOBILE ? 24 : 48) : (IS_MOBILE ? 1 : 2);
+    const maxTotalBushes = isCenter ? Infinity : (IS_MOBILE ? 20 : 40);
+    let totalBushesPlaced = 0;
+
     this.templateBushes.forEach((bData, idx) => {
+      if (totalBushesPlaced >= maxTotalBushes) return;
       if (this.hashCoord(cx + idx * 0.13, cz + idx * 0.13, 101) > treeDensity) return;
-      if (bushInstances[bData.protoId] && bushInstances[bData.protoId].matrices.length >= maxBushesPerProto) return;
 
       dummy.position.copy(bData.pos);
       dummy.rotation.copy(bData.rot);
@@ -2607,6 +2654,7 @@ class InfiniteChunkSystem {
       if (bushInstances[bData.protoId]) {
         bushInstances[bData.protoId].matrices.push(dummy.matrix.clone());
         bushInstances[bData.protoId].positions.push(dummy.position.clone());
+        totalBushesPlaced++;
       }
     });
 
@@ -2633,38 +2681,30 @@ class InfiniteChunkSystem {
     };
 
     if (IS_MOBILE) {
-      const allFoliageMatrices = [];
-      const allFoliagePositions = [];
-
+      // Mobile: create separate InstancedMeshes per prototype so correct geometries and materials are preserved
       for (let id = 0; id < this.treePrototypes.length; id++) {
-        if (treeInstances[id]) {
-          const count = isCenter ? treeInstances[id].matrices.length : Math.min(treeInstances[id].matrices.length, 12);
-          for (let i = 0; i < count; i++) {
-            allFoliageMatrices.push(treeInstances[id].matrices[i]);
-            allFoliagePositions.push(treeInstances[id].positions[i]);
-          }
+        if (treeInstances[id] && treeInstances[id].matrices.length > 0) {
+          const proto = this.treePrototypes[id];
+          setupInstancedFoliage(
+            proto,
+            treeInstances[id].matrices,
+            treeInstances[id].positions,
+            `Instanced_Tree_${id}_${key}`,
+            true
+          );
         }
       }
       for (let id = 0; id < this.bushPrototypes.length; id++) {
-        if (bushInstances[id]) {
-          const count = isCenter ? bushInstances[id].matrices.length : Math.min(bushInstances[id].matrices.length, 6);
-          for (let i = 0; i < count; i++) {
-            allFoliageMatrices.push(bushInstances[id].matrices[i]);
-            allFoliagePositions.push(bushInstances[id].positions[i]);
-          }
+        if (bushInstances[id] && bushInstances[id].matrices.length > 0) {
+          const proto = this.bushPrototypes[id];
+          setupInstancedFoliage(
+            proto,
+            bushInstances[id].matrices,
+            bushInstances[id].positions,
+            `Instanced_Bush_${id}_${key}`,
+            false
+          );
         }
-      }
-
-      if (allFoliageMatrices.length > 0 && this.treePrototypes.length > 0) {
-        const proto = this.treePrototypes[0];
-        const foliageMat = proto.material || (this.bushPrototypes.length > 0 ? this.bushPrototypes[0].material : null);
-        setupInstancedFoliage(
-          { geometry: proto.geometry, material: foliageMat },
-          allFoliageMatrices,
-          allFoliagePositions,
-          `Instanced_Foliage_Unified_${key}`,
-          true
-        );
       }
     } else {
       // Group trees into 2 main varieties (Pine & Fir) to collapse 6 draw calls down to 2
