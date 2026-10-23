@@ -90,6 +90,31 @@ class SoundManager {
     } catch (e) {}
   }
 
+  playStar() {
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    try {
+      const now = this.ctx.currentTime;
+      // Bright two-note sparkle (B6 -> E7) for optional collectibles
+      const notes = [1975.53, 2637.02];
+      notes.forEach((freq, idx) => {
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        const startTime = now + idx * 0.07;
+
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, startTime);
+
+        gain.gain.setValueAtTime(0.22, startTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.35);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(startTime);
+        osc.stop(startTime + 0.35);
+      });
+    } catch (e) {}
+  }
+
   playChunkComplete() {
     if (!this.ctx || this.ctx.state !== 'running') return;
     try {
@@ -111,6 +136,38 @@ class SoundManager {
         osc.start(startTime);
         osc.stop(startTime + 0.55);
       });
+    } catch (e) {}
+  }
+
+  playCrash() {
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    try {
+      const now = this.ctx.currentTime;
+
+      // Heavy wooden crunch: a fast descending saw plus a low thud.
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(170, now);
+      osc.frequency.exponentialRampToValueAtTime(52, now + 0.45);
+      gain.gain.setValueAtTime(0.32, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.5);
+
+      const thud = this.ctx.createOscillator();
+      const thudGain = this.ctx.createGain();
+      thud.type = 'triangle';
+      thud.frequency.setValueAtTime(95, now);
+      thud.frequency.exponentialRampToValueAtTime(38, now + 0.28);
+      thudGain.gain.setValueAtTime(0.4, now);
+      thudGain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+      thud.connect(thudGain);
+      thudGain.connect(this.ctx.destination);
+      thud.start(now);
+      thud.stop(now + 0.3);
     } catch (e) {}
   }
 

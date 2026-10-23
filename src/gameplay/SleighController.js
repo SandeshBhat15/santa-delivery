@@ -70,10 +70,12 @@ export class SleighController {
     this.altitudeSoftBuffer = 0.06;      // Distance from boundary where vertical damping begins
 
     // Sleigh & Reindeer Collision Bounds (meters)
-    // Sleigh body + reindeer team total footprint calibrated for reduced scale
+    // Sleigh body + reindeer team total footprint calibrated for the half-size rig
     this.collisionRadiusXZ = 0.14;
     this.collisionHalfHeight = 0.10;
-    this.safetyMargin = 0.06; // Wall and roof clearance margin
+    this.safetyMargin = 0.03; // Wall and roof clearance margin
+    this._hasCrashed = false;
+    this._crashGraceUntil = 0;
 
     // Follow camera offset & sensitivity (calibrated close third-person follow camera for mini rig)
     this.camDistance = isMobile ? 1.05 : 0.82;
@@ -169,8 +171,8 @@ export class SleighController {
     masterGroup.name = 'MasterSantaRig';
     masterGroup.rotation.y = Math.PI;
 
-    // Overall rig scale reduced by 50% for realistic miniature village flight proportions
-    const MODEL_SCALE = 0.488;
+    // Overall rig scaled down again by 50% for miniature village flight proportions
+    const MODEL_SCALE = 0.244;
     masterGroup.scale.setScalar(MODEL_SCALE);
 
     // Locate the three components in GLB
@@ -472,6 +474,9 @@ export class SleighController {
   }
 
   _buildProceduralFallback() {
+    // Match the half-size GLB rig so the fallback sleigh is not oversized.
+    this.group.scale.setScalar(0.244);
+
     // 1. Sleigh Body Materials
     const redMat = new THREE.MeshStandardMaterial({
       color: 0xc41e3a,
@@ -959,7 +964,9 @@ export class SleighController {
     }
 
     // 5. House & Structure Collision Avoidance
-    // Checks nearby building bounding boxes with safety margins and pushes sleigh smoothly outward
+    // A gentle predictive lift clears low rooftops, then the existing AABB
+    // resolver handles anything that still gets too close.
+    this._applyGentleObstacleAvoidance(delta, heading);
     this._resolveHouseCollisions();
 
     // 6. Apply Full 3D Transform to Sleigh Group
@@ -1102,6 +1109,76 @@ export class SleighController {
     }
   }
 
+  _applyGentleObstacleAvoidance(delta, heading) {
+    if (!this.chunkSystem || !this.chunkSystem.getHouseCollidersNear || this.isPaused) return;
+
+    // Probe slightly ahead of the sleigh so rooftops are cleared before impact.
+    const probeX = this.position.x + heading.x * 0.9;
+    const probeZ = this.position.z + heading.z * 0.9;
+    const nearbyHouses = this.chunkSystem.getHouseCollidersNear(probeX, probeZ, 1.5);
+    if (!nearbyHouses || nearbyHouses.length === 0) return;
+
+    const activeTarget = window.deliverySystem && window.deliverySystem.activeTarget;
+    let lift = 0;
+
+    for (const box of nearbyHouses) {
+      const centerX = (box.min.x + box.max.x) * 0.5;
+      const centerZ = (box.min.z + box.max.z) * 0.5;
+
+      // Never auto-lift inside the drop window around the highlighted house:
+      // altitude control there belongs to the player.
+      if (activeTarget && activeTarget.worldPos) {
+        const adx = activeTarget.worldPos.x - this.position.x;
+        const adz = activeTarget.worldPos.z - this.position.z;
+        if (adx * adx + adz * adz < 2.4 * 2.4) continue;
+      }
+
+      // Only assist when the sleigh is within the structure's vertical band.
+      if (this.position.y > box.max.y + 0.28 || this.position.y < box.min.y - 0.22) continue;
+
+      const dx = this.position.x - centerX;
+      const dz = this.position.z - centerZ;
+      const horizontalDist = Math.hypot(dx, dz);
+      const reach = Math.max(box.max.x - box.min.x, box.max.z - box.min.z) * 0.5 + 0.62;
+      if (horizontalDist > reach) continue;
+
+      const clearance = (box.max.y + 0.14) - this.position.y;
+      if (clearance > lift) lift = clearance;
+    }
+
+    if (lift <= 0) return;
+
+    const groundY = this.chunkSystem.getHeight
+      ? this.chunkSystem.getHeight(this.position.x, this.position.z)
+      : 0.5;
+    const ceiling = groundY + this.maxAltitudeAboveTerrain;
+    if (this.position.y >= ceiling) return;
+
+    // Smooth, bounded lift (max ~1.5 m/s) so it feels like a guiding updraft.
+    const step = Math.min(lift, 1.5 * delta);
+    this.position.y = Math.min(this.position.y + step, ceiling);
+    this.verticalSpeed = Math.max(
+      this.verticalSpeed,
+      (step / Math.max(delta, 1e-4)) * 0.35
+    );
+  }
+
+  armHouseCollisionDetection(graceMs = 1500) {
+    this._hasCrashed = false;
+    this._crashGraceUntil = (typeof performance !== 'undefined' ? performance.now() : Date.now()) + graceMs;
+  }
+
+  _reportHouseCrash() {
+    if (this._hasCrashed) return;
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (now < this._crashGraceUntil) return;
+
+    this._hasCrashed = true;
+    if (window.deliverySystem && typeof window.deliverySystem.handleHouseCrash === 'function') {
+      window.deliverySystem.handleHouseCrash();
+    }
+  }
+
   _resolveHouseCollisions() {
     if (!this.chunkSystem || !this.chunkSystem.getHouseCollidersNear) return;
 
@@ -1109,25 +1186,26 @@ export class SleighController {
     const nearbyHouses = this.chunkSystem.getHouseCollidersNear(this.position.x, this.position.z, 10.0);
     if (!nearbyHouses || nearbyHouses.length === 0) return;
 
-    // Sleigh collision volume modeled as 2 overlapping bounding spheres:
-    // 1. Sleigh main chassis at position (x, y + 0.08, z)
-    // 2. Reindeer lead team in front along heading vector (-sin(rotY), 0, -cos(rotY)) * 0.48
+    // Sleigh collision volume modeled as 2 overlapping bounding spheres
+    // scaled to the half-size rig:
+    // 1. Sleigh main chassis at position (x, y + 0.04, z)
+    // 2. Reindeer lead team in front along heading vector (-sin(rotY), 0, -cos(rotY)) * 0.24
     const forwardX = -Math.sin(this.rotationY);
     const forwardZ = -Math.cos(this.rotationY);
 
     const collisionNodes = [
       {
-        pos: new THREE.Vector3(this.position.x, this.position.y + 0.08, this.position.z),
-        radius: 0.19,
+        pos: new THREE.Vector3(this.position.x, this.position.y + 0.04, this.position.z),
+        radius: 0.095,
         isChassis: true
       },
       {
         pos: new THREE.Vector3(
-          this.position.x + forwardX * 0.48,
-          this.position.y + 0.08,
-          this.position.z + forwardZ * 0.48
+          this.position.x + forwardX * 0.24,
+          this.position.y + 0.04,
+          this.position.z + forwardZ * 0.24
         ),
-        radius: 0.16,
+        radius: 0.08,
         isChassis: false
       }
     ];
@@ -1156,6 +1234,10 @@ export class SleighController {
 
         const effectiveRadius = node.radius;
         if (distSq < effectiveRadius * effectiveRadius) {
+          // A real house impact ends the run. The handler latches, so this is
+          // reported only once even while the physics push resolves.
+          this._reportHouseCrash();
+
           const dist = Math.sqrt(distSq);
           let pushX = 0;
           let pushY = 0;
@@ -1207,6 +1289,51 @@ export class SleighController {
         }
       }
     }
+  }
+
+  resetFlight() {
+    // Re-center the sleigh at the start of a fresh run without rebuilding it.
+    this.position.set(0, 0.8, 8.0);
+    this.rotationY = 0;
+    this.pitch = 0;
+    this.bank = 0;
+    this.speed = this.baseCruiseSpeed;
+    this.verticalSpeed = 0;
+    this.targetFlightAltitude = 0.40;
+    this.verticalInput = 0;
+    this.isPaused = false;
+
+    if (this.joystick) {
+      this.joystick.x = 0;
+      this.joystick.y = 0;
+    }
+    if (this.inputs) {
+      Object.keys(this.inputs).forEach((key) => { this.inputs[key] = false; });
+    }
+
+    this.group.position.copy(this.position);
+    this.group.rotation.set(0, 0, 0, 'YXZ');
+
+    // Snap the follow camera behind the sleigh so replay does not pan across the world.
+    if (this.camera) {
+      const heading = new THREE.Vector3(-Math.sin(this.rotationY), 0, -Math.cos(this.rotationY));
+      this.camera.position.set(
+        this.position.x - heading.x * this.camDistance,
+        this.position.y + this.camHeight,
+        this.position.z - heading.z * this.camDistance
+      );
+      const lookAt = new THREE.Vector3(this.position.x, this.position.y + 0.10, this.position.z);
+      this.camera.lookAt(lookAt);
+      if (this.controls && this.controls.target) this.controls.target.copy(lookAt);
+    }
+
+    if (this.flightTrail && typeof this.flightTrail.reset === 'function') {
+      this.flightTrail.reset();
+    }
+
+    // Re-arm crash detection for the new run after the spawn grace period.
+    this._hasCrashed = false;
+    this.armHouseCollisionDetection(1500);
   }
 
   getDropOrigin() {

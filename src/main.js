@@ -990,7 +990,7 @@ moonLight.shadow.mapSize.width = shadowMapDim;
 moonLight.shadow.mapSize.height = shadowMapDim;
 moonLight.shadow.camera.near = 12;
 moonLight.shadow.camera.far = 120;
-const d = IS_MOBILE ? 24 : 32;
+const d = IS_MOBILE ? 18 : 28;
 moonLight.shadow.camera.left = -d;
 moonLight.shadow.camera.right = d;
 moonLight.shadow.camera.top = d;
@@ -2094,6 +2094,8 @@ class InfiniteChunkSystem {
 
     if (houseGeometries.length > 0) {
       const mergedVillageGeo = BufferGeometryUtils.mergeGeometries(houseGeometries, false);
+      mergedVillageGeo.computeBoundingBox();
+      mergedVillageGeo.computeBoundingSphere();
       this.mergedVillageMesh = new THREE.Mesh(mergedVillageGeo, villageHouseMat);
       this.mergedVillageMesh.name = 'MergedVillageHouses';
       this.mergedVillageMesh.castShadow = true;
@@ -2163,6 +2165,8 @@ class InfiniteChunkSystem {
     for (const [matKey, bucket] of materialMeshBuckets.entries()) {
       if (bucket.geometries.length > 0) {
         const mergedGeo = BufferGeometryUtils.mergeGeometries(bucket.geometries, false);
+        mergedGeo.computeBoundingBox();
+        mergedGeo.computeBoundingSphere();
         const mergedMesh = new THREE.Mesh(mergedGeo, bucket.material);
         mergedMesh.name = `MergedTerrain_${bucket.material.name || 'Mat'}`;
         // Static ground meshes receive shadows; shadows are cast exclusively by vertical foliage & structures
@@ -2359,6 +2363,7 @@ class InfiniteChunkSystem {
     houseGroup.name = `Houses_${key}`;
     const houseColliders = [];
     const houseClearings = []; // Centers and clearance radii to prevent trees/bushes from spawning under houses
+    let chunkWildernessHouseMesh = null;
 
     if (isCenter) {
       // Main village: compute world-space bounding boxes for central houses
@@ -2502,11 +2507,14 @@ class InfiniteChunkSystem {
         // Merge all wilderness houses in this chunk into 1 single draw call (casting crisp shadows)
         if (wildernessHouseGeos.length > 0 && wildernessHouseMat) {
           const mergedGeo = BufferGeometryUtils.mergeGeometries(wildernessHouseGeos, false);
+          mergedGeo.computeBoundingBox();
+          mergedGeo.computeBoundingSphere();
           const mergedMesh = new THREE.Mesh(mergedGeo, wildernessHouseMat);
           mergedMesh.name = `MergedHouses_${key}`;
           mergedMesh.castShadow = true; // Wilderness houses cast shadows!
           mergedMesh.receiveShadow = true;
           chunkGroup.add(mergedMesh);
+          chunkWildernessHouseMesh = mergedMesh;
         }
       }
     }
@@ -2528,9 +2536,12 @@ class InfiniteChunkSystem {
     const rotMat = new THREE.Matrix4().makeRotationY(angle);
 
     // Populate trees with deterministic variance and house clearing check
-    const treeDensity = isCenter ? 1.0 : (0.65 + this.hashCoord(cx, cz, 71) * 0.5);
+    // Preserve full lush vegetation in village (isCenter), heavily decimate in distant wilderness chunks (LOD)
+    const treeDensity = isCenter ? 1.0 : (0.45 + this.hashCoord(cx, cz, 71) * 0.35);
+    const maxTreesPerProto = isCenter ? (IS_MOBILE ? 48 : 96) : (IS_MOBILE ? 3 : 5);
     this.templateTrees.forEach((tData, idx) => {
       if (this.hashCoord(cx + idx * 0.1, cz + idx * 0.1, 99) > treeDensity) return;
+      if (treeInstances[tData.protoId] && treeInstances[tData.protoId].matrices.length >= maxTreesPerProto) return;
 
       dummy.position.copy(tData.pos);
       dummy.rotation.copy(tData.rot);
@@ -2566,8 +2577,11 @@ class InfiniteChunkSystem {
     });
 
     // Populate bushes with deterministic variance and house clearing check
+    // Preserve full lush bushes in village (isCenter), heavily decimate in distant wilderness chunks (LOD)
+    const maxBushesPerProto = isCenter ? (IS_MOBILE ? 24 : 48) : (IS_MOBILE ? 1 : 2);
     this.templateBushes.forEach((bData, idx) => {
       if (this.hashCoord(cx + idx * 0.13, cz + idx * 0.13, 101) > treeDensity) return;
+      if (bushInstances[bData.protoId] && bushInstances[bData.protoId].matrices.length >= maxBushesPerProto) return;
 
       dummy.position.copy(bData.pos);
       dummy.rotation.copy(bData.rot);
@@ -2609,9 +2623,11 @@ class InfiniteChunkSystem {
         instMesh.setMatrixAt(i, matrices[i]);
       }
       instMesh.instanceMatrix.needsUpdate = true;
+      instMesh.computeBoundingSphere();
       // Store raw source arrays for real-time camera frustum & distance culling
       instMesh.userData.allMatrices = matrices;
       instMesh.userData.localPositions = localPositions;
+      instMesh.userData.canCastShadowOriginal = castShadow;
       chunkGroup.add(instMesh);
       instancedMeshes.push(instMesh);
     };
@@ -2622,7 +2638,7 @@ class InfiniteChunkSystem {
 
       for (let id = 0; id < this.treePrototypes.length; id++) {
         if (treeInstances[id]) {
-          const count = Math.min(treeInstances[id].matrices.length, 64);
+          const count = isCenter ? treeInstances[id].matrices.length : Math.min(treeInstances[id].matrices.length, 12);
           for (let i = 0; i < count; i++) {
             allFoliageMatrices.push(treeInstances[id].matrices[i]);
             allFoliagePositions.push(treeInstances[id].positions[i]);
@@ -2631,7 +2647,7 @@ class InfiniteChunkSystem {
       }
       for (let id = 0; id < this.bushPrototypes.length; id++) {
         if (bushInstances[id]) {
-          const count = Math.min(bushInstances[id].matrices.length, 32);
+          const count = isCenter ? bushInstances[id].matrices.length : Math.min(bushInstances[id].matrices.length, 6);
           for (let i = 0; i < count; i++) {
             allFoliageMatrices.push(bushInstances[id].matrices[i]);
             allFoliagePositions.push(bushInstances[id].positions[i]);
@@ -2719,7 +2735,8 @@ class InfiniteChunkSystem {
       group: chunkGroup,
       instancedMeshes,
       houseGroup,
-      houseColliders
+      houseColliders,
+      wildernessHouseMesh: chunkWildernessHouseMesh
     };
 
     this.chunks.set(key, chunkData);
@@ -2873,8 +2890,8 @@ class InfiniteChunkSystem {
       if (chunk.group.visible && chunk.instancedMeshes && chunk.instancedMeshes.length > 0) {
         const cwx = chunk.cx * this.chunkSize;
         const cwz = chunk.cz * this.chunkSize;
-        // Fog starts around 20m and blocks view by 35-40m; keep all trees within 42m
-        const maxDistSq = 58.0 * 58.0; // Smooth radial distance: no harsh chunk-grid cutoffs! 
+        // Fog starts around 20m and blocks view by 28-35m; cull foliage submerged deep in fog
+        const maxDistSq = IS_MOBILE ? (28.0 * 28.0) : (38.0 * 38.0); // Smooth radial distance: no harsh chunk-grid cutoffs! 
 
         for (let m = 0; m < chunk.instancedMeshes.length; m++) {
           const im = chunk.instancedMeshes[m];
@@ -2903,6 +2920,22 @@ class InfiniteChunkSystem {
             im.instanceMatrix.needsUpdate = true;
           }
         }
+      }
+
+      // Dynamic Shadow Pass Culling: chunks far from shadowFocus don't cast shadows onto Santa's view frustum
+      const chunkDistToShadow = Math.hypot(cwx - shadowFocus.x, cwz - shadowFocus.z);
+      const canCastShadow = chunkDistToShadow <= (IS_MOBILE ? 22.0 : 32.0);
+
+      if (chunk.instancedMeshes) {
+        for (let m = 0; m < chunk.instancedMeshes.length; m++) {
+          const im = chunk.instancedMeshes[m];
+          if (im.userData.canCastShadowOriginal) {
+            im.castShadow = canCastShadow;
+          }
+        }
+      }
+      if (chunk.wildernessHouseMesh) {
+        chunk.wildernessHouseMesh.castShadow = canCastShadow;
       }
 
       if (isOriginChunk) continue; // Keep main village anchor cached so houses are never permanently deleted
@@ -3361,6 +3394,9 @@ gltfLoader.load(
     // Synchronize initial targets for origin village chunk (0,0)
     deliverySystem.syncChunkTargets('0,0', 0, 0);
 
+    // Begin the first 5-delivery run immediately (seeds every preloaded chunk)
+    deliverySystem.startRun(false);
+
     // Disable OrbitControls mouse drag overrides so camera smoothly tracks Santa's sleigh
     controls.enabled = false;
 
@@ -3374,10 +3410,10 @@ gltfLoader.load(
     // Initialize automatic adaptive VillageLightingSystem once scene is loaded
     lightingSystem.scanScene();
 
-    // Shadow frustum tightened around the ground under Santa for maximum texel density.
-    // Desktop: 88m across a 2048 map => ~4.3cm per texel (tree/house shadows stay crisp).
-    // Mobile: 52m across a 1024 map => ~5.1cm per texel.
-    const shadowExtent = IS_MOBILE ? 26 : 44;
+    // Shadow frustum tightened around the ground under Santa for maximum texel density and reduced shadow-pass polygon load.
+    // Desktop: 56m across a 2048 map => ~2.7cm per texel (tree/house shadows stay razor sharp).
+    // Mobile: 36m across a 1024 map => ~3.5cm per texel.
+    const shadowExtent = IS_MOBILE ? 18 : 28;
     moonLight.shadow.camera.left = -shadowExtent;
     moonLight.shadow.camera.right = shadowExtent;
     moonLight.shadow.camera.top = shadowExtent;

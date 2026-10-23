@@ -9,21 +9,49 @@ export class DeliverySystem {
     this.sleighController = sleighController;
     this.isMobile = isMobile;
 
-    // Progression & stats
-    this.giftsRemaining = 25;
-    this.maxGifts = 25;
+    // --- Run progression -------------------------------------------------
+    // A run is exactly 5 deliveries. Gift stock is deliberately limited so
+    // every wasted drop matters, which is what makes accuracy meaningful.
+    this.deliveriesRequired = 5;
+    this.deliveriesMade = 0;
+    this.attempts = 0;
+    this.hits = 0;
+    this.starsTotal = 6;
+    this.starsCollected = 0;
+    this.maxGifts = 10;
+    this.giftsRemaining = this.maxGifts;
+
     this.totalDelivered = 0;
     this.combo = 0;
+    this.deliveryScore = 0;
+    this.starScore = 0;
     this.score = 0;
+    this.finalScore = 0;
     this.completedChunks = new Set();
+
+    this.runActive = false;
+    this.runComplete = false;
+    this.activeTarget = null;
+    this.runTargets = [];
+    this._nextTargetTimeout = null;
+    this._finishTimeout = null;
+    this._bannerTimeout = null;
+    this._crashFlashTimeout = null;
+    this._finishReason = null;
 
     // Session persistence: Map of houseId -> { chunkKey, worldPos, delivered: boolean, markerGroup }
     this.trackedHouses = new Map();
 
-    // Active markers pool
+    // Active target marker (only one is ever displayed)
     this.markersGroup = new THREE.Group();
     this.markersGroup.name = 'DeliveryMarkersGroup';
     this.scene.add(this.markersGroup);
+
+    // Optional collectible stars placed along the route
+    this.starsGroup = new THREE.Group();
+    this.starsGroup.name = 'DeliveryStarsGroup';
+    this.scene.add(this.starsGroup);
+    this.activeStars = [];
 
     // Falling gifts & active delivery sparks
     this.activeGifts = [];
@@ -35,10 +63,10 @@ export class DeliverySystem {
     this.closestTarget = null;
     this.closestDistance = Infinity;
 
-    // Delivery thresholds tuned to miniature house proportions (~0.28m wide) and flight corridor
-    this.deliveryRadius = 1.8; // Horizontal proximity to house center for valid drop
-    this.minDropHeight = 0.04; // Minimum height above roof target for natural drop
-    this.maxDropHeight = 0.85; // Maximum height above roof target for accurate drop (calibrated to low flight level)
+    // Delivery is a single, forgiving proximity check. Fly near the highlighted
+    // house's golden light beam and press DROP GIFT.
+    this.deliveryRange = 2.2;
+    this._rangeState = null;
 
     // UI elements
     this._createHUD();
@@ -58,17 +86,61 @@ export class DeliverySystem {
   }
 
   _initMarkerTemplate() {
-    // 1. Procedural High-DPI Canvas Textures matching the reference artwork
-    this._beamTexture = this._createLightBeamTexture();
+    // 1. Procedural High-DPI Canvas Textures (existing art direction)
     this._starGlintTexture = this._createStarGlintTexture();
     this._haloTexture = this._createHaloTexture();
-    this._checkmarkTexture = this._createCheckmarkTexture();
-    this._snowflakeIconTexture = this._createSnowflakeIconTexture();
 
-    // 2. 3D Volumetric Geometries calibrated to the miniature house models (~0.28m wide)
-    // Slender vertical atmospheric light beam pillar: 14.0m high, 0.075m base radius
-    this._beamGeo = new THREE.CylinderGeometry(0.045, 0.075, 14.0, 24, 1, true);
-    this._beamGeo.translate(0, 7.0, 0);
+    // 2. Translucent golden beacon cylinder. Anchored at the target house rooftop,
+    // open-ended, slender with soft edges and gradual fading toward the sky.
+    // Slender radius (base: 0.055m, top: 0.085m) and tall height (12.0m) to be
+    // easily spotted from afar without overpowering or occluding the house.
+    this._beamHeight = 12.0;
+    this._beamGeo = new THREE.CylinderGeometry(0.085, 0.055, this._beamHeight, 18, 1, true);
+    this._beamGeo.translate(0, this._beamHeight * 0.5, 0);
+
+    // Classic 3D 5-point star with beveled faceting and smooth centroid centering
+    const starShape = new THREE.Shape();
+    for (let i = 0; i < 10; i++) {
+      const radius = i % 2 === 0 ? 0.11 : 0.048;
+      const angle = -Math.PI / 2 + (i * Math.PI) / 5;
+      const px = Math.cos(angle) * radius;
+      const py = Math.sin(angle) * radius;
+      if (i === 0) starShape.moveTo(px, py);
+      else starShape.lineTo(px, py);
+    }
+    starShape.closePath();
+
+    this._starGeo = new THREE.ExtrudeGeometry(starShape, {
+      depth: 0.032,
+      bevelEnabled: true,
+      bevelSegments: 1,
+      steps: 1,
+      bevelSize: 0.010,
+      bevelThickness: 0.012
+    });
+    this._starGeo.center();
+
+    // Warm golden star PBR material with soft emissive luminance (subtle, non-blinding)
+    this._starMat = new THREE.MeshStandardMaterial({
+      color: 0xffcb38,
+      emissive: 0xf39c12,
+      emissiveIntensity: 0.75,
+      metalness: 0.68,
+      roughness: 0.28,
+      toneMapped: true
+    });
+
+    // Soft localized golden halo glow
+    this._starHaloMat = new THREE.SpriteMaterial({
+      map: this._haloTexture,
+      color: 0xffca3d,
+      blending: THREE.AdditiveBlending,
+      transparent: true,
+      opacity: 0.38,
+      depthWrite: false,
+      fog: false,
+      toneMapped: true
+    });
 
     this.deliveredMat = new THREE.MeshBasicMaterial({
       color: 0x2ecc71,
@@ -76,6 +148,70 @@ export class DeliverySystem {
       opacity: 0.75,
       fog: false
     });
+  }
+
+  // Soft, additive translucent golden beam material with subtle glow,
+  // feather-soft edges, and gradual fading toward the sky.
+  // The house and scenery behind it remain clearly visible.
+  _createBeamMaterial(opacity = 0.24) {
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        uColor: { value: new THREE.Color(0xf5b82e) }, // Warm, translucent golden-yellow
+        uOpacity: { value: opacity },
+        uTime: { value: 0.0 }
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        varying vec3 vNormalView;
+        varying vec3 vViewDir;
+
+        void main() {
+          vUv = uv;
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          vNormalView = normalize(normalMatrix * normal);
+          vViewDir = normalize(-mvPosition.xyz);
+          gl_Position = projectionMatrix * mvPosition;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 uColor;
+        uniform float uOpacity;
+        uniform float uTime;
+
+        varying vec2 vUv;
+        varying vec3 vNormalView;
+        varying vec3 vViewDir;
+
+        void main() {
+          // Feathered cylindrical falloff: soft edges, no harsh lines or flat silhouette.
+          float facing = clamp(abs(dot(normalize(vNormalView), normalize(vViewDir))), 0.0, 1.0);
+          float softEdge = pow(facing, 1.5);
+
+          // Gradual fading toward the sky:
+          // Smooth rise from roof base (no harsh cut at anchor point),
+          // graceful power-curve falloff toward the top into the sky.
+          float baseFade = smoothstep(0.0, 0.035, vUv.y);
+          float skyFade = pow(clamp(1.0 - vUv.y, 0.0, 1.0), 1.75);
+          float heightFade = baseFade * skyFade;
+
+          // Gentle ambient breathing shimmer (calm glow, no harsh strobe or blinding pulse)
+          float glowPulse = 0.92 + 0.08 * sin(uTime * 1.8 + vUv.y * 2.5);
+
+          float alpha = uOpacity * softEdge * heightFade * glowPulse;
+
+          // Pure warm golden-yellow color without a harsh white core or excessive bloom flare
+          gl_FragColor = vec4(uColor, alpha);
+        }
+      `,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: true
+    });
+
+    material.userData = { baseOpacity: opacity };
+    return material;
   }
 
   // Generates a crisp, luminous circular neon badge enclosing a 6-arm crystal snowflake with rich gold tones
@@ -301,19 +437,43 @@ export class DeliverySystem {
     const hud = document.createElement('div');
     hud.id = 'santa-hud';
     hud.innerHTML = `
-      <div class="hud-card hud-top-right">
-        <div class="hud-target-indicator">
-          <div id="hud-compass-arrow" class="compass-arrow">▲</div>
-          <div class="target-meta">
-            <span class="target-title">NEXT CHIMNEY</span>
-            <span id="hud-target-dist" class="target-dist">-- m</span>
-            <span id="hud-delivery-status" class="delivery-status status-out-of-range">SEARCHING</span>
-          </div>
+      <div class="hud-card hud-top-left hud-run-card">
+        <div class="hud-row">
+          <span class="hud-icon">🎁</span>
+          <span class="hud-label">DELIVERIES</span>
+          <span id="hud-deliveries" class="hud-value">0 / 5</span>
+        </div>
+        <div id="hud-progress-track" class="hud-progress-track" aria-hidden="true">
+          <span class="progress-pip"></span>
+          <span class="progress-pip"></span>
+          <span class="progress-pip"></span>
+          <span class="progress-pip"></span>
+          <span class="progress-pip"></span>
+        </div>
+        <div class="hud-row">
+          <span class="hud-icon">⭐</span>
+          <span class="hud-label">STARS</span>
+          <span id="hud-stars" class="hud-value">0 / 6</span>
+        </div>
+        <div class="hud-row">
+          <span class="hud-icon">💎</span>
+          <span class="hud-label">SCORE</span>
+          <span id="hud-score" class="hud-value">0</span>
+        </div>
+        <div class="hud-row">
+          <span class="hud-icon">🎯</span>
+          <span class="hud-label">ACCURACY</span>
+          <span id="hud-accuracy" class="hud-value">--</span>
+        </div>
+        <div class="hud-row hud-gift-stock">
+          <span class="hud-icon">🛷</span>
+          <span class="hud-label">GIFTS</span>
+          <span id="hud-gifts-count" class="hud-value">10</span>
         </div>
       </div>
 
       <div id="hud-banner" class="hud-banner hidden">
-        <span id="hud-banner-text">PERFECT DELIVERY!</span>
+        <span id="hud-banner-text">GIFT DELIVERED!</span>
       </div>
 
       <div id="mobile-controls-wrapper">
@@ -322,23 +482,68 @@ export class DeliverySystem {
           <div id="joystick-base">
             <div id="joystick-thumb"></div>
           </div>
-          <div class="control-label">FLIGHT STICK</div>
+          <div class="control-label">FLIGHT</div>
         </div>
 
-        <!-- Bottom-Right: Large Drop Gift Button -->
+        <!-- Bottom-Right: One clearly labeled drop action, for mouse, touch and keyboard -->
         <div id="drop-zone">
-          <button id="btn-drop-gift" class="btn-drop-large">
+          <div id="drop-status" class="drop-status far" aria-live="polite">GET CLOSER</div>
+          <button id="btn-drop-gift" class="btn-drop-large" type="button">
             <span class="drop-icon">🎁</span>
             <span class="drop-label">DROP GIFT</span>
+            <span class="drop-key" aria-hidden="true">E</span>
           </button>
+        </div>
+      </div>
+
+      <div id="crash-flash" class="crash-flash" aria-hidden="true"></div>
+
+      <!-- End-of-run results screen -->
+      <div id="results-overlay" class="results-overlay hidden">
+        <div class="results-card">
+          <div class="results-glow" aria-hidden="true"></div>
+          <span class="results-kicker">SANTA'S SLEIGH RUN</span>
+          <h2 id="results-title">DELIVERIES COMPLETE!</h2>
+          <p id="results-subtitle">The village is warm and bright.</p>
+          <div id="results-rating" class="results-rating" aria-label="Run rating">★★★</div>
+          <div class="results-grid">
+            <div class="result-stat">
+              <span>DELIVERIES</span>
+              <strong id="results-deliveries">0 / 5</strong>
+            </div>
+            <div class="result-stat">
+              <span>ACCURACY</span>
+              <strong id="results-accuracy">--</strong>
+            </div>
+            <div class="result-stat">
+              <span>STARS</span>
+              <strong id="results-stars">0 / 6</strong>
+            </div>
+            <div class="result-stat result-stat-score">
+              <span>FINAL SCORE</span>
+              <strong id="results-score">0</strong>
+            </div>
+          </div>
+          <button id="btn-replay" class="btn-replay">🎄 FLY AGAIN</button>
         </div>
       </div>
     `;
 
     container.appendChild(hud);
+    this.hudElement = hud;
+    this._progressPips = Array.from(hud.querySelectorAll('.progress-pip'));
 
     this._setupVirtualJoystick();
     this._setupDropButton();
+
+    const replayBtn = document.getElementById('btn-replay');
+    if (replayBtn) {
+      replayBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.startRun(true);
+      });
+    }
   }
 
   _setupVirtualJoystick() {
@@ -478,18 +683,20 @@ export class DeliverySystem {
     const dropBtn = document.getElementById('btn-drop-gift');
     if (!dropBtn) return;
 
+    let lastTrigger = 0;
     const trigger = (e) => {
       e.preventDefault();
       e.stopPropagation();
-      if (this.giftsRemaining <= 0) {
-        this.refillGifts();
-      } else {
-        this.triggerDelivery();
-      }
+      // pointerdown gives instant feedback on touch; click covers keyboard
+      // activation. The guard keeps a single press from dropping two gifts.
+      const now = performance.now();
+      if (now - lastTrigger < 250) return;
+      lastTrigger = now;
+      this.triggerDelivery();
     };
 
     dropBtn.addEventListener('pointerdown', trigger);
-    dropBtn.addEventListener('touchstart', trigger, { passive: false });
+    dropBtn.addEventListener('click', trigger);
   }
 
   showBanner(message, type = 'success') {
@@ -518,43 +725,117 @@ export class DeliverySystem {
     let candidatePositions = [];
 
     if (isCenter && this.chunkSystem.templateHouses) {
-      // Pick 4 signature houses across the 4 flight quadrants with exact rooftop surface contact positions right beside the chimney
-      const targetSpecs = [
-        { name: 'house4',    exactRoof: new THREE.Vector3(-1.140, 0.735, -5.080) }, // 1. Lakeside Chalet (North quadrant signature)
-        { name: 'houseP_11', exactRoof: new THREE.Vector3(-2.880, 0.510, -2.420) }, // 2. South Street Chalet (South quadrant signature)
-        { name: 'houseP_70', exactRoof: new THREE.Vector3(5.500, 0.768, -2.150) },  // 3. East Ridge Chalet (East quadrant signature)
-        { name: 'houseP_23', exactRoof: new THREE.Vector3(-6.920, 0.490, -6.560) }  // 4. West Meadow Chalet (West quadrant signature)
-      ];
+      // Pick signature landmark houses across flight quadrants
+      const landmarkNames = ['house4', 'houseP_11', 'houseP_70', 'houseP_23'];
+      const matchedLandmarks = [];
 
-      targetSpecs.forEach((spec, i) => {
+      landmarkNames.forEach((targetName, i) => {
+        const houseTemplate = this.chunkSystem.templateHouses.find((h) => h.meshName === targetName);
+        if (houseTemplate && houseTemplate.geo) {
+          if (!houseTemplate.geo.boundingBox) houseTemplate.geo.computeBoundingBox();
+          const box = houseTemplate.geo.boundingBox.clone();
+          const m = new THREE.Matrix4().compose(
+            houseTemplate.pos,
+            new THREE.Quaternion().setFromEuler(houseTemplate.rot),
+            houseTemplate.scale
+          );
+          box.applyMatrix4(m);
+
+          // Exact rooftop peak centered precisely above the house
+          const exactRoof = new THREE.Vector3(
+            (box.min.x + box.max.x) * 0.5,
+            box.max.y,
+            (box.min.z + box.max.z) * 0.5
+          );
+
+          matchedLandmarks.push(exactRoof);
+          candidatePositions.push({
+            houseId: `center_village_house_${i}`,
+            worldPos: exactRoof
+          });
+        }
+      });
+
+      // The village contains ~109 houses. Derive extra rooftop targets from actual house colliders
+      // so a full run is always available even before neighbouring chunks stream in.
+      const chunkData = this.chunkSystem.chunks.get(chunkKey);
+      const colliders = chunkData && Array.isArray(chunkData.houseColliders)
+        ? chunkData.houseColliders
+        : [];
+      const extras = [];
+      const seen = [];
+
+      for (let i = 0; i < colliders.length; i++) {
+        const box = colliders[i];
+        if (!box || !box.min || !box.max) continue;
+        const sizeX = box.max.x - box.min.x;
+        const sizeZ = box.max.z - box.min.z;
+        if (sizeX < 0.18 || sizeZ < 0.18) continue;
+        const topY = box.max.y;
+        if (topY < 0.55 || topY > 1.35) continue;
+
+        const x = (box.min.x + box.max.x) * 0.5;
+        const z = (box.min.z + box.max.z) * 0.5;
+
+        // Keep distance from the landmark roofs so targets don't bunch up
+        if (matchedLandmarks.some((roof) => Math.hypot(roof.x - x, roof.z - z) < 1.0)) {
+          continue;
+        }
+        if (seen.some((p) => Math.hypot(p.x - x, p.z - z) < 0.65)) continue;
+
+        seen.push({ x, z });
+        extras.push({ x, y: topY, z, dist: Math.hypot(x, z) });
+      }
+
+      extras.sort((a, b) => a.dist - b.dist);
+      extras.slice(0, 3).forEach((extra, i) => {
         candidatePositions.push({
-          houseId: `center_village_house_${i}`,
-          worldPos: spec.exactRoof.clone()
+          houseId: `center_village_extra_${i}`,
+          worldPos: new THREE.Vector3(extra.x, extra.y, extra.z)
         });
       });
     } else {
-      // Wilderness chunk settlement: pick 3 or 4 houses deterministically
+      // Wilderness chunk settlement: compute exact rooftop centers from actual house colliders
       const chunkData = this.chunkSystem.chunks.get(chunkKey);
-      if (chunkData && chunkData.houseGroup && chunkData.houseGroup.children.length > 0) {
-        const children = chunkData.houseGroup.children;
-        // Deterministic target count: 3 or 4 houses based on chunk coordinates
-        const targetCount = Math.min(children.length, (Math.abs(cx * 7 + cz * 13) % 2 === 0 ? 4 : 3));
+      const colliders = chunkData && Array.isArray(chunkData.houseColliders)
+        ? chunkData.houseColliders
+        : [];
+
+      if (colliders.length > 0) {
+        const roofCandidates = [];
+        for (let idx = 0; idx < colliders.length; idx++) {
+          const box = colliders[idx];
+          if (!box || !box.min || !box.max) continue;
+          const sizeX = box.max.x - box.min.x;
+          const sizeZ = box.max.z - box.min.z;
+          if (sizeX < 0.18 || sizeZ < 0.18) continue;
+          if (box.max.y < 0.55 || box.max.y > 1.35) continue;
+
+          roofCandidates.push({
+            x: (box.min.x + box.max.x) * 0.5,
+            y: box.max.y,
+            z: (box.min.z + box.max.z) * 0.5
+          });
+        }
+
+        roofCandidates.sort((a, b) =>
+          Math.hypot(a.x - worldChunkOrigin.x, a.z - worldChunkOrigin.z) -
+          Math.hypot(b.x - worldChunkOrigin.x, b.z - worldChunkOrigin.z)
+        );
+
+        const targetCount = Math.min(roofCandidates.length, (Math.abs(cx * 7 + cz * 13) % 2 === 0 ? 4 : 3));
         for (let idx = 0; idx < targetCount; idx++) {
-          const mesh = children[idx];
-          const worldPos = new THREE.Vector3(
-            worldChunkOrigin.x + mesh.position.x + 0.025,
-            mesh.position.y + 0.334,
-            worldChunkOrigin.z + mesh.position.z + 0.003
-          );
+          const roof = roofCandidates[idx];
           candidatePositions.push({
-            houseId: `wilderness_${chunkKey}_house_${idx}`,
-            worldPos: worldPos
+            houseId: `wilderness_${chunkKey}_roof_${idx}`,
+            worldPos: new THREE.Vector3(roof.x, roof.y, roof.z)
           });
         }
       }
     }
 
-    // Register or restore tracked houses and spawn their stylized drop markers
+    // Register or refresh delivery candidates. The run route is locked when the
+    // run starts, so streaming new chunks never steals focus from the active target.
     candidatePositions.forEach((cand) => {
       let houseData = this.trackedHouses.get(cand.houseId);
       if (!houseData) {
@@ -569,13 +850,6 @@ export class DeliverySystem {
       } else {
         houseData.worldPos.copy(cand.worldPos);
       }
-
-      // If not delivered and doesn't currently have an active visual marker in the scene, create one
-      if (!houseData.delivered && !houseData.marker) {
-        const marker = this._createTargetMarker(houseData);
-        houseData.marker = marker;
-        this.markersGroup.add(marker);
-      }
     });
 
     this._updateVisualMarkers();
@@ -584,6 +858,9 @@ export class DeliverySystem {
   // Clean up visual markers when a chunk unloads while preserving delivery progress
   unloadChunkTargets(chunkKey) {
     this.trackedHouses.forEach((houseData) => {
+      // Keep the active target's beacon alive even if its chunk streams out, so
+      // the player can always find their way back to the highlighted chimney.
+      if (this.activeTarget && houseData.houseId === this.activeTarget.houseId) return;
       if (houseData.chunkKey === chunkKey && houseData.marker) {
         this.markersGroup.remove(houseData.marker);
         houseData.marker = null;
@@ -592,23 +869,21 @@ export class DeliverySystem {
   }
 
   _updateVisualMarkers() {
-    // Only maintain visual markers for current active chunk targets and closest target house
-    this.trackedHouses.forEach((houseData) => {
-      const isChunkActive = this.chunkSystem.chunks.has(houseData.chunkKey);
-      const isRelevant = isChunkActive && (
-        houseData.chunkKey === this.currentChunkKey ||
-        (this.closestTarget && this.closestTarget.houseId === houseData.houseId)
-      );
+    const desired = this.activeTarget;
 
-      if (isRelevant && !houseData.delivered && !houseData.marker) {
-        const marker = this._createTargetMarker(houseData);
-        houseData.marker = marker;
-        this.markersGroup.add(marker);
-      } else if ((!isRelevant || houseData.delivered) && houseData.marker && !houseData.marker.userData?.isFading) {
+    // Exactly one marker lives in the scene at a time.
+    this.trackedHouses.forEach((houseData) => {
+      if (houseData.marker && houseData !== desired && !houseData.marker.userData?.isFading) {
         this.markersGroup.remove(houseData.marker);
         houseData.marker = null;
       }
     });
+
+    if (desired && !desired.delivered && !desired.marker) {
+      const marker = this._createTargetMarker(desired);
+      desired.marker = marker;
+      this.markersGroup.add(marker);
+    }
   }
 
   _createTargetMarker(houseData) {
@@ -617,127 +892,18 @@ export class DeliverySystem {
     marker.position.copy(worldPos);
     marker.name = `Marker_${houseData.houseId}`;
 
-    // 1. Tall vertical atmospheric light beam reaching high into the night sky (Panel 1, 2, 3)
-    const beamMat = new THREE.MeshBasicMaterial({
-      map: this._beamTexture,
-      color: 0xffd152,
-      transparent: true,
-      opacity: 0.28,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-      fog: false
-    });
-    beamMat.userData = { baseOpacity: 0.28 };
+    // Translucent golden light beam anchored vertically on the target house roof.
+    // The cylinder geometry's base sits at local y=0, so it begins precisely at worldPos.
+    const beamMat = this._createBeamMaterial(0.24);
     const beamMesh = new THREE.Mesh(this._beamGeo, beamMat);
+    beamMesh.renderOrder = 1;
     marker.add(beamMesh);
-
-    // 2. Subtle warm PointLight illuminating the snow on the roof beside the chimney
-    const snowLight = new THREE.PointLight(0xffa63b, 0.015, 0.50, 1.0);
-    snowLight.position.set(0, 0.04, 0);
-    marker.add(snowLight);
-
-    // 3. Floating Holographic Snowflake Medallion (Panel 2, 3, 4)
-    const floatingIconGroup = new THREE.Group();
-    floatingIconGroup.position.y = 0.18; // Hovering 18cm above roof ring
-
-    // Soft celestial halo aura
-    const haloMat = new THREE.SpriteMaterial({
-      map: this._haloTexture,
-      color: 0xffd152,
-      blending: THREE.AdditiveBlending,
-      transparent: true,
-      opacity: 0.35,
-      depthWrite: false,
-      fog: false
-    });
-    haloMat.userData = { baseOpacity: 0.35 };
-    const haloSprite = new THREE.Sprite(haloMat);
-    haloSprite.scale.set(0.20, 0.20, 0.20);
-    floatingIconGroup.add(haloSprite);
-
-    // Snowflake Medallion (crisp high-DPI sprite facing camera)
-    const snowflakeMat = new THREE.SpriteMaterial({
-      map: this._snowflakeIconTexture,
-      color: 0xffffff,
-      transparent: true,
-      opacity: 0.95,
-      depthWrite: false,
-      fog: false
-    });
-    snowflakeMat.userData = { baseOpacity: 0.95 };
-    const snowflakeSprite = new THREE.Sprite(snowflakeMat);
-    snowflakeSprite.scale.set(0.14, 0.14, 0.14);
-    floatingIconGroup.add(snowflakeSprite);
-
-    // In-Range Indicator: Floating Green Checkmark Badge (Panel 4)
-    const checkmarkMat = new THREE.SpriteMaterial({
-      map: this._checkmarkTexture,
-      transparent: true,
-      opacity: 0.98,
-      depthWrite: false,
-      fog: false
-    });
-    checkmarkMat.userData = { baseOpacity: 0.98 };
-    const checkmarkSprite = new THREE.Sprite(checkmarkMat);
-    checkmarkSprite.scale.set(0.065, 0.065, 0.065);
-    checkmarkSprite.position.y = 0.09; // Perched directly atop snowflake medallion
-    checkmarkSprite.visible = false;
-    floatingIconGroup.add(checkmarkSprite);
-
-    marker.add(floatingIconGroup);
-
-    // 4. Sparkle Particles: 4-Point Diamond Stars (Panel 2 & 3 callout)
-    const sparkleCount = 18;
-    const sparkleGeo = new THREE.BufferGeometry();
-    const positions = new Float32Array(sparkleCount * 3);
-    const sparkleVelocities = [];
-
-    for (let p = 0; p < sparkleCount; p++) {
-      const angle = Math.random() * Math.PI * 2;
-      const rad = Math.random() * 0.065;
-      positions[p * 3]     = Math.cos(angle) * rad;
-      positions[p * 3 + 1] = 0.02 + Math.random() * 8.5;
-      positions[p * 3 + 2] = Math.sin(angle) * rad;
-      sparkleVelocities.push({
-        y: 0.35 + Math.random() * 0.55,
-        phase: Math.random() * Math.PI * 2
-      });
-    }
-    sparkleGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-
-    const sparklesMat = new THREE.PointsMaterial({
-      map: this._starGlintTexture,
-      color: 0xffeb85,
-      size: 0.055,
-      transparent: true,
-      opacity: 0.85,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      fog: false
-    });
-    sparklesMat.userData = { baseOpacity: 0.85 };
-    const sparklesMesh = new THREE.Points(sparkleGeo, sparklesMat);
-    marker.add(sparklesMesh);
 
     marker.userData = {
       houseData,
       basePos: worldPos.clone(),
       beamMesh,
       beamMat,
-      snowLight,
-      floatingIconGroup,
-      snowflakeSprite,
-      snowflakeMat,
-      haloSprite,
-      haloMat,
-      checkmarkSprite,
-      checkmarkMat,
-      sparklesMesh,
-      sparklesGeo: sparkleGeo,
-      sparklesMat,
-      sparkleCount,
-      sparkleVelocities,
       inRange: false,
       isFading: false,
       fadeProgress: 0.0
@@ -746,16 +912,33 @@ export class DeliverySystem {
     return marker;
   }
 
+  _isInDeliveryRange(pos) {
+    const target = this.activeTarget;
+    if (!target || target.delivered) return false;
+    const dx = pos.x - target.worldPos.x;
+    const dy = pos.y - target.worldPos.y;
+    const dz = pos.z - target.worldPos.z;
+    return dx * dx + dy * dy + dz * dz <= this.deliveryRange * this.deliveryRange;
+  }
+
   triggerDelivery() {
+    if (!this.runActive || this.runComplete) return;
+
+    if (!this.activeTarget) {
+      this.showBanner('WAIT FOR THE NEXT TARGET', 'miss');
+      return;
+    }
+
     if (this.giftsRemaining <= 0) {
-      this.showBanner('OUT OF GIFTS! PRESS R TO REFILL', 'miss');
+      this.showBanner(this.activeGifts.length > 0 ? 'GIFT IN FLIGHT...' : 'OUT OF GIFTS!', 'miss');
       soundManager.playMiss();
       return;
     }
 
-    // Consume 1 gift
+    // Consume 1 gift and record the attempt. Accuracy is hits / attempts, so a
+    // panicked extra drop genuinely costs the player something.
     this.giftsRemaining--;
-    this._updateHUDGifts();
+    this.attempts++;
 
     // Spawn falling gift from sleigh
     const startPos = this.sleighController.getDropOrigin();
@@ -788,54 +971,41 @@ export class DeliverySystem {
     this.scene.add(giftGroup);
     soundManager.playDrop();
 
-    // Check closest eligible undelivered house
-    let bestTarget = null;
-    let minDist = Infinity;
-    let closestCandidate = null;
-    let closestCandidateDist = Infinity;
+    // Only the currently highlighted target can be scored. Range is the same
+    // simple proximity check the HUD uses, so READY TO DROP always means the
+    // next press will land.
+    const target = this.activeTarget;
+    const rangePos = this.sleighController.position;
+    const inRange = this._isInDeliveryRange(rangePos);
 
-    this.trackedHouses.forEach((houseData) => {
-      if (houseData.delivered) return;
-      if (!this.chunkSystem.chunks.has(houseData.chunkKey)) return;
+    // Closer drops score slightly better, but any in-range drop delivers.
+    let precision = 0;
+    if (inRange) {
+      const dist = rangePos.distanceTo(target.worldPos);
+      precision = Math.max(0, Math.min(1, 1 - dist / this.deliveryRange));
+    }
 
-      const horizDist = Math.hypot(
-        startPos.x - houseData.worldPos.x,
-        startPos.z - houseData.worldPos.z
-      );
-      const vertDist = startPos.y - houseData.worldPos.y;
-      const totalDist = Math.hypot(horizDist, Math.max(0, vertDist));
+    let targetPos;
+    if (inRange) {
+      targetPos = target.worldPos.clone();
+    } else {
+      const groundY = this.chunkSystem?.getHeight
+        ? this.chunkSystem.getHeight(startPos.x, startPos.z)
+        : 0.5;
+      targetPos = new THREE.Vector3(startPos.x, groundY + 0.05, startPos.z);
+    }
 
-      if (totalDist < closestCandidateDist) {
-        closestCandidateDist = totalDist;
-        closestCandidate = { houseData, horizDist, vertDist };
-      }
-
-      // Valid delivery range: suitable altitude above roof and within delivery radius
-      if (horizDist <= this.deliveryRadius && vertDist >= this.minDropHeight && vertDist <= this.maxDropHeight) {
-        if (horizDist < minDist) {
-          minDist = horizDist;
-          bestTarget = houseData;
-        }
-      }
-    });
-
-    // If missed drop, show a helpful hint
-    if (!bestTarget && closestCandidate) {
-      if (closestCandidate.vertDist > this.maxDropHeight) {
-        this.showBanner('MISSED DROP: FLY LOWER OVER TARGET!', 'miss');
-      } else if (closestCandidate.vertDist < this.minDropHeight) {
-        this.showBanner('MISSED DROP: FLY HIGHER ABOVE ROOF!', 'miss');
-      } else if (closestCandidate.horizDist > this.deliveryRadius) {
-        this.showBanner('MISSED DROP: GET CLOSER TO CHIMNEY!', 'miss');
-      }
+    if (!inRange) {
+      this.showBanner('GET CLOSER TO THE TARGET!', 'miss');
     }
 
     this.activeGifts.push({
       mesh: giftGroup,
       startPos: startPos.clone(),
-      targetHouse: bestTarget,
-      isSuccess: !!bestTarget,
-      targetPos: bestTarget ? bestTarget.worldPos.clone() : new THREE.Vector3(startPos.x, Math.max(0, startPos.y - 12), startPos.z),
+      targetHouse: inRange ? target : null,
+      isSuccess: inRange,
+      precision,
+      targetPos,
       progress: 0.0,
       dropSpeed: 1.6, // Drop trajectory speed
       rotVel: new THREE.Vector3(
@@ -844,9 +1014,15 @@ export class DeliverySystem {
         (Math.random() - 0.5) * 6
       )
     });
+
+    this._updateHUD();
   }
 
   refillGifts() {
+    if (this.runActive) {
+      this.showBanner('GIFT STOCK IS LIMITED THIS RUN!', 'miss');
+      return;
+    }
     this.giftsRemaining = this.maxGifts;
     this._updateHUDGifts();
     this.showBanner('GIFTS REFILLED! 🎁✨', 'success');
@@ -859,12 +1035,14 @@ export class DeliverySystem {
 
     const btn = document.getElementById('btn-drop-gift');
     if (btn) {
-      if (this.giftsRemaining <= 0) {
-        btn.classList.add('out-of-gifts');
-        btn.querySelector('.drop-label').textContent = 'REFILL GIFTS';
-      } else {
-        btn.classList.remove('out-of-gifts');
-        btn.querySelector('.drop-label').textContent = 'DROP GIFT';
+      const runnable = this.runActive && !this.runComplete && this.giftsRemaining > 0;
+      btn.classList.remove('out-of-gifts');
+      btn.classList.toggle('disabled', !runnable);
+      btn.disabled = this.runComplete;
+
+      const label = btn.querySelector('.drop-label');
+      if (label) {
+        label.textContent = this.giftsRemaining > 0 ? 'DROP GIFT' : 'NO GIFTS';
       }
     }
   }
@@ -878,20 +1056,26 @@ export class DeliverySystem {
     const sleighPos = this.sleighController.position;
     const camera = this.sleighController?.camera;
 
-    // 1. Animate active stylized drop markers
+    // 1. Animate the single active golden beam marker
     for (let i = this.markersGroup.children.length - 1; i >= 0; i--) {
       const marker = this.markersGroup.children[i];
       const u = marker.userData;
       if (!u) continue;
 
-      // Handle delivery completion smooth fade-out (Panel 7)
+      // Delivery completion: smooth golden dissolve
       if (u.isFading) {
         u.fadeProgress += delta * 1.5; // ~0.7s smooth dissolve
         const alpha = Math.max(0.0, 1.0 - u.fadeProgress);
         marker.traverse((child) => {
           if (child.material) {
-            const baseOp = child.userData?.baseOpacity !== undefined ? child.userData.baseOpacity : 0.85;
-            child.material.opacity = baseOp * alpha;
+            const baseOp = child.material.userData?.baseOpacity !== undefined
+              ? child.material.userData.baseOpacity
+              : 0.85;
+            if (child.material.uniforms?.uOpacity) {
+              child.material.uniforms.uOpacity.value = baseOp * alpha;
+            } else {
+              child.material.opacity = baseOp * alpha;
+            }
           }
         });
         if (u.fadeProgress >= 1.0) {
@@ -901,85 +1085,32 @@ export class DeliverySystem {
         continue;
       }
 
-      // Billboard the floating holographic icon group towards camera
-      if (camera && u.floatingIconGroup) {
-        u.floatingIconGroup.quaternion.copy(camera.quaternion);
-      }
-
-      // Proximity & vertical altitude check to Santa's current position
-      const horizDist = Math.hypot(sleighPos.x - u.basePos.x, sleighPos.z - u.basePos.z);
-      const vertDist = sleighPos.y - u.basePos.y;
-      const isInRange = (
+      // Simple proximity check, mirroring triggerDelivery() exactly so READY
+      // TO DROP always means a drop right now will land.
+      const isActive = !!this.activeTarget && this.activeTarget.houseId === u.houseData.houseId;
+      const isInRange = isActive &&
         !u.houseData.delivered &&
-        horizDist <= this.deliveryRadius &&
-        vertDist >= this.minDropHeight &&
-        vertDist <= this.maxDropHeight
-      );
+        this._isInDeliveryRange(sleighPos);
 
-      // Clean visual hierarchy matching Panel 1 (Distant View):
-      // Only the active primary target displays the vertical sky beam!
-      const isActiveTarget = (this.closestTarget && this.closestTarget.houseId === u.houseData.houseId);
-      if (isActiveTarget) {
-        u.beamMesh.visible = true;
-        u.beamMat.opacity = u.beamMat.userData.baseOpacity * (u.inRange ? 0.85 : 0.58);
-        u.beamMesh.scale.set(1.0, 1.0, 1.0);
-      } else {
-        u.beamMesh.visible = false;
-      }
-
-      // Dynamic State Transitions: Default (Warm Gold) <-> In-Range (Vibrant Emerald Green)
       if (isInRange !== u.inRange) {
         u.inRange = isInRange;
-        if (isInRange) {
-          u.snowflakeMat.color.setHex(0x2ecc71);
-          u.haloMat.color.setHex(0x2ecc71);
-          u.beamMat.color.setHex(0x2ecc71);
-          u.snowLight.color.setHex(0x2ecc71);
-          u.checkmarkSprite.visible = true;
-        } else {
-          u.snowflakeMat.color.setHex(0xffffff);
-          u.haloMat.color.setHex(0xffd152);
-          u.beamMat.color.setHex(0xffd152);
-          u.snowLight.color.setHex(0xffa63b);
-          u.checkmarkSprite.visible = false;
+        if (u.beamMat) {
+          u.beamMat.uniforms.uOpacity.value =
+            u.beamMat.userData.baseOpacity * (isInRange ? 1.35 : 1.0);
         }
       }
 
-      // Floating Snowflake smooth vertical sinusoidal bobbing
-      const bobFreq = u.inRange ? 4.5 : 2.5;
-      const bobAmp = u.inRange ? 0.024 : 0.016;
-      u.floatingIconGroup.position.y = 0.22 + Math.sin(elapsedTime * bobFreq) * bobAmp;
-
-      // Animated checkmark pulse when in range (Panel 4)
-      if (u.inRange) {
-        const pulse = 0.08 * (1.0 + Math.sin(elapsedTime * 6.0) * 0.18);
-        u.checkmarkSprite.scale.set(pulse, pulse, pulse);
+      // Beam breathing glow and subtle shimmer over time
+      if (u.beamMat) {
+        u.beamMat.uniforms.uTime.value = elapsedTime;
       }
-
-      // Light beam slow rotation for ethereal god rays
-      u.beamMesh.rotation.y += delta * 0.22;
-
-      // Ambient 4-point diamond star particles drifting upward inside the light beam
-      const posAttr = u.sparklesGeo.attributes.position;
-      const vels = u.sparkleVelocities;
-      for (let p = 0; p < u.sparkleCount; p++) {
-        let y = posAttr.getY(p) + vels[p].y * delta;
-        if (y > 7.5) y = 0.02;
-        posAttr.setY(p, y);
-        const wobbleX = Math.sin(elapsedTime * 1.5 + vels[p].phase) * 0.001;
-        const wobbleZ = Math.cos(elapsedTime * 1.5 + vels[p].phase) * 0.001;
-        posAttr.setX(p, posAttr.getX(p) + wobbleX);
-        posAttr.setZ(p, posAttr.getZ(p) + wobbleZ);
-      }
-      posAttr.needsUpdate = true;
     }
 
-    // 2. Animate falling gifts with golden sparkle trailing motes (Panel 5)
+    // 2. Animate falling gifts with golden sparkle trailing motes
     for (let i = this.activeGifts.length - 1; i >= 0; i--) {
       const gift = this.activeGifts[i];
       gift.progress += gift.dropSpeed * delta;
 
-      // Spawn golden diamond particle trail behind tumbling gift (Panel 5)
       if (Math.random() < 0.75) {
         this._spawnTrailSparkle(gift.mesh.position);
       }
@@ -990,16 +1121,23 @@ export class DeliverySystem {
         this.activeGifts.splice(i, 1);
 
         if (gift.isSuccess && gift.targetHouse && !gift.targetHouse.delivered) {
-          this._handleSuccessfulDelivery(gift.targetHouse);
+          this._handleSuccessfulDelivery(gift.targetHouse, gift.precision || 0);
         } else {
           this._handleMissedDelivery(gift.targetPos);
         }
+
+        // Running out of gifts ends the run once every thrown gift has landed
+        if (this.giftsRemaining <= 0 &&
+            this.activeGifts.length === 0 &&
+            this.deliveriesMade < this.deliveriesRequired &&
+            !this.runComplete) {
+          this._finishRun(false);
+        }
       } else {
         const t = gift.progress;
-        // Parabolic arc lerp toward chimney
         gift.mesh.position.lerpVectors(gift.startPos, gift.targetPos, t);
-        // Add parabolic gravity arc
-        const arc = Math.sin(t * Math.PI) * 1.2;
+        // Parabolic gravity arc
+        const arc = Math.sin(t * Math.PI) * (gift.isSuccess ? 1.2 : 0.7);
         gift.mesh.position.y += arc;
 
         gift.mesh.rotation.x += gift.rotVel.x * delta;
@@ -1007,6 +1145,9 @@ export class DeliverySystem {
         gift.mesh.rotation.z += gift.rotVel.z * delta;
       }
     }
+
+    // 3. Spin, bob and collect the optional route stars
+    this._updateStars(delta, elapsedTime);
 
     // 4. Update sparkle particle effects
     for (let i = this.activeSparkles.length - 1; i >= 0; i--) {
@@ -1065,140 +1206,642 @@ export class DeliverySystem {
     });
   }
 
-  // Radial sunburst light rays shooting outward from chimney upon impact (Panel 6)
-  _spawnDeliverySunburst(worldPos) {
-    const rayCount = 12;
-    const rayGeo = new THREE.BufferGeometry();
-    const positions = new Float32Array(rayCount * 2 * 3);
-    const colors = new Float32Array(rayCount * 2 * 3);
-    const rayDirs = [];
-
-    for (let r = 0; r < rayCount; r++) {
-      const angle = (r / rayCount) * Math.PI * 2;
-      const elev = 0.2 + (r % 3) * 0.35;
-      const dx = Math.cos(angle);
-      const dz = Math.sin(angle);
-      const dy = elev;
-      const len = Math.hypot(dx, dy, dz);
-      rayDirs.push(new THREE.Vector3(dx / len, dy / len, dz / len));
-
-      positions[r * 6]     = worldPos.x;
-      positions[r * 6 + 1] = worldPos.y;
-      positions[r * 6 + 2] = worldPos.z;
-      colors[r * 6]     = 1.0;
-      colors[r * 6 + 1] = 0.95;
-      colors[r * 6 + 2] = 0.65;
-
-      positions[r * 6 + 3] = worldPos.x + dx * 0.06;
-      positions[r * 6 + 4] = worldPos.y + dy * 0.06;
-      positions[r * 6 + 5] = worldPos.z + dz * 0.06;
-      colors[r * 6 + 3] = 1.0;
-      colors[r * 6 + 4] = 0.75;
-      colors[r * 6 + 5] = 0.15;
-    }
-
-    rayGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    rayGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-
-    const rayMat = new THREE.LineBasicMaterial({
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.95,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      fog: false
-    });
-
-    const rayLines = new THREE.LineSegments(rayGeo, rayMat);
-    this.scene.add(rayLines);
-
-    const startTime = performance.now();
-    const duration = 800; // 0.8s burst
-
-    const animateRays = () => {
-      const elapsed = performance.now() - startTime;
-      const progress = elapsed / duration;
-      if (progress >= 1.0) {
-        this.scene.remove(rayLines);
-        rayLines.geometry.dispose();
-        rayMat.dispose();
-      } else {
-        const expand = Math.sin(progress * Math.PI * 0.5) * 0.55;
-        const posAttr = rayLines.geometry.attributes.position;
-        for (let r = 0; r < rayCount; r++) {
-          const dir = rayDirs[r];
-          posAttr.setXYZ(r * 2 + 1, worldPos.x + dir.x * expand, worldPos.y + dir.y * expand, worldPos.z + dir.z * expand);
-        }
-        posAttr.needsUpdate = true;
-        rayMat.opacity = Math.max(0, 1.0 - progress);
-        requestAnimationFrame(animateRays);
-      }
-    };
-    requestAnimationFrame(animateRays);
-  }
-
-  // Cozy warm facade and roof light pulse illuminating house upon successful delivery (Panel 6)
-  _pulseHouseGlow(worldPos) {
-    const light = new THREE.PointLight(0xffa63b, 3.5, 9.0, 1.8);
-    light.position.copy(worldPos).add(new THREE.Vector3(0, 0.4, 0));
-    this.scene.add(light);
-
-    const startTime = performance.now();
-    const duration = 2500; // 2.5 seconds warm house illumination
-
-    const animateLight = () => {
-      const elapsed = performance.now() - startTime;
-      const progress = elapsed / duration;
-      if (progress >= 1.0) {
-        this.scene.remove(light);
-        light.dispose();
-      } else {
-        light.intensity = 3.5 * (1.0 - Math.pow(progress, 0.7));
-        requestAnimationFrame(animateLight);
-      }
-    };
-    requestAnimationFrame(animateLight);
-  }
-
-  _handleSuccessfulDelivery(houseData) {
+  _handleSuccessfulDelivery(houseData, precision = 0) {
     houseData.delivered = true;
+    this.deliveriesMade++;
+    this.hits++;
     this.totalDelivered++;
     this.combo++;
 
-    // Calculate score
+    // Accuracy-based scoring: base + centered-drop precision + perfect bonus.
     const basePoints = 100;
-    const comboBonus = (this.combo - 1) * 25;
-    const points = basePoints + comboBonus;
-    this.score += points;
+    const precisionPoints = Math.round(Math.max(0, Math.min(1, precision)) * 100);
+    const perfect = precision >= 0.85;
+    const perfectBonus = perfect ? 50 : 0;
+    const points = basePoints + precisionPoints + perfectBonus;
+    this.deliveryScore += points;
+    this.score = this.deliveryScore + this.starScore;
 
-    // Start smooth fade-out of marker (Panel 7)
+    // Smooth fade-out of the delivered marker
     if (houseData.marker && houseData.marker.userData) {
       houseData.marker.userData.isFading = true;
     }
 
-    // Create celebratory sparkle burst, radial sunburst rays & warm house light pulse (Panel 6)
+    // Brief celebration: one sparkle burst and the success chime.
     this._spawnSparkleBurst(houseData.worldPos);
-    this._spawnDeliverySunburst(houseData.worldPos);
-    this._pulseHouseGlow(houseData.worldPos);
     soundManager.playSuccess();
 
-    this.showBanner(`GIFT DELIVERED! +${points} PTS (x${this.combo} COMBO)`, 'success');
+    this.showBanner(
+      `GIFT DELIVERED! +${points} PTS • ${this.deliveriesMade}/${this.deliveriesRequired}`,
+      'success'
+    );
 
-    // Check chunk completion
-    this._checkChunkCompletion(houseData.chunkKey);
+    this.activeTarget = null;
+    this.closestTarget = null;
+    this._updateHUD();
 
-    // Update HUD
-    const totalEl = document.getElementById('hud-total-delivered');
-    if (totalEl) totalEl.textContent = this.totalDelivered;
-    const scoreEl = document.getElementById('hud-score');
-    if (scoreEl) scoreEl.textContent = this.score;
+    clearTimeout(this._nextTargetTimeout);
+    clearTimeout(this._finishTimeout);
+
+    if (this.deliveriesMade >= this.deliveriesRequired) {
+      this._finishTimeout = setTimeout(() => this._finishRun(true), 1100);
+    } else {
+      this._nextTargetTimeout = setTimeout(() => this._setNextTarget(), 900);
+    }
   }
 
   _handleMissedDelivery(missPos) {
     this.combo = 0;
     this._spawnPuffCloud(missPos);
     soundManager.playMiss();
-    this.showBanner('MISSED THE CHIMNEY! TRY AGAIN', 'miss');
+
+    const acc = this._getAccuracy();
+    const accText = this.attempts > 0 ? ` • ${Math.round(acc * 100)}% ACC` : '';
+    this.showBanner(`MISSED THE CHIMNEY!${accText}`, 'miss');
+    this._updateHUD();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Run lifecycle
+  // ---------------------------------------------------------------------------
+
+  startRun(resetFlight = true) {
+    clearTimeout(this._nextTargetTimeout);
+    clearTimeout(this._finishTimeout);
+    clearTimeout(this._bannerTimeout);
+    this._nextTargetTimeout = null;
+    this._finishTimeout = null;
+
+    this._hideResults();
+
+    // Clear any gifts / particles left over from the previous run
+    this.activeGifts.forEach((gift) => this.scene.remove(gift.mesh));
+    this.activeGifts.length = 0;
+    this.activeSparkles.forEach((sp) => this.scene.remove(sp.mesh));
+    this.activeSparkles.length = 0;
+
+    // Reset every registered house and remove all markers
+    this.trackedHouses.forEach((houseData) => {
+      houseData.delivered = false;
+      if (houseData.marker) {
+        this.markersGroup.remove(houseData.marker);
+        houseData.marker = null;
+      }
+    });
+    this.markersGroup.clear();
+
+    this._clearStars();
+
+    // Reset run state
+    this.deliveriesMade = 0;
+    this.attempts = 0;
+    this.hits = 0;
+    this.starsCollected = 0;
+    this.giftsRemaining = this.maxGifts;
+    this.deliveryScore = 0;
+    this.starScore = 0;
+    this.score = 0;
+    this.finalScore = 0;
+    this.combo = 0;
+    this.totalDelivered = 0;
+    this.runActive = true;
+    this.runComplete = false;
+    this.activeTarget = null;
+    this.runTargets = [];
+    this.closestTarget = null;
+    this.closestDistance = Infinity;
+    this.currentChunkKey = '0,0';
+    this._rangeState = null;
+
+    if (resetFlight && this.sleighController?.resetFlight) {
+      this.sleighController.resetFlight();
+    }
+    if (this.sleighController) {
+      this.sleighController.isPaused = false;
+      if (this.sleighController.inputs) {
+        Object.keys(this.sleighController.inputs).forEach((key) => {
+          this.sleighController.inputs[key] = false;
+        });
+      }
+    }
+    this.sleighController?.armHouseCollisionDetection?.(1600);
+
+    if (this.hudElement) this.hudElement.classList.remove('run-ended');
+
+    // Register every currently streamed house, lock a 5-stop route, and place
+    // three optional stars along the path between those stops.
+    this._seedLoadedChunks();
+    this._selectRunTargets();
+    this._spawnRouteStars();
+    this._activateTarget(this.runTargets[0] || null);
+    this._updateHUD();
+
+    this.showBanner('FOLLOW THE GOLDEN BEAM!', 'success');
+  }
+
+  _seedLoadedChunks() {
+    if (!this.chunkSystem?.chunks) return;
+    this.chunkSystem.chunks.forEach((_chunkData, key) => {
+      const [cx, cz] = key.split(',').map(Number);
+      this.syncChunkTargets(key, cx, cz);
+    });
+  }
+
+  _selectRunTargets() {
+    const origin = this.sleighController.position;
+    const all = Array.from(this.trackedHouses.values()).filter((h) => !h.delivered);
+    if (all.length === 0) {
+      this.runTargets = [];
+      return;
+    }
+
+    const byDistance = (a, b) => {
+      const da = Math.hypot(a.worldPos.x - origin.x, a.worldPos.z - origin.z);
+      const db = Math.hypot(b.worldPos.x - origin.x, b.worldPos.z - origin.z);
+      return da - db;
+    };
+
+    const center = all.filter((h) => h.chunkKey === '0,0').sort(byDistance);
+    const outposts = all.filter((h) => h.chunkKey !== '0,0').sort(byDistance);
+
+    // Four signature village roofs, then a greedy nearest-neighbour ordering
+    // through them so the opening deliveries form a readable loop.
+    const route = [];
+    const remaining = center.slice(0, 4);
+    let cursor = origin;
+
+    while (remaining.length > 0 && route.length < 4) {
+      let bestIndex = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < remaining.length; i++) {
+        const d = Math.hypot(
+          remaining[i].worldPos.x - cursor.x,
+          remaining[i].worldPos.z - cursor.z
+        );
+        if (d < bestDist) {
+          bestDist = d;
+          bestIndex = i;
+        }
+      }
+      const picked = remaining.splice(bestIndex, 1)[0];
+      route.push(picked);
+      cursor = picked.worldPos;
+    }
+
+    // Final delivery is an outpost just outside the village, giving the run a
+    // short "leave home" beat without adding navigation friction.
+    const used = new Set(route.map((h) => h.houseId));
+    const remainingOutposts = outposts.filter((h) => !used.has(h.houseId));
+    while (route.length < this.deliveriesRequired && remainingOutposts.length > 0) {
+      let bestIndex = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < remainingOutposts.length; i++) {
+        const d = Math.hypot(
+          remainingOutposts[i].worldPos.x - cursor.x,
+          remainingOutposts[i].worldPos.z - cursor.z
+        );
+        if (d < bestDist) {
+          bestDist = d;
+          bestIndex = i;
+        }
+      }
+      const picked = remainingOutposts.splice(bestIndex, 1)[0];
+      route.push(picked);
+      cursor = picked.worldPos;
+    }
+
+    // If no neighbouring outposts have streamed in yet, fall back to the extra
+    // village rooftops so the run always contains five reachable deliveries.
+    const usedIds = new Set(route.map((h) => h.houseId));
+    const remainingCenters = center.filter((h) => !usedIds.has(h.houseId));
+    while (route.length < this.deliveriesRequired && remainingCenters.length > 0) {
+      let bestIndex = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < remainingCenters.length; i++) {
+        const d = Math.hypot(
+          remainingCenters[i].worldPos.x - cursor.x,
+          remainingCenters[i].worldPos.z - cursor.z
+        );
+        if (d < bestDist) {
+          bestDist = d;
+          bestIndex = i;
+        }
+      }
+      const picked = remainingCenters.splice(bestIndex, 1)[0];
+      route.push(picked);
+      cursor = picked.worldPos;
+    }
+
+    this.runTargets = route.slice(0, this.deliveriesRequired);
+  }
+
+  _setNextTarget() {
+    if (!this.runActive || this.runComplete) return;
+
+    let next = this.runTargets[this.deliveriesMade];
+    if (!next || next.delivered) {
+      next = this.runTargets.find((target) => !target.delivered) || null;
+    }
+
+    // Chunks stream while the player flies. If the route was shorter than five
+    // at start, adopt the nearest newly registered rooftop instead of ending.
+    if (!next) {
+      const usedIds = new Set(this.runTargets.map((target) => target.houseId));
+      const candidates = Array.from(this.trackedHouses.values())
+        .filter((house) => !house.delivered && !usedIds.has(house.houseId));
+      const sleighPos = this.sleighController.position;
+      let bestDist = Infinity;
+      for (let i = 0; i < candidates.length; i++) {
+        const d = Math.hypot(
+          candidates[i].worldPos.x - sleighPos.x,
+          candidates[i].worldPos.z - sleighPos.z
+        );
+        if (d < bestDist) {
+          bestDist = d;
+          next = candidates[i];
+        }
+      }
+      if (next) this.runTargets.push(next);
+    }
+
+    if (!next) {
+      this._finishRun(this.deliveriesMade >= this.deliveriesRequired);
+      return;
+    }
+
+    this._activateTarget(next);
+  }
+
+  _activateTarget(houseData) {
+    this.activeTarget = houseData || null;
+
+    // Remove stale (non-fading) markers so only one beacon is visible.
+    Array.from(this.markersGroup.children).forEach((marker) => {
+      if (marker.userData?.houseData === houseData) return;
+      if (marker.userData?.isFading) return;
+      this.markersGroup.remove(marker);
+      if (marker.userData?.houseData) marker.userData.houseData.marker = null;
+    });
+
+    if (houseData) {
+      if (!houseData.marker) {
+        const marker = this._createTargetMarker(houseData);
+        houseData.marker = marker;
+        this.markersGroup.add(marker);
+      }
+    }
+
+    this._updateHUD();
+  }
+
+  _getAccuracy() {
+    return this.attempts > 0 ? this.hits / this.attempts : 0;
+  }
+
+  _finishRun(success, reason = null) {
+    if (this.runComplete) return;
+    this.runComplete = true;
+    this.runActive = false;
+
+    clearTimeout(this._nextTargetTimeout);
+    clearTimeout(this._finishTimeout);
+
+    // Let the final beacon dissolve instead of snapping off
+    if (this.activeTarget?.marker?.userData) {
+      this.activeTarget.marker.userData.isFading = true;
+    }
+    this.activeTarget = null;
+
+    const accuracy = this._getAccuracy();
+    const accuracyBonus = Math.round(accuracy * 300);
+    this.finalScore = this.deliveryScore + this.starScore + accuracyBonus;
+    this.score = this.finalScore;
+
+    // Freeze flight input behind the results panel
+    const sc = this.sleighController;
+    if (sc) {
+      sc.isPaused = true;
+      if (sc.inputs) {
+        Object.keys(sc.inputs).forEach((key) => { sc.inputs[key] = false; });
+      }
+      if (sc.joystick) {
+        sc.joystick.x = 0;
+        sc.joystick.y = 0;
+      }
+      if (sc.setVerticalInput) sc.setVerticalInput(0);
+    }
+
+    this._updateHUD();
+    this.hudElement?.classList.add('run-ended');
+    this._showResults(success, reason);
+    if (reason === 'crash') soundManager.playCrash();
+    else soundManager.playChunkComplete();
+  }
+
+  handleHouseCrash() {
+    if (!this.runActive || this.runComplete) return;
+    this._finishReason = 'crash';
+    this._flashCrash();
+    this._finishRun(false, 'crash');
+  }
+
+  _flashCrash() {
+    const flash = document.getElementById('crash-flash');
+    if (!flash) return;
+    flash.classList.remove('active');
+    void flash.offsetWidth;
+    flash.classList.add('active');
+    clearTimeout(this._crashFlashTimeout);
+    this._crashFlashTimeout = setTimeout(() => flash.classList.remove('active'), 900);
+  }
+
+  _updateHUD() {
+    const setText = (id, text) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = text;
+    };
+
+    setText('hud-deliveries', `${this.deliveriesMade} / ${this.deliveriesRequired}`);
+    setText('hud-stars', `${this.starsCollected} / ${this.starsTotal}`);
+    setText('hud-score', `${this.score}`);
+    setText(
+      'hud-accuracy',
+      this.attempts > 0 ? `${Math.round(this._getAccuracy() * 100)}%` : '--'
+    );
+    setText('hud-gifts-count', `${this.giftsRemaining}`);
+
+    if (this._progressPips) {
+      this._progressPips.forEach((pip, index) => {
+        pip.classList.toggle('filled', index < this.deliveriesMade);
+        pip.classList.toggle(
+          'current',
+          this.runActive && !this.runComplete && index === this.deliveriesMade
+        );
+      });
+    }
+
+    this._updateHUDGifts();
+  }
+
+  _showResults(success, reason = null) {
+    const overlay = document.getElementById('results-overlay');
+    if (!overlay) return;
+
+    const isCrash = reason === 'crash';
+    const accuracy = this._getAccuracy();
+    const accPct = Math.round(accuracy * 100);
+    let rating = 1;
+    if (!isCrash && this.deliveriesMade >= this.deliveriesRequired) {
+      rating = accuracy >= 0.9 ? 3 : accuracy >= 0.65 ? 2 : 1;
+    }
+
+    const title = document.getElementById('results-title');
+    const subtitle = document.getElementById('results-subtitle');
+    const ratingEl = document.getElementById('results-rating');
+    const deliveriesEl = document.getElementById('results-deliveries');
+    const accuracyEl = document.getElementById('results-accuracy');
+    const starsEl = document.getElementById('results-stars');
+    const scoreEl = document.getElementById('results-score');
+
+    if (title) {
+      title.textContent = isCrash
+        ? 'SLEIGH CRASHED!'
+        : success
+          ? rating === 3 ? 'PERFECT NIGHT!' : rating === 2 ? 'DELIVERIES COMPLETE!' : 'VILLAGE DELIVERED!'
+          : 'RUN OVER';
+    }
+    if (subtitle) {
+      subtitle.textContent = isCrash
+        ? `Santa clipped a rooftop after ${this.deliveriesMade} of ${this.deliveriesRequired} deliveries.`
+        : success
+          ? `You delivered ${this.deliveriesMade} of ${this.deliveriesRequired} gifts before the night was through.`
+          : `The gift sack ran dry after ${this.deliveriesMade} of ${this.deliveriesRequired} deliveries.`;
+    }
+    if (ratingEl) {
+      ratingEl.textContent = '★'.repeat(rating) + '☆'.repeat(3 - rating);
+    }
+    if (deliveriesEl) deliveriesEl.textContent = `${this.deliveriesMade} / ${this.deliveriesRequired}`;
+    if (accuracyEl) accuracyEl.textContent = `${accPct}%`;
+    if (starsEl) starsEl.textContent = `${this.starsCollected} / ${this.starsTotal}`;
+    if (scoreEl) scoreEl.textContent = `${this.finalScore}`;
+
+    overlay.classList.remove('hidden');
+    overlay.classList.add('visible');
+    // Some mobile browsers pause CSS transitions for occluded/throttled tabs.
+    // Force the final visible state so the results screen can never get stuck
+    // half-faded. The entrance still feels animated thanks to the card transform.
+    overlay.style.opacity = '1';
+    overlay.style.visibility = 'visible';
+    overlay.style.pointerEvents = 'auto';
+  }
+
+  _hideResults() {
+    const overlay = document.getElementById('results-overlay');
+    if (!overlay) return;
+    overlay.classList.remove('visible');
+    overlay.classList.add('hidden');
+    overlay.style.opacity = '';
+    overlay.style.visibility = '';
+    overlay.style.pointerEvents = '';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Optional collectible route stars
+  // ---------------------------------------------------------------------------
+
+  _spawnRouteStars() {
+    this._clearStars();
+    if (this.runTargets.length < 2) return;
+
+    const legs = this.runTargets.length - 1;
+    let starId = 0;
+
+    // Distribute collectible stars in small clusters along open flight corridors between target stops.
+    // Each leg gets 1-2 stars in gentle arcs, cleanly elevated above snow and safely away
+    // from houses, trees, and active target rooftop beacons.
+    for (let leg = 0; leg < legs && starId < this.starsTotal; leg++) {
+      const a = this.runTargets[leg].worldPos;
+      const b = this.runTargets[leg + 1].worldPos;
+      const dx = b.x - a.x;
+      const dz = b.z - a.z;
+      const legDist = Math.hypot(dx, dz) || 1.0;
+      const nx = -dz / legDist;
+      const nz = dx / legDist;
+
+      // Stars per leg: 2 on longer segments, 1 on tighter ones
+      const starsOnLeg = (leg % 2 === 0 && (starId + 2 <= this.starsTotal)) ? 2 : 1;
+
+      for (let s = 0; s < starsOnLeg && starId < this.starsTotal; s++) {
+        // T-parameter along the flight path corridor (between 0.28 and 0.72)
+        const t = starsOnLeg === 1 ? 0.50 : (s === 0 ? 0.36 : 0.64);
+        
+        // Gentle lateral offset: alternate sides along the route to reward intentional steering
+        const lateralDir = (leg + s) % 2 === 0 ? 1.0 : -1.0;
+        const lateralOffset = Math.min(1.6, Math.max(1.0, legDist * 0.28)) * lateralDir;
+
+        const posX = a.x + dx * t + nx * lateralOffset;
+        const posZ = a.z + dz * t + nz * lateralOffset;
+
+        // Verify terrain height & clearance from houses
+        const terrainY = this.chunkSystem?.getHeight
+          ? this.chunkSystem.getHeight(posX, posZ)
+          : 0.5;
+
+        // Safe flight elevation: elevated comfortably above ground & trees (+0.95m to +1.35m)
+        const elevationOffset = 0.95 + ((starId % 3) * 0.14);
+        let finalY = terrainY + elevationOffset;
+
+        // Ensure clearance from nearby house colliders
+        if (this.chunkSystem?.getHouseCollidersNear) {
+          const colliders = this.chunkSystem.getHouseCollidersNear(posX, posZ, 2.2);
+          if (colliders && colliders.length > 0) {
+            let maxRoofY = finalY;
+            for (let c = 0; c < colliders.length; c++) {
+              if (colliders[c].max.y > maxRoofY) maxRoofY = colliders[c].max.y;
+            }
+            finalY = Math.max(finalY, maxRoofY + 0.65);
+          }
+        }
+
+        // Avoid spawning directly on top of delivery target roofs
+        let tooCloseToHouse = false;
+        for (let target of this.runTargets) {
+          const distToTarget = Math.hypot(posX - target.worldPos.x, posZ - target.worldPos.z);
+          if (distToTarget < 1.4) {
+            tooCloseToHouse = true;
+            break;
+          }
+        }
+        if (tooCloseToHouse) continue;
+
+        const group = new THREE.Group();
+        group.name = `RouteStar_${starId}`;
+        group.position.set(posX, finalY, posZ);
+
+        const starMesh = new THREE.Mesh(this._starGeo, this._starMat);
+        starMesh.rotation.z = (starId * 0.65) % Math.PI;
+        group.add(starMesh);
+
+        // Soft ambient halo (subtle, non-blinding)
+        const halo = new THREE.Sprite(this._starHaloMat);
+        halo.scale.set(0.30, 0.30, 0.30);
+        group.add(halo);
+
+        this.starsGroup.add(group);
+        this.activeStars.push({
+          id: starId,
+          group,
+          mesh: starMesh,
+          baseY: finalY,
+          phase: starId * 1.15,
+          collected: false
+        });
+
+        starId++;
+      }
+    }
+
+    // Keep starsTotal synchronized with actually placed stars if any were skipped
+    this.starsTotal = Math.max(1, this.activeStars.length);
+    this._updateHUD();
+  }
+
+  _updateStars(delta, elapsedTime) {
+    if (this.activeStars.length === 0) return;
+    const sleighPos = this.sleighController.position;
+
+    for (let i = this.activeStars.length - 1; i >= 0; i--) {
+      const star = this.activeStars[i];
+      // Gentle, serene rotation and subtle floating bob
+      star.mesh.rotation.y += delta * 1.5;
+      star.group.position.y = star.baseY + Math.sin(elapsedTime * 2.0 + star.phase) * 0.035;
+
+      if (!this.runActive || star.collected) continue;
+
+      const dx = sleighPos.x - star.group.position.x;
+      const dy = sleighPos.y - star.group.position.y;
+      const dz = sleighPos.z - star.group.position.z;
+
+      // Smooth spherical proximity pickup (~0.75m radius)
+      if (dx * dx + dz * dz <= 0.85 * 0.85 && Math.abs(dy) <= 0.70) {
+        this._collectStar(star, i);
+      }
+    }
+  }
+
+  _collectStar(star, index) {
+    if (star.collected) return;
+    star.collected = true; // Guard against duplicate pickup
+
+    const worldPos = star.group.position.clone();
+    this.starsGroup.remove(star.group);
+    this.activeStars.splice(index, 1);
+
+    this.starsCollected++;
+    this.starScore += 50;
+    this.score = this.deliveryScore + this.starScore;
+
+    // Brief, localized star collection sparkle effect (non-blinding, mobile optimized)
+    this._spawnStarSparkleBurst(worldPos);
+    soundManager.playStar();
+    this.showBanner(`STAR COLLECTED! +50 • ${this.starsCollected}/${this.starsTotal}`, 'star');
+    this._updateHUD();
+  }
+
+  _spawnStarSparkleBurst(worldPos) {
+    const count = this.isMobile ? 12 : 20;
+    const geo = new THREE.BufferGeometry();
+    const positions = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
+    const velocities = [];
+
+    for (let i = 0; i < count; i++) {
+      positions[i * 3]     = worldPos.x;
+      positions[i * 3 + 1] = worldPos.y;
+      positions[i * 3 + 2] = worldPos.z;
+
+      // Soft warm gold and star-white sparkle colors
+      const isGold = Math.random() > 0.3;
+      colors[i * 3]     = 1.0;
+      colors[i * 3 + 1] = isGold ? 0.82 : 0.95;
+      colors[i * 3 + 2] = isGold ? 0.28 : 0.85;
+
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 1.6 + Math.random() * 2.4;
+      velocities.push({
+        x: Math.cos(angle) * speed,
+        y: 0.6 + Math.random() * 2.2,
+        z: Math.sin(angle) * speed
+      });
+    }
+
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    const mat = new THREE.PointsMaterial({
+      size: this.isMobile ? 0.22 : 0.28,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+
+    const sparkleMesh = new THREE.Points(geo, mat);
+    this.scene.add(sparkleMesh);
+
+    this.activeSparkles.push({
+      mesh: sparkleMesh,
+      velocities: velocities,
+      age: 0.0,
+      maxAge: 0.38
+    });
+  }
+
+  _clearStars() {
+    this.activeStars.forEach((star) => this.starsGroup.remove(star.group));
+    this.activeStars.length = 0;
+    this.starsGroup.clear();
   }
 
   _checkChunkCompletion(chunkKey) {
@@ -1308,9 +1951,8 @@ export class DeliverySystem {
 
   _updateTargetCompass() {
     const sleighPos = this.sleighController.position;
-    const sleighHeading = this.sleighController.rotationY;
 
-    // Detect current chunk under sleigh
+    // Detect current chunk under sleigh so newly streamed houses are registered.
     const chunkSize = this.chunkSystem ? this.chunkSystem.chunkSize : 20.0;
     const half = chunkSize * 0.5;
     const currentCx = Math.floor((sleighPos.x + half) / chunkSize);
@@ -1322,95 +1964,32 @@ export class DeliverySystem {
       this.syncChunkTargets(currentKey, currentCx, currentCz);
     }
 
-    // Update chunk progress HUD
-    const chunkHouses = Array.from(this.trackedHouses.values())
-      .filter(h => h.chunkKey === this.currentChunkKey);
-    const deliveredCount = chunkHouses.filter(h => h.delivered).length;
-    const totalCount = chunkHouses.length;
-
-    const progEl = document.getElementById('hud-chunk-progress');
-    if (progEl) progEl.textContent = `${deliveredCount} / ${totalCount}`;
-
-    // Find closest undelivered target: prioritize current chunk goals first
-    let nearest = null;
-    let nearestDist = Infinity;
-
-    this.trackedHouses.forEach((houseData) => {
-      if (houseData.delivered) return;
-      if (!this.chunkSystem.chunks.has(houseData.chunkKey)) return;
-      if (houseData.chunkKey !== this.currentChunkKey) return;
-
-      const d = sleighPos.distanceTo(houseData.worldPos);
-      if (d < nearestDist) {
-        nearestDist = d;
-        nearest = houseData;
-      }
-    });
-
-    // If current chunk is completed, locate closest undelivered house across any loaded chunk
-    if (!nearest) {
-      this.trackedHouses.forEach((houseData) => {
-        if (houseData.delivered) return;
-        if (!this.chunkSystem.chunks.has(houseData.chunkKey)) return;
-
-        const d = sleighPos.distanceTo(houseData.worldPos);
-        if (d < nearestDist) {
-          nearestDist = d;
-          nearest = houseData;
-        }
-      });
+    let state = 'idle';
+    if (this.runActive && !this.runComplete && this.activeTarget) {
+      this.closestTarget = this.activeTarget;
+      this.closestDistance = sleighPos.distanceTo(this.activeTarget.worldPos);
+      state = this._isInDeliveryRange(sleighPos) ? 'ready' : 'far';
+    } else {
+      this.closestTarget = null;
+      this.closestDistance = Infinity;
     }
 
-    this.closestTarget = nearest;
-    this.closestDistance = nearestDist;
+    // Only touch the DOM when the proximity state actually changes.
+    if (state === this._rangeState) return;
+    this._rangeState = state;
 
-    // Update distance & compass arrow
-    const distEl = document.getElementById('hud-target-dist');
-    const arrowEl = document.getElementById('hud-compass-arrow');
-    const statusEl = document.getElementById('hud-delivery-status');
+    const statusEl = document.getElementById('drop-status');
+    const dropBtn = document.getElementById('btn-drop-gift');
 
-    if (nearest && distEl && arrowEl) {
-      distEl.textContent = `${Math.round(nearestDist)} m`;
-
-      // Angle from sleigh to target in horizontal XZ plane
-      const dx = nearest.worldPos.x - sleighPos.x;
-      const dz = nearest.worldPos.z - sleighPos.z;
-      const targetAngle = Math.atan2(-dx, -dz);
-
-      // Relative angle compared to sleigh heading
-      const relAngle = targetAngle - sleighHeading;
-      const deg = THREE.MathUtils.radToDeg(relAngle);
-      arrowEl.style.transform = `rotate(${deg}deg)`;
-
-      // Delivery range calculation
-      const horizDist = Math.hypot(dx, dz);
-      const vertDist = sleighPos.y - nearest.worldPos.y;
-
-      if (statusEl) {
-        if (horizDist <= this.deliveryRadius && vertDist >= this.minDropHeight && vertDist <= this.maxDropHeight) {
-          statusEl.textContent = 'READY TO DROP!';
-          statusEl.className = 'delivery-status status-in-range';
-        } else if (horizDist <= this.deliveryRadius && vertDist > this.maxDropHeight) {
-          statusEl.textContent = 'TOO HIGH (DESCEND)';
-          statusEl.className = 'delivery-status status-too-high';
-        } else if (horizDist <= this.deliveryRadius && vertDist < this.minDropHeight) {
-          statusEl.textContent = 'TOO LOW (CLIMB)';
-          statusEl.className = 'delivery-status status-too-low';
-        } else if (horizDist <= this.deliveryRadius * 1.8) {
-          statusEl.textContent = 'APPROACHING...';
-          statusEl.className = 'delivery-status status-out-of-range';
-        } else {
-          statusEl.textContent = 'IN FLIGHT';
-          statusEl.className = 'delivery-status status-out-of-range';
-        }
-      }
-    } else if (distEl && arrowEl) {
-      distEl.textContent = 'ALL CLEAR';
-      arrowEl.style.transform = 'rotate(0deg)';
-      if (statusEl) {
-        statusEl.textContent = 'CHUNK DONE';
-        statusEl.className = 'delivery-status status-in-range';
-      }
+    if (statusEl) {
+      statusEl.textContent =
+        state === 'ready' ? 'READY TO DROP' :
+        state === 'far' ? 'GET CLOSER' :
+        this.runComplete ? 'RUN COMPLETE' : 'NEXT HOUSE...';
+      statusEl.classList.toggle('ready', state === 'ready');
+      statusEl.classList.toggle('far', state === 'far');
     }
+
+    if (dropBtn) dropBtn.classList.toggle('ready', state === 'ready');
   }
 }
