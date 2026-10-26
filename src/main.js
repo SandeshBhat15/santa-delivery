@@ -9,6 +9,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { SleighController } from './gameplay/SleighController.js';
 import { DeliverySystem } from './gameplay/DeliverySystem.js';
+import { createDistantMountains } from './environment/DistantScenery.js';
 
 // --- DOM Elements ---
 const container = document.getElementById('app');
@@ -160,28 +161,22 @@ const WINTER_SKY_AND_AURORA_GLSL = `
     float y = rd.y;
 
     // Rich cinematic nocturnal palette:
-    // Zenith deep navy: #040a18 (0.0012, 0.0035, 0.0125 in linear)
-    // Upper midnight blue: #071224 (0.0032, 0.0085, 0.0260 in linear)
-    // Mid cold navy: #0a1832 (0.0055, 0.0145, 0.0420 in linear)
-    // Horizon atmospheric blue: #0e1b2f (0.0085, 0.0210, 0.0540 in linear)
-    vec3 zenithNavy   = vec3(0.0012, 0.0035, 0.0125);
-    vec3 upperNavy    = vec3(0.0032, 0.0085, 0.0260);
-    vec3 midColdBlue  = vec3(0.0055, 0.0145, 0.0420);
-    vec3 horizonHaze  = vec3(0.0085, 0.0210, 0.0540);
-    vec3 nadirAbyss   = vec3(0.0020, 0.0050, 0.0140);
+    // Zenith deep navy:       #040a18 (0.0012, 0.0030, 0.0091 in linear)
+    // Mid cold navy:          #081326 (0.0024, 0.0065, 0.0194 in linear)
+    // Horizon atmospheric blue: #0e1b2f (0.0044, 0.0110, 0.0284 in linear)
+    vec3 zenithNavy  = vec3(0.0012, 0.0030, 0.0091);
+    vec3 midNavy     = vec3(0.0024, 0.0065, 0.0194);
+    vec3 horizonNavy = vec3(0.0044, 0.0110, 0.0284);
 
+    // Monotonic, smooth gradient from horizon upward to zenith
     float upperT = clamp(y, 0.0, 1.0);
-    vec3 sky = mix(horizonHaze, midColdBlue, smoothstep(0.0, 0.28, upperT));
-    sky = mix(sky, upperNavy, smoothstep(0.18, 0.62, upperT));
-    sky = mix(sky, zenithNavy, smoothstep(0.48, 0.98, upperT));
+    vec3 sky = mix(horizonNavy, midNavy, smoothstep(0.0, 0.35, upperT));
+    sky = mix(sky, zenithNavy, smoothstep(0.20, 0.90, upperT));
 
-    // Smooth transition below y = 0 so looking downward from high altitude has zero seam
-    float lowerT = 1.0 - smoothstep(-0.45, 0.0, y);
-    sky = mix(sky, nadirAbyss, lowerT);
-
-    // Subtle atmospheric horizon blend - gentle linear-space haze without bright edge banding
-    float horizonBelt = exp(-abs(y) * 4.2);
-    sky += vec3(0.0025, 0.0065, 0.0160) * horizonBelt * 0.55;
+    // Below horizon stays seamlessly at horizonNavy so there is zero dark step at y <= 0
+    if (y < 0.0) {
+      sky = horizonNavy;
+    }
 
     // Fast polynomial squaring replaces expensive transcendental pow/exp2 calls for mobile ALUs
     float mDot = max(0.0, dot(rd, moonDir));
@@ -201,12 +196,12 @@ const WINTER_SKY_AND_AURORA_GLSL = `
     sky += vec3(0.080, 0.130, 0.220) * tightCorona * 0.20;
 
     // Very faint high-altitude blue lift gives the zenith more depth without adding grain.
-    float upperVeil = smoothstep(0.18, 0.92, y);
-    sky += vec3(0.0010, 0.0030, 0.0090) * upperVeil;
+    float upperVeil = smoothstep(0.25, 0.95, y);
+    sky += vec3(0.0010, 0.0025, 0.0070) * upperVeil;
 
     // Procedural Milky Way: a broad, curved galactic band with smooth cloud structure
     // and dark dust lanes. Built from continuous directional noise, not a texture or plane.
-    // The band is deliberately subtle so it supports, rather than competes with, the aurora.
+    // Suppressed below y = 0.22 so it NEVER cuts across or forms bands near the horizon or mountains.
     vec2 galacticCoord = vec2(atan(rd.z, rd.x), rd.y * 2.15);
     float galacticLongitude = galacticCoord.x;
     float galacticCurve = 0.17 * sin(galacticLongitude * 1.15 - 0.55)
@@ -215,38 +210,31 @@ const WINTER_SKY_AND_AURORA_GLSL = `
     float broadBand = exp(-galacticLatitude * galacticLatitude * 10.5);
     float bandEdge = 1.0 - smoothstep(0.22, 0.62, abs(galacticLatitude));
 
-    if (bandEdge > 0.002) {
-      // Seam-safe low-frequency cloud coordinates. Do not feed atan(longitude) directly
-      // into noise: atan jumps from +PI to -PI and creates a visible vertical seam.
-      // Direction-based coordinates remain continuous across the sphere's longitude wrap.
+    float galacticAltFade = smoothstep(0.22, 0.45, rd.y);
+    if (bandEdge > 0.002 && galacticAltFade > 0.001) {
       vec2 cloudCoord = vec2(rd.x, rd.z) * 7.0 + vec2(13.7, 4.2);
       float cloudA = gradNoise2D(cloudCoord);
       float cloudB = gradNoise2D(cloudCoord * 1.85 + vec2(7.1, 21.4));
       float galacticClouds = smoothstep(-0.30, 0.42, cloudA * 0.78 + cloudB * 0.22);
 
-      // A smooth, wandering dark dust lane gives the band depth instead of a uniform stripe.
       float dustLaneCenter = galacticCurve + 0.035 * sin(galacticLongitude * 2.8 + 1.3);
       float dustDist = (galacticCoord.y - dustLaneCenter) * 17.0;
       float dustLane = exp(-dustDist * dustDist);
-      // Reuse low-frequency cloud structure for dust variation, eliminating redundant 3rd noise lookup
       float dustVariation = smoothstep(-0.20, 0.35, cloudA);
       float dustMask = 1.0 - dustLane * (0.28 + 0.34 * dustVariation);
 
-      // Suppress the galaxy close to the moon where glare would wash out faint stars.
       float moonGalaxyFade = 1.0 - 0.78 * smoothstep(0.965, 0.997, mDot);
-      // Slightly dim the galactic band near the brightest aurora-facing upper horizon.
       float galacticIntensity = broadBand * bandEdge * (0.32 + 0.68 * galacticClouds)
-                              * dustMask * moonGalaxyFade;
+                              * dustMask * moonGalaxyFade * galacticAltFade;
       vec3 milkyWayTint = vec3(0.045, 0.075, 0.125);
       sky += milkyWayTint * galacticIntensity * 0.32;
-      // A restrained cool core provides depth without turning the Milky Way into a bright cloud.
       sky += vec3(0.015, 0.028, 0.055) * broadBand * galacticClouds * dustMask * moonGalaxyFade * 0.14;
     }
 
     return sky;
   }
 
-  // Precomputed curtain parameters to eliminate redundant ALU & transcendental operations in the raymarching loop
+    // Precomputed curtain parameters to eliminate redundant ALU & transcendental operations in the raymarching loop
   struct AuroraCurtainDef {
     float u0, du;
     float v0, dv;
@@ -855,6 +843,9 @@ moonMesh.name = 'Procedural3DMoonSphere';
 moonMesh.renderOrder = -15;
 moonGroup.add(moonMesh);
 
+// Low-poly distant horizon mountain silhouettes
+createDistantMountains(skyGroup, skyUniforms);
+
 // --- Native Three.js Distance Fog & Procedural Winter Mist System ---
 // Global fog uniform injection for time-based procedural ground mist
 const fogTimeUniform = { value: 0 };
@@ -867,7 +858,7 @@ if (THREE.UniformsLib.fog) {
 // - Near: 3.5m -> Immediate foreground (Santa, sleigh, immediate trees & chimneys) stays 100% crisp and readable
 // - Far: 22.0m -> Smooth atmospheric perspective where distant mountains and pine forests seamlessly dissolve into horizon
 // - Color: 0x0e1b2f -> Exactly matches the sky shader's horizon haze color (#0e1b2f)
-const fogColorHex = 0x0e1b2f;
+const fogColorHex = 0x071120;
 scene.fog = new THREE.Fog(fogColorHex, 3.5, 22.0);
 
 // 2. Pass true 3D world coordinates from vertex shader to fragment shader (supports InstancedMesh)
@@ -2112,6 +2103,7 @@ class InfiniteChunkSystem {
     });
 
     this.templateFoliage = [];
+    this.templateTreePositions = [];
     if (treeProtoGeo && treeMatrices.length > 0) {
       this.templateFoliage.push({
         geometry: treeProtoGeo,
@@ -2119,6 +2111,11 @@ class InfiniteChunkSystem {
         matrices: treeMatrices,
         castShadow: true
       });
+      const tp = new THREE.Vector3();
+      for (let i = 0; i < treeMatrices.length; i++) {
+        tp.setFromMatrixPosition(treeMatrices[i]);
+        this.templateTreePositions.push({ x: tp.x, z: tp.z });
+      }
     }
     if (bushProtoGeo && bushMatrices.length > 0) {
       this.templateFoliage.push({

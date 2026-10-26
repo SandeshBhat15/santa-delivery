@@ -3,6 +3,12 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { MagicalFlightTrail } from './MagicalFlightTrail.js';
+import { MagicTrail } from './MagicTrail.js';
+
+// World-space anchor for the golden light ribbon: just behind the sleigh's
+// rear rail and level with it (same convention as the dust plume).
+const TRAIL_BACK_OFFSET = 0.11;
+const TRAIL_UP_OFFSET = 0.035;
 
 export class SleighController {
   constructor(scene, camera, controls, chunkSystem, isMobile = false) {
@@ -21,53 +27,49 @@ export class SleighController {
     this.rotationY = 0.0; // Heading north (-Z) toward village center
     this.pitch = 0.0;
     this.bank = 0.0;
-    this.speed = 1.5;
+    this.speed = 1.8;
 
-    // Movement & Non-Linear Aerodynamics Parameters
-    // ── Speed Constants (tune here) ─────────────────────────────────────────
-    this.baseCruiseSpeed = 1.5;   // m/s: normal forward cruise
-    this.minSpeed        = 0.5;   // m/s: slowest possible (steep climbs / tight turns)
-    this.maxSpeed        = 2.6;   // m/s: top speed without boost
-    this.boostSpeed      = 4.0;   // m/s: top speed while Shift / F held
-    this.boostAccelRate  = 3.5;   // exponential ramp-up rate during boost
-    this.boostDecelRate  = 2.5;   // exponential ramp-down rate after releasing boost
-    // ────────────────────────────────────────────────────────────────────────
-    this.turnSpeed = 1.6;
+    // Movement & Non-Linear Aerodynamics Parameters (Smooth, natural, magical flight)
+    this.baseCruiseSpeed = 1.8;   // m/s: comfortable magical forward cruise
+    this.minSpeed        = 0.9;   // m/s: lowest speed during steep climbs / heavy maneuvers
+    this.maxSpeed        = 2.8;   // m/s: top natural speed during steep dives
+    this.accelRate       = 1.5;   // gradual exponential acceleration momentum
+    this.decelRate       = 1.2;   // gentle exponential coasting deceleration
+    this.turnSpeed       = 1.55;  // smooth, predictable turning rate
+    this.turnVelocity    = 0.0;   // smoothed rotational velocity for natural yaw inertia
     this.smoothTurnInput = 0.0;
-    this.climbSpeed = 3.5;
-    this.bankMax = 0.42;
+    this.bankMax         = 0.38;  // subtle, majestic sleigh banking (radians)
+    this.climbSpeed      = 3.2;
 
-    // Controls input state
+    // Controls input state (pure flight: no boost)
     this.inputs = {
       left: false,
       right: false,
       up: false,
       down: false,
-      drop: false,
-      boost: false
+      drop: false
     };
 
-    // Customizable key mappings (Desktop: A/D to steer, W/S for climb/dive, Space/E to drop gift, Shift to boost)
+    // Clean key mappings (Desktop: A/D to steer, W/S for climb/dive, Space/E to drop gift)
     this.keyMap = {
       left: ['KeyA', 'ArrowLeft'],
       right: ['KeyD', 'ArrowRight'],
-      climb: ['KeyW', 'ArrowUp', 'Space'],
+      climb: ['KeyW', 'ArrowUp'],
       descend: ['KeyS', 'ArrowDown'],
-      drop: ['KeyE'],
-      boost: ['ShiftLeft', 'ShiftRight', 'KeyF']
+      drop: ['KeyE', 'Space']
     };
 
     // Virtual analog joystick control: x = steering (yaw + banking roll), y = altitude (pitch + climb/dive)
     this.joystick = { x: 0, y: 0 };
     this.verticalInput = 0.0;
 
-    // Configurable flight simulation dynamics
-    this.climbRate = 1.8;
-    this.descendRate = 1.6;
+    // Flight simulation dynamics: smooth, floaty, magical lift & descent
+    this.climbRate = 1.7;
+    this.descendRate = 1.5;
     this.verticalSpeed = 0.0;
-    this.verticalAccel = 8.0;
-    this.verticalDecel = 6.0;
-    this.pitchMax = 0.35; // Max pitch angle (radians) during climb/dive
+    this.verticalAccel = 4.5; // gentle, non-snappy vertical acceleration
+    this.verticalDecel = 3.8; // smooth vertical damping
+    this.pitchMax = 0.32;     // natural pitch angle (radians) during climb/dive
 
     // Dynamic Terrain-Relative Altitude Limits (meters above local terrain)
     this.minAltitudeAboveTerrain = 0.01; // Skims ground level with runners directly in the snow
@@ -87,9 +89,15 @@ export class SleighController {
     // Follow camera offset & sensitivity (calibrated close third-person follow camera for mini rig)
     this.camDistance = isMobile ? 1.05 : 0.82;
     this.camHeight = isMobile ? 0.42 : 0.32;
-    this.camLag = 6.5; // Responsive smooth follow
     this.camTargetPos = new THREE.Vector3();
     this.camLookPos = new THREE.Vector3();
+    this._currentCamLookPos = new THREE.Vector3();
+    this._camBackVec = new THREE.Vector3();
+    this._camForwardVec = new THREE.Vector3();
+    this._headingVec = new THREE.Vector3();
+    this._reinDir = new THREE.Vector3();
+    this._reinCollarPos = new THREE.Vector3();
+    this._upVec = new THREE.Vector3(0, 1, 0);
 
     // Reindeer leg / harness animation references
     this.animTime = 0.0;
@@ -99,8 +107,27 @@ export class SleighController {
     this.fairyLights = []; // Twinkling fairy light bulbs on antlers
     this.sleighLanterns = []; // Warm glowing lanterns on sleigh runners
 
-    // Magical flight trail emitting stardust & icy crystals from reindeer hooves
-    this.flightTrail = new MagicalFlightTrail(this.scene, this.isMobile);
+    // Sparse enchanted dust plume that follows the sleigh's world-space path
+    this.flightTrail = new MagicalFlightTrail(this.scene, this.camera, this.isMobile);
+
+    // Additive golden light ribbon layered over the dust, sampling the same
+    // rear anchor. Tuned for this scene's mini rig (sleigh is ~0.28 m wide,
+    // cruises 1.8-2.8 m/s), hence the widthScale down from the source file.
+    this.magicTrail = new MagicTrail(this.scene, this.camera, {
+      life: 1.0,
+      minDist: 0.04,
+      maxPoints: this.isMobile ? 240 : 420,
+      widthScale: 0.05,
+      gainScale: this.isMobile ? 0.42 : 0.5,
+      streak: 0.6,
+      glow: this.isMobile ? 0.85 : 1.0
+    });
+    this._magicAnchor = new THREE.Vector3();
+    this._magicAnchorInit = false;
+    this._magicAnchorSmooth = new THREE.Vector3();
+    // Empty object parented to the sleigh rig: the ribbon emits from its rear underside
+    this._trailAttach = new THREE.Object3D();
+    this._trailAttach.name = 'MagicTrailAnchor';
 
     this._setupInputListeners();
     this._buildSleighAndReindeer();
@@ -125,8 +152,7 @@ export class SleighController {
       } else if (this.keyMap.drop.includes(code)) {
         this.inputs.drop = true;
         if (window.deliverySystem) window.deliverySystem.triggerDelivery();
-      } else if (this.keyMap.boost.includes(code)) {
-        this.inputs.boost = true;
+
       }
     });
 
@@ -142,8 +168,7 @@ export class SleighController {
         this.inputs.down = false;
       } else if (this.keyMap.drop.includes(code)) {
         this.inputs.drop = false;
-      } else if (this.keyMap.boost.includes(code)) {
-        this.inputs.boost = false;
+
       }
     });
   }
@@ -223,6 +248,11 @@ export class SleighController {
     }
     masterGroup.add(sleighGroup);
     this.sleighMeshGroup = sleighGroup;
+
+    // Golden ribbon anchor: just behind/below the sleigh's rear (sledge-node space:
+    // the artist's rear lanterns sit at x ±0.07, y 0.06, z ≈ -0.15).
+    this._trailAttach.position.set(0, 0.015, -0.185);
+    (sledgeNode || sleighGroup).add(this._trailAttach);
 
     // 2. 4-Reindeer Team (2 Front Leads + 2 Behind)
     // Cloned with SkeletonUtils and animated running clips
@@ -308,11 +338,6 @@ export class SleighController {
     } else if (deerRigNode) {
       this._attachAntlerFairyLights(deerRigNode);
       masterGroup.add(deerRigNode);
-    }
-
-    // Attach magical stardust emitters to all 16 reindeer hooves
-    if (this.flightTrail && this.reindeers) {
-      this.flightTrail.initReindeerEmitters(this.reindeers);
     }
 
     this.group.add(masterGroup);
@@ -603,6 +628,10 @@ export class SleighController {
     this.group.add(sleighMeshGroup);
     this.sleighMeshGroup = sleighMeshGroup;
 
+    // Golden ribbon anchor at the fallback sleigh's rear underside
+    this._trailAttach.position.set(0, 0.30, 0.75);
+    sleighMeshGroup.add(this._trailAttach);
+
     // Build Stylized Santa
     this._buildStylizedSanta(sleighMeshGroup);
 
@@ -823,21 +852,25 @@ export class SleighController {
       turnInput = sign * Math.min(Math.max(normalizedTurn, 0), 1.0);
     }
 
-    // Smooth interpolated steering & turn rate
-    this.smoothTurnInput += (turnInput - this.smoothTurnInput) * Math.min(delta * 4.5, 1.0);
-    this.turnInput = this.smoothTurnInput;
-    this.rotationY += this.smoothTurnInput * this.turnSpeed * delta;
+    // Smooth second-order turning with natural rotational momentum
+    const targetTurnVel = turnInput * this.turnSpeed;
+    const turnResponsiveness = (turnInput !== 0.0) ? 5.2 : 4.0;
+    this.turnVelocity += (targetTurnVel - this.turnVelocity) * (1.0 - Math.exp(-turnResponsiveness * delta));
+    this.rotationY += this.turnVelocity * delta;
 
-    // Banking roll during turns (positive banking so inner side dips naturally into turn)
-    const targetBank = this.smoothTurnInput * this.bankMax;
-    this.bank += (targetBank - this.bank) * Math.min(delta * 4.0, 1.0);
+    this.smoothTurnInput += (turnInput - this.smoothTurnInput) * (1.0 - Math.exp(-5.0 * delta));
+    this.turnInput = this.smoothTurnInput;
+
+    // Subtle sleigh banking roll: tilts naturally into turn with smooth spring recovery
+    const targetBank = (this.turnVelocity / this.turnSpeed) * this.bankMax;
+    this.bank += (targetBank - this.bank) * (1.0 - Math.exp(-4.2 * delta));
 
     // 2. Vertical Flight (Smooth Look-Ahead Terrain Following & Gliding)
     let localGroundH = 0.5;
     let aheadGroundH = 0.5;
     let farAheadGroundH = 0.5;
 
-    const heading = new THREE.Vector3(
+    const heading = this._headingVec.set(
       -Math.sin(this.rotationY),
       0,
       -Math.cos(this.rotationY)
@@ -920,46 +953,36 @@ export class SleighController {
       if (this.verticalSpeed < 0) this.verticalSpeed = 0;
     }
 
-    // Pitch inclination while climbing or diving (smoothly proportional to vertical speed)
+    // Natural pitch inclination while climbing or diving (smooth exponential ease)
     const normVertRate = this.verticalSpeed / Math.max(this.climbRate, this.descendRate);
     const targetPitch = normVertRate * this.pitchMax;
-    this.pitch += (targetPitch - this.pitch) * Math.min(delta * 5.5, 1.0);
+    this.pitch += (targetPitch - this.pitch) * (1.0 - Math.exp(-4.8 * delta));
 
-    // 3. Dynamic Non-Linear Aerodynamic Flight Speed
-    // Graceful base speed (~4.0 m/s) with organic response to diving, climbing, turns and boost
+    // 3. Dynamic Aerodynamic Flight Speed & Momentum
+    // Magical cruising momentum with gradual acceleration when swooping down and natural drag during climbs/turns
     let targetSpeed = this.baseCruiseSpeed;
 
-    // Non-linear Dive Gravity Boost & Climb Drag:
     if (normVertRate < -0.05) {
-      // Non-linear quadratic acceleration during dives (swooping momentum)
+      // Gentle gravity swooping momentum when descending
       const diveFactor = -normVertRate;
-      targetSpeed += (diveFactor * diveFactor * 0.9 + diveFactor * 0.3);
+      targetSpeed += (diveFactor * 0.55 + diveFactor * diveFactor * 0.35);
     } else if (normVertRate > 0.05) {
-      // Natural aerodynamic drag & gravity work during steep climbs
+      // Natural aerodynamic resistance during climbs
       const climbFactor = Math.min(normVertRate, 1.0);
-      targetSpeed -= (climbFactor * 0.48);
+      targetSpeed -= climbFactor * 0.38;
     }
 
-    // Induced Drag during Banked Turns (non-linear ease into turns):
-    const bankRatio = Math.abs(this.bank) / (this.bankMax || 0.42);
+    // Induced drag during banked turns
+    const bankRatio = Math.abs(this.bank) / (this.bankMax || 0.38);
     if (bankRatio > 0.1) {
-      targetSpeed -= Math.pow(bankRatio, 1.6) * 0.75;
+      targetSpeed -= Math.pow(bankRatio, 1.5) * 0.35;
     }
 
-    // Player Sprint / Boost (Shift or KeyF) — smooth ramp to boostSpeed
-    if (this.inputs.boost) {
-      targetSpeed = this.boostSpeed;
-    }
+    targetSpeed = THREE.MathUtils.clamp(targetSpeed, this.minSpeed, this.maxSpeed);
 
-    // Clamp within active flight envelope (boosted or normal ceiling)
-    const effectiveMax = this.inputs.boost ? this.boostSpeed : this.maxSpeed;
-    targetSpeed = THREE.MathUtils.clamp(targetSpeed, this.minSpeed, effectiveMax);
-
-    // Differentiated response rate: fast ramp-up during boost, smooth coast-down after releasing
-    const speedResponseRate = targetSpeed > this.speed
-      ? (this.inputs.boost ? this.boostAccelRate : 2.5)
-      : this.boostDecelRate;
-    this.speed += (targetSpeed - this.speed) * (1.0 - Math.exp(-speedResponseRate * delta));
+    // Gradual acceleration and gentle deceleration momentum
+    const speedRate = targetSpeed > this.speed ? this.accelRate : this.decelRate;
+    this.speed += (targetSpeed - this.speed) * (1.0 - Math.exp(-speedRate * delta));
 
     // 4. Free 3D Displacement along X and Z
     if (!this.isPaused) {
@@ -977,11 +1000,18 @@ export class SleighController {
     this.group.rotation.x = this.pitch;
     this.group.rotation.z = this.bank;
 
-    // 7. Gentle, Majestic Hover Bobbing (Silky smooth 1.2 Hz wave, 0.032m amplitude)
-    this.animTime += delta * (2.0 + this.speed * 0.4);
-    const gentleBob = Math.sin(this.animTime * 1.2) * 0.032;
+    // 7. Restrained Vertical Bobbing & Subtle Flight Motion
+    // Multi-frequency harmonic wave (0.016m primary + 0.006m secondary) gives a delicate, floating carriage feel without sea-sickness
+    this.animTime += delta * (1.6 + this.speed * 0.35);
+    const primaryBob = Math.sin(this.animTime * 1.35) * 0.018;
+    const secondaryBob = Math.sin(this.animTime * 2.7 + 0.8) * 0.006;
+    const subtleRollMotion = Math.sin(this.animTime * 0.9) * 0.012;
+    const subtlePitchMotion = Math.cos(this.animTime * 1.1) * 0.010;
+
     if (this.sleighMeshGroup) {
-      this.sleighMeshGroup.position.y = gentleBob;
+      this.sleighMeshGroup.position.y = primaryBob + secondaryBob;
+      this.sleighMeshGroup.rotation.z = subtleRollMotion;
+      this.sleighMeshGroup.rotation.x = subtlePitchMotion;
     }
 
     // 8. Update Fairy Lights & Sleigh Lanterns Twinkle Animation
@@ -1038,14 +1068,17 @@ export class SleighController {
         d.mesh.rotation.x = climbPitchLead * leadFactor;
         d.mesh.rotation.z = -(this.turnInput || 0.0) * 0.15 * leadFactor;
 
-        // Dynamically update harness rein line connecting sleigh hitch to reindeer collar
+        // Dynamically update harness rein line connecting sleigh hitch to reindeer collar (zero per-frame allocation)
         if (d.reinMesh && d.hitchPos) {
-          const currentPos = d.mesh.position.clone().add(d.collarOffset);
-          const dir = new THREE.Vector3().subVectors(currentPos, d.hitchPos);
-          const len = dir.length();
-          d.reinMesh.position.copy(d.hitchPos).addScaledVector(dir, 0.5);
+          this._reinCollarPos.copy(d.mesh.position).add(d.collarOffset);
+          this._reinDir.subVectors(this._reinCollarPos, d.hitchPos);
+          const len = this._reinDir.length();
+          d.reinMesh.position.copy(d.hitchPos).addScaledVector(this._reinDir, 0.5);
           d.reinMesh.scale.set(1, len, 1);
-          d.reinMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+          if (len > 0.001) {
+            this._reinDir.multiplyScalar(1.0 / len);
+            d.reinMesh.quaternion.setFromUnitVectors(this._upVec, this._reinDir);
+          }
         }
       }
     }
@@ -1059,12 +1092,44 @@ export class SleighController {
         verticalSpeed: this.verticalSpeed,
         climbRate: this.climbRate,
         descendRate: this.descendRate,
-        isBoosting: !!this.inputs.boost,
+        isBoosting: false,
         pitch: this.pitch,
         bank: this.bank,
+        position: this.position,
         heading: heading,
         animTime: this.animTime
       });
+    }
+
+    // 10b. Golden light ribbon riding the same rear anchor as the dust plume
+    if (this.magicTrail) {
+      // Smooth the anchor so terrain-height steps and frame-to-frame drift
+      // don't shake the ribbon; snap on the first frame or after a teleport.
+      if (this._trailAttach.parent) {
+        // Anchor rides the sleigh rig itself (rear underside), so the ribbon
+        // stays welded to the body through bob, pitch and bank.
+        this._trailAttach.getWorldPosition(this._magicAnchor);
+        this._magicAnchor.addScaledVector(heading, -TRAIL_BACK_OFFSET);
+      } else {
+        // Rig not loaded yet: approximate from the controller position.
+        this._magicAnchor.set(
+          this.position.x - heading.x * TRAIL_BACK_OFFSET,
+          this.position.y + TRAIL_UP_OFFSET,
+          this.position.z - heading.z * TRAIL_BACK_OFFSET
+        );
+      }
+      if (!this._magicAnchorInit) {
+        this._magicAnchorInit = true;
+        this._magicAnchorSmooth.copy(this._magicAnchor);
+      } else {
+        const k = 1 - Math.exp(-22 * delta);
+        this._magicAnchorSmooth.lerp(this._magicAnchor, k);
+        if (this._magicAnchorSmooth.distanceToSquared(this._magicAnchor) > 1.0) {
+          this._magicAnchorSmooth.copy(this._magicAnchor); // teleport / reset
+        }
+        this._magicAnchor.copy(this._magicAnchorSmooth);
+      }
+      this.magicTrail.update(elapsedTime, this._magicAnchor, heading);
     }
 
     // 5. Update Follow Camera
@@ -1081,33 +1146,44 @@ export class SleighController {
       return;
     }
 
-    // Position camera smoothly behind and slightly above the sleigh
-    const backVec = new THREE.Vector3(
+    // Camera trailing offset behind sleigh (zero per-frame allocation)
+    this._camBackVec.set(
       Math.sin(this.rotationY),
       0,
       Math.cos(this.rotationY)
     );
 
-    this.camTargetPos.copy(this.position)
-      .addScaledVector(backVec, this.camDistance);
+    // Target camera position behind and above sleigh
+    this.camTargetPos.copy(this.position).addScaledVector(this._camBackVec, this.camDistance);
     this.camTargetPos.y = this.position.y + this.camHeight;
 
-    // Look slightly ahead of the sleigh for great visibility
-    const forwardVec = new THREE.Vector3(
+    // Target look-at point ahead of sleigh for clear forward visibility
+    this._camForwardVec.set(
       -Math.sin(this.rotationY),
       0,
       -Math.cos(this.rotationY)
     );
-    this.camLookPos.copy(this.position).addScaledVector(forwardVec, 0.55);
-    this.camLookPos.y = this.position.y + 0.10;
+    this.camLookPos.copy(this.position).addScaledVector(this._camForwardVec, 0.65);
+    this.camLookPos.y = this.position.y + 0.12;
 
-    // Smooth spring dampening camera lag
-    const lerpRate = Math.min(delta * 4.0, 1.0);
-    this.camera.position.lerp(this.camTargetPos, lerpRate);
-    this.camera.lookAt(this.camLookPos);
+    // First frame initialization of look target
+    if (!this._camLookInitialized) {
+      this._currentCamLookPos.copy(this.camLookPos);
+      this.camera.position.copy(this.camTargetPos);
+      this._camLookInitialized = true;
+    }
+
+    // Natural exponential easing behind the sleigh (5.5 / s) eliminates camera hitching and prevents motion sickness
+    const posEase = 1.0 - Math.exp(-5.5 * delta);
+    this.camera.position.lerp(this.camTargetPos, posEase);
+
+    // Look-at point eases smoothly with slightly higher responsiveness (7.5 / s) to keep flight direction centered
+    const lookEase = 1.0 - Math.exp(-7.5 * delta);
+    this._currentCamLookPos.lerp(this.camLookPos, lookEase);
+    this.camera.lookAt(this._currentCamLookPos);
 
     if (this.controls) {
-      this.controls.target.copy(this.camLookPos);
+      this.controls.target.copy(this._currentCamLookPos);
     }
   }
 
@@ -1317,13 +1393,19 @@ export class SleighController {
         this.position.y + this.camHeight,
         this.position.z - heading.z * this.camDistance
       );
-      const lookAt = new THREE.Vector3(this.position.x, this.position.y + 0.10, this.position.z);
+      const lookAt = new THREE.Vector3(this.position.x, this.position.y + 0.12, this.position.z);
+      this._currentCamLookPos.copy(lookAt);
       this.camera.lookAt(lookAt);
       if (this.controls && this.controls.target) this.controls.target.copy(lookAt);
     }
 
     if (this.flightTrail && typeof this.flightTrail.reset === 'function') {
       this.flightTrail.reset();
+    }
+
+    // Drop the ribbon samples too, so the new run never inherits a stale streak.
+    if (this.magicTrail) {
+      this.magicTrail.reset();
     }
 
     // Re-arm crash detection for the new run after the spawn grace period.
@@ -1342,6 +1424,10 @@ export class SleighController {
     if (this.flightTrail) {
       this.flightTrail.dispose();
       this.flightTrail = null;
+    }
+    if (this.magicTrail) {
+      this.magicTrail.dispose();
+      this.magicTrail = null;
     }
   }
 }
