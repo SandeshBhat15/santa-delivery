@@ -7,8 +7,8 @@ import { MagicTrail } from './MagicTrail.js';
 
 // World-space anchor for the golden light ribbon: just behind the sleigh's
 // rear rail and level with it (same convention as the dust plume).
-const TRAIL_BACK_OFFSET = 0.0;
-const TRAIL_UP_OFFSET = 0.005;
+const TRAIL_BACK_OFFSET = 0.11;
+const TRAIL_UP_OFFSET = 0.035;
 
 export class SleighController {
   constructor(scene, camera, controls, chunkSystem, isMobile = false) {
@@ -251,7 +251,7 @@ export class SleighController {
 
     // Golden ribbon anchor: just behind/below the sleigh's rear (sledge-node space:
     // the artist's rear lanterns sit at x ±0.07, y 0.06, z ≈ -0.15).
-    this._trailAttach.position.set(0, 0.015, -0.165);
+    this._trailAttach.position.set(0, 0.015, -0.185);
     (sledgeNode || sleighGroup).add(this._trailAttach);
 
     // 2. 4-Reindeer Team (2 Front Leads + 2 Behind)
@@ -629,7 +629,7 @@ export class SleighController {
     this.sleighMeshGroup = sleighMeshGroup;
 
     // Golden ribbon anchor at the fallback sleigh's rear underside
-    this._trailAttach.position.set(0, 0.10, 0.85);
+    this._trailAttach.position.set(0, 0.30, 0.75);
     sleighMeshGroup.add(this._trailAttach);
 
     // Build Stylized Santa
@@ -1083,32 +1083,7 @@ export class SleighController {
       }
     }
 
-    // 10. Compute anchor world position attached directly to the sledge
-    if (this._trailAttach.parent) {
-      this._trailAttach.getWorldPosition(this._magicAnchor);
-      if (TRAIL_BACK_OFFSET > 0) {
-        this._magicAnchor.addScaledVector(heading, -TRAIL_BACK_OFFSET);
-      }
-    } else {
-      this._magicAnchor.set(
-        this.position.x,
-        this.position.y + TRAIL_UP_OFFSET,
-        this.position.z
-      );
-    }
-    if (!this._magicAnchorInit) {
-      this._magicAnchorInit = true;
-      this._magicAnchorSmooth.copy(this._magicAnchor);
-    } else {
-      const k = 1 - Math.exp(-28 * delta);
-      this._magicAnchorSmooth.lerp(this._magicAnchor, k);
-      if (this._magicAnchorSmooth.distanceToSquared(this._magicAnchor) > 0.5) {
-        this._magicAnchorSmooth.copy(this._magicAnchor);
-      }
-      this._magicAnchor.copy(this._magicAnchorSmooth);
-    }
-
-    // 10a. Update Magical Reindeer Flight Trail attached directly to the sledge
+    // 10. Update Magical Reindeer Flight Trail
     if (this.flightTrail) {
       this.flightTrail.update(delta, {
         speed: this.speed,
@@ -1120,14 +1095,40 @@ export class SleighController {
         isBoosting: false,
         pitch: this.pitch,
         bank: this.bank,
-        position: this._magicAnchor,
+        position: this.position,
         heading: heading,
         animTime: this.animTime
       });
     }
 
-    // 10b. Golden light ribbon connected seamlessly to the sledge
+    // 10b. Golden light ribbon riding the same rear anchor as the dust plume
     if (this.magicTrail) {
+      // Smooth the anchor so terrain-height steps and frame-to-frame drift
+      // don't shake the ribbon; snap on the first frame or after a teleport.
+      if (this._trailAttach.parent) {
+        // Anchor rides the sleigh rig itself (rear underside), so the ribbon
+        // stays welded to the body through bob, pitch and bank.
+        this._trailAttach.getWorldPosition(this._magicAnchor);
+        this._magicAnchor.addScaledVector(heading, -TRAIL_BACK_OFFSET);
+      } else {
+        // Rig not loaded yet: approximate from the controller position.
+        this._magicAnchor.set(
+          this.position.x - heading.x * TRAIL_BACK_OFFSET,
+          this.position.y + TRAIL_UP_OFFSET,
+          this.position.z - heading.z * TRAIL_BACK_OFFSET
+        );
+      }
+      if (!this._magicAnchorInit) {
+        this._magicAnchorInit = true;
+        this._magicAnchorSmooth.copy(this._magicAnchor);
+      } else {
+        const k = 1 - Math.exp(-22 * delta);
+        this._magicAnchorSmooth.lerp(this._magicAnchor, k);
+        if (this._magicAnchorSmooth.distanceToSquared(this._magicAnchor) > 1.0) {
+          this._magicAnchorSmooth.copy(this._magicAnchor); // teleport / reset
+        }
+        this._magicAnchor.copy(this._magicAnchorSmooth);
+      }
       this.magicTrail.update(elapsedTime, this._magicAnchor, heading);
     }
 

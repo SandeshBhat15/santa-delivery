@@ -32,8 +32,8 @@ const MAX_SPAWNS_FRAME_MOBILE  = 32;
 const MAX_PARTICLES_DESKTOP = 1200;
 const MAX_PARTICLES_MOBILE  = 720;
 
-const BACK_OFFSET = 0.0;        // anchor sits just behind the sleigh body
-const DOWN_OFFSET = 0.005;       // ...and level with the rear rail
+const BACK_OFFSET = 0.11;        // anchor sits just behind the sleigh body
+const DOWN_OFFSET = 0.030;       // ...and level with the rear rail
 
 const TRAIL_HALF_WIDTH = 0.045;  // base plume radius (metres)
 const TURN_SPREAD      = 0.080;  // extra lateral spread at full bank
