@@ -714,117 +714,148 @@ export class DeliverySystem {
     }, 2400);
   }
 
-  // Terrain-aware candidate validation:
-  // Verifies house is on solid snowy ground (not water/lake), slope is gentle,
-  // safe clearance from tree trunks, and unobstructed open flight approach.
-  _isValidHouseCandidate(box, cx, cz) {
-    if (!box || !box.min || !box.max) return false;
-    const sizeX = box.max.x - box.min.x;
-    const sizeZ = box.max.z - box.min.z;
-    if (sizeX < 0.22 || sizeZ < 0.22) return false;
-
-    const roofY = box.max.y;
-    const groundY = box.min.y;
-    // Houses must have believable height and not be miniature debris
-    if (roofY - groundY < 0.18) return false;
-    if (roofY < 0.58 || roofY > 2.20) return false;
-
-    const centerX = (box.min.x + box.max.x) * 0.5;
-    const centerZ = (box.min.z + box.max.z) * 0.5;
-
-    // 1. Terrain elevation check: must rest on solid ground above water/lake level (lake surface ~0.48-0.50m)
-    if (this.chunkSystem && this.chunkSystem.getHeight) {
-      const terrainHeight = this.chunkSystem.getHeight(centerX, centerZ);
-      if (terrainHeight < 0.53) return false; // In or below water
-      // Must not be floating high in mid-air or sunk deep underground
-      if (Math.abs(groundY - terrainHeight) > 0.45) return false;
-
-      // 2. Slope check: verify ground under house is reasonably flat (not sheer cliff face)
-      const sampleDist = 0.4;
-      const hX1 = this.chunkSystem.getHeight(centerX + sampleDist, centerZ);
-      const hX2 = this.chunkSystem.getHeight(centerX - sampleDist, centerZ);
-      const hZ1 = this.chunkSystem.getHeight(centerX, centerZ + sampleDist);
-      const hZ2 = this.chunkSystem.getHeight(centerX, centerZ - sampleDist);
-      const slopeX = Math.abs(hX1 - hX2) / (sampleDist * 2);
-      const slopeZ = Math.abs(hZ1 - hZ2) / (sampleDist * 2);
-      if (slopeX > 0.38 || slopeZ > 0.38) return false; // Steep cliff face
-    }
-
-    // 3. Tree trunk clearance: ensure candidate does not overlap foliage stems
-    if (this.chunkSystem && this.chunkSystem.templateTreePositions) {
-      let lx = centerX - cx * this.chunkSystem.chunkSize;
-      let lz = centerZ - cz * this.chunkSystem.chunkSize;
-      const rotIdx = this.chunkSystem.getChunkRotationIndex ? this.chunkSystem.getChunkRotationIndex(cx, cz) : 0;
-      if (rotIdx === 1) { const ox = lx; lx = -lz; lz = ox; }
-      else if (rotIdx === 2) { lx = -lx; lz = -lz; }
-      else if (rotIdx === 3) { const ox = lx; lx = lz; lz = -ox; }
-
-      const trees = this.chunkSystem.templateTreePositions;
-      for (let t = 0; t < trees.length; t++) {
-        const distSq = (trees[t].x - lx) * (trees[t].x - lx) + (trees[t].z - lz) * (trees[t].z - lz);
-        if (distSq < 0.45 * 0.45) return false; // Inside or touching tree trunk
-      }
-    }
-
-    return true;
-  }
-
-  // Deterministic target selection for a chunk with terrain and clearance validation
+  // Deterministic target selection for a chunk (3 to 4 houses per chunk)
   syncChunkTargets(chunkKey, cx, cz) {
     if (!this.chunkSystem) return;
 
-    const chunkData = this.chunkSystem.chunks.get(chunkKey);
-    const colliders = chunkData && Array.isArray(chunkData.houseColliders)
-      ? chunkData.houseColliders
-      : [];
+    const isCenter = (cx === 0 && cz === 0);
+    const chunkSize = this.chunkSystem.chunkSize || 20.0;
+    const worldChunkOrigin = new THREE.Vector3(cx * chunkSize, 0, cz * chunkSize);
 
-    if (colliders.length === 0) return;
+    // Retrieve eligible house instances in this chunk
+    let candidatePositions = [];
 
-    const validatedCandidates = [];
-    for (let i = 0; i < colliders.length; i++) {
-      const box = colliders[i];
-      if (!this._isValidHouseCandidate(box, cx, cz)) continue;
+    if (isCenter && this.chunkSystem.templateHouses) {
+      // Pick signature landmark houses across flight quadrants
+      const landmarkNames = ['house4', 'houseP_11', 'houseP_70', 'houseP_23'];
+      const matchedLandmarks = [];
 
-      const roof = new THREE.Vector3(
-        (box.min.x + box.max.x) * 0.5,
-        box.max.y,
-        (box.min.z + box.max.z) * 0.5
-      );
+      landmarkNames.forEach((targetName, i) => {
+        const houseTemplate = this.chunkSystem.templateHouses.find((h) => h.meshName === targetName);
+        if (houseTemplate && houseTemplate.geo) {
+          if (!houseTemplate.geo.boundingBox) houseTemplate.geo.computeBoundingBox();
+          const box = houseTemplate.geo.boundingBox.clone();
+          const m = new THREE.Matrix4().compose(
+            houseTemplate.pos,
+            new THREE.Quaternion().setFromEuler(houseTemplate.rot),
+            houseTemplate.scale
+          );
+          box.applyMatrix4(m);
 
-      // Avoid duplicates or houses clustered too tightly in the same chunk (< 1.2m apart)
-      let tooClose = false;
-      for (let j = 0; j < validatedCandidates.length; j++) {
-        const c = validatedCandidates[j];
-        if (Math.hypot(c.x - roof.x, c.z - roof.z) < 1.2) {
-          tooClose = true;
-          break;
+          // Exact rooftop peak centered precisely above the house
+          const exactRoof = new THREE.Vector3(
+            (box.min.x + box.max.x) * 0.5,
+            box.max.y,
+            (box.min.z + box.max.z) * 0.5
+          );
+
+          matchedLandmarks.push(exactRoof);
+          candidatePositions.push({
+            houseId: `center_village_house_${i}`,
+            worldPos: exactRoof
+          });
         }
+      });
+
+      // The village contains ~109 houses. Derive extra rooftop targets from actual house colliders
+      // so a full run is always available even before neighbouring chunks stream in.
+      const chunkData = this.chunkSystem.chunks.get(chunkKey);
+      const colliders = chunkData && Array.isArray(chunkData.houseColliders)
+        ? chunkData.houseColliders
+        : [];
+      const extras = [];
+      const seen = [];
+
+      for (let i = 0; i < colliders.length; i++) {
+        const box = colliders[i];
+        if (!box || !box.min || !box.max) continue;
+        const sizeX = box.max.x - box.min.x;
+        const sizeZ = box.max.z - box.min.z;
+        if (sizeX < 0.18 || sizeZ < 0.18) continue;
+        const topY = box.max.y;
+        if (topY < 0.55 || topY > 1.35) continue;
+
+        const x = (box.min.x + box.max.x) * 0.5;
+        const z = (box.min.z + box.max.z) * 0.5;
+
+        // Keep distance from the landmark roofs so targets don't bunch up
+        if (matchedLandmarks.some((roof) => Math.hypot(roof.x - x, roof.z - z) < 1.0)) {
+          continue;
+        }
+        if (seen.some((p) => Math.hypot(p.x - x, p.z - z) < 0.65)) continue;
+
+        seen.push({ x, z });
+        extras.push({ x, y: topY, z, dist: Math.hypot(x, z) });
       }
-      if (!tooClose) {
-        validatedCandidates.push(roof);
+
+      extras.sort((a, b) => a.dist - b.dist);
+      extras.slice(0, 3).forEach((extra, i) => {
+        candidatePositions.push({
+          houseId: `center_village_extra_${i}`,
+          worldPos: new THREE.Vector3(extra.x, extra.y, extra.z)
+        });
+      });
+    } else {
+      // Wilderness chunk settlement: compute exact rooftop centers from actual house colliders
+      const chunkData = this.chunkSystem.chunks.get(chunkKey);
+      const colliders = chunkData && Array.isArray(chunkData.houseColliders)
+        ? chunkData.houseColliders
+        : [];
+
+      if (colliders.length > 0) {
+        const roofCandidates = [];
+        for (let idx = 0; idx < colliders.length; idx++) {
+          const box = colliders[idx];
+          if (!box || !box.min || !box.max) continue;
+          const sizeX = box.max.x - box.min.x;
+          const sizeZ = box.max.z - box.min.z;
+          if (sizeX < 0.18 || sizeZ < 0.18) continue;
+          if (box.max.y < 0.55 || box.max.y > 1.35) continue;
+
+          roofCandidates.push({
+            x: (box.min.x + box.max.x) * 0.5,
+            y: box.max.y,
+            z: (box.min.z + box.max.z) * 0.5
+          });
+        }
+
+        roofCandidates.sort((a, b) =>
+          Math.hypot(a.x - worldChunkOrigin.x, a.z - worldChunkOrigin.z) -
+          Math.hypot(b.x - worldChunkOrigin.x, b.z - worldChunkOrigin.z)
+        );
+
+        const targetCount = Math.min(roofCandidates.length, (Math.abs(cx * 7 + cz * 13) % 2 === 0 ? 4 : 3));
+        for (let idx = 0; idx < targetCount; idx++) {
+          const roof = roofCandidates[idx];
+          candidatePositions.push({
+            houseId: `wilderness_${chunkKey}_roof_${idx}`,
+            worldPos: new THREE.Vector3(roof.x, roof.y, roof.z)
+          });
+        }
       }
     }
 
-    // Register all validated delivery houses for this chunk
-    validatedCandidates.forEach((roof, idx) => {
-      const houseId = "house_" + chunkKey + "_" + idx;
-      let houseData = this.trackedHouses.get(houseId);
+    // Register or refresh delivery candidates. The run route is locked when the
+    // run starts, so streaming new chunks never steals focus from the active target.
+    candidatePositions.forEach((cand) => {
+      let houseData = this.trackedHouses.get(cand.houseId);
       if (!houseData) {
         houseData = {
-          houseId,
-          chunkKey,
-          worldPos: roof.clone(),
+          houseId: cand.houseId,
+          chunkKey: chunkKey,
+          worldPos: cand.worldPos.clone(),
           delivered: false,
           marker: null
         };
-        this.trackedHouses.set(houseId, houseData);
+        this.trackedHouses.set(cand.houseId, houseData);
       } else {
-        houseData.worldPos.copy(roof);
+        houseData.worldPos.copy(cand.worldPos);
       }
     });
 
     this._updateVisualMarkers();
   }
+
   // Clean up visual markers when a chunk unloads while preserving delivery progress
   unloadChunkTargets(chunkKey) {
     this.trackedHouses.forEach((houseData) => {
@@ -1306,7 +1337,7 @@ export class DeliverySystem {
     this._activateTarget(this.runTargets[0] || null);
     this._updateHUD();
 
-    // Banner removed
+    this.showBanner('FOLLOW THE GOLDEN BEAM!', 'success');
   }
 
   _seedLoadedChunks() {
@@ -1317,77 +1348,94 @@ export class DeliverySystem {
     });
   }
 
-  // Select 5 well-spaced delivery houses across distinct quadrants/regions of playable terrain
   _selectRunTargets() {
-    const origin = this.sleighController?.position || new THREE.Vector3(0, 0.8, 8.0);
+    const origin = this.sleighController.position;
     const all = Array.from(this.trackedHouses.values()).filter((h) => !h.delivered);
     if (all.length === 0) {
       this.runTargets = [];
       return;
     }
 
-    // 5 delivery houses at well-spaced locations across the playable terrain
-    // with enough distance between targets to make flying feel like an adventure (>= 10m to 18m).
-    const selected = [];
-    const minDistanceThreshold = 10.0;
-
-    let remaining = [...all];
-    remaining.sort((a, b) => {
+    const byDistance = (a, b) => {
       const da = Math.hypot(a.worldPos.x - origin.x, a.worldPos.z - origin.z);
       const db = Math.hypot(b.worldPos.x - origin.x, b.worldPos.z - origin.z);
-      const scoreA = Math.abs(da - 11.0);
-      const scoreB = Math.abs(db - 11.0);
-      return scoreA - scoreB;
-    });
+      return da - db;
+    };
 
-    if (remaining.length > 0) {
-      selected.push(remaining.shift());
-    }
+    const center = all.filter((h) => h.chunkKey === '0,0').sort(byDistance);
+    const outposts = all.filter((h) => h.chunkKey !== '0,0').sort(byDistance);
 
-    while (selected.length < this.deliveriesRequired && remaining.length > 0) {
-      const lastPos = selected[selected.length - 1].worldPos;
-      let bestCandidate = null;
-      let bestScore = -Infinity;
+    // Four signature village roofs, then a greedy nearest-neighbour ordering
+    // through them so the opening deliveries form a readable loop.
+    const route = [];
+    const remaining = center.slice(0, 4);
+    let cursor = origin;
 
+    while (remaining.length > 0 && route.length < 4) {
+      let bestIndex = 0;
+      let bestDist = Infinity;
       for (let i = 0; i < remaining.length; i++) {
-        const cand = remaining[i];
-        const distFromLast = Math.hypot(cand.worldPos.x - lastPos.x, cand.worldPos.z - lastPos.z);
-        
-        let minDistFromAnySelected = distFromLast;
-        for (let s = 0; s < selected.length; s++) {
-          const d = Math.hypot(cand.worldPos.x - selected[s].worldPos.x, cand.worldPos.z - selected[s].worldPos.z);
-          if (d < minDistFromAnySelected) minDistFromAnySelected = d;
-        }
-
-        let score = minDistFromAnySelected;
-        if (cand.chunkKey !== selected[selected.length - 1].chunkKey) {
-          score += 6.0;
-        }
-
-        if (score > bestScore) {
-          bestScore = score;
-          bestCandidate = cand;
+        const d = Math.hypot(
+          remaining[i].worldPos.x - cursor.x,
+          remaining[i].worldPos.z - cursor.z
+        );
+        if (d < bestDist) {
+          bestDist = d;
+          bestIndex = i;
         }
       }
-
-      if (bestCandidate && (bestScore >= minDistanceThreshold || remaining.length <= (this.deliveriesRequired - selected.length))) {
-        selected.push(bestCandidate);
-        remaining = remaining.filter((h) => h.houseId !== bestCandidate.houseId);
-      } else if (remaining.length > 0) {
-        remaining.sort((a, b) => {
-          const da = Math.hypot(a.worldPos.x - lastPos.x, a.worldPos.z - lastPos.z);
-          const db = Math.hypot(b.worldPos.x - lastPos.x, b.worldPos.z - lastPos.z);
-          return db - da;
-        });
-        const picked = remaining.shift();
-        selected.push(picked);
-      } else {
-        break;
-      }
+      const picked = remaining.splice(bestIndex, 1)[0];
+      route.push(picked);
+      cursor = picked.worldPos;
     }
 
-    this.runTargets = selected.slice(0, this.deliveriesRequired);
+    // Final delivery is an outpost just outside the village, giving the run a
+    // short "leave home" beat without adding navigation friction.
+    const used = new Set(route.map((h) => h.houseId));
+    const remainingOutposts = outposts.filter((h) => !used.has(h.houseId));
+    while (route.length < this.deliveriesRequired && remainingOutposts.length > 0) {
+      let bestIndex = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < remainingOutposts.length; i++) {
+        const d = Math.hypot(
+          remainingOutposts[i].worldPos.x - cursor.x,
+          remainingOutposts[i].worldPos.z - cursor.z
+        );
+        if (d < bestDist) {
+          bestDist = d;
+          bestIndex = i;
+        }
+      }
+      const picked = remainingOutposts.splice(bestIndex, 1)[0];
+      route.push(picked);
+      cursor = picked.worldPos;
+    }
+
+    // If no neighbouring outposts have streamed in yet, fall back to the extra
+    // village rooftops so the run always contains five reachable deliveries.
+    const usedIds = new Set(route.map((h) => h.houseId));
+    const remainingCenters = center.filter((h) => !usedIds.has(h.houseId));
+    while (route.length < this.deliveriesRequired && remainingCenters.length > 0) {
+      let bestIndex = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < remainingCenters.length; i++) {
+        const d = Math.hypot(
+          remainingCenters[i].worldPos.x - cursor.x,
+          remainingCenters[i].worldPos.z - cursor.z
+        );
+        if (d < bestDist) {
+          bestDist = d;
+          bestIndex = i;
+        }
+      }
+      const picked = remainingCenters.splice(bestIndex, 1)[0];
+      route.push(picked);
+      cursor = picked.worldPos;
+    }
+
+    this.runTargets = route.slice(0, this.deliveriesRequired);
   }
+
   _setNextTarget() {
     if (!this.runActive || this.runComplete) return;
 
