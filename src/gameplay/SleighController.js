@@ -32,7 +32,8 @@ export class SleighController {
     this.boostAccelRate  = 3.5;   // exponential ramp-up rate during boost
     this.boostDecelRate  = 2.5;   // exponential ramp-down rate after releasing boost
     // ────────────────────────────────────────────────────────────────────────
-    this.turnSpeed = 1.9;
+    this.turnSpeed = 1.6;
+    this.smoothTurnInput = 0.0;
     this.climbSpeed = 3.5;
     this.bankMax = 0.42;
 
@@ -822,13 +823,14 @@ export class SleighController {
       turnInput = sign * Math.min(Math.max(normalizedTurn, 0), 1.0);
     }
 
-    // Smooth interpolated rotation
-    this.turnInput = turnInput;
-    this.rotationY += turnInput * this.turnSpeed * delta;
+    // Smooth interpolated steering & turn rate
+    this.smoothTurnInput += (turnInput - this.smoothTurnInput) * Math.min(delta * 4.5, 1.0);
+    this.turnInput = this.smoothTurnInput;
+    this.rotationY += this.smoothTurnInput * this.turnSpeed * delta;
 
     // Banking roll during turns (positive banking so inner side dips naturally into turn)
-    const targetBank = turnInput * this.bankMax;
-    this.bank += (targetBank - this.bank) * Math.min(delta * 5.5, 1.0);
+    const targetBank = this.smoothTurnInput * this.bankMax;
+    this.bank += (targetBank - this.bank) * Math.min(delta * 4.0, 1.0);
 
     // 2. Vertical Flight (Smooth Look-Ahead Terrain Following & Gliding)
     let localGroundH = 0.5;
@@ -965,9 +967,8 @@ export class SleighController {
     }
 
     // 5. House & Structure Collision Avoidance
-    // A gentle predictive lift clears low rooftops, then the existing AABB
-    // resolver handles anything that still gets too close.
-    this._applyGentleObstacleAvoidance(delta, heading);
+    // Direct player-controlled flight (no automatic obstacle altitude updraft/correction);
+    // soft sliding collision resolution prevents intersecting structures.
     this._resolveHouseCollisions();
 
     // 6. Apply Full 3D Transform to Sleigh Group
@@ -1101,7 +1102,7 @@ export class SleighController {
     this.camLookPos.y = this.position.y + 0.10;
 
     // Smooth spring dampening camera lag
-    const lerpRate = Math.min(delta * 5.5, 1.0);
+    const lerpRate = Math.min(delta * 4.0, 1.0);
     this.camera.position.lerp(this.camTargetPos, lerpRate);
     this.camera.lookAt(this.camLookPos);
 
@@ -1181,112 +1182,107 @@ export class SleighController {
   _resolveHouseCollisions() {
     if (!this.chunkSystem || !this.chunkSystem.getHouseCollidersNear) return;
 
-    // Search for nearby house AABBs within 10 meters of Santa's sleigh
-    const nearbyHouses = this.chunkSystem.getHouseCollidersNear(this.position.x, this.position.z, 10.0);
+    // Search for nearby house AABBs within 6 meters of Santa's sleigh
+    const nearbyHouses = this.chunkSystem.getHouseCollidersNear(this.position.x, this.position.z, 6.0);
     if (!nearbyHouses || nearbyHouses.length === 0) return;
 
-    // Sleigh collision volume modeled as 2 overlapping bounding spheres
-    // scaled to the half-size rig:
-    // 1. Sleigh main chassis at position (x, y + 0.04, z)
-    // 2. Reindeer lead team in front along heading vector (-sin(rotY), 0, -cos(rotY)) * 0.24
     const forwardX = -Math.sin(this.rotationY);
     const forwardZ = -Math.cos(this.rotationY);
 
+    // Collision spheres calibrated for the sleigh chassis & reindeer lead team
     const collisionNodes = [
+      // Sleigh chassis center
       {
-        pos: new THREE.Vector3(this.position.x, this.position.y + 0.04, this.position.z),
-        radius: 0.095,
-        isChassis: true
+        offset: new THREE.Vector3(0, 0.05, 0),
+        radius: 0.14
       },
+      // Sleigh rear / sack
       {
-        pos: new THREE.Vector3(
-          this.position.x + forwardX * 0.24,
-          this.position.y + 0.04,
-          this.position.z + forwardZ * 0.24
-        ),
-        radius: 0.08,
-        isChassis: false
+        offset: new THREE.Vector3(-forwardX * 0.15, 0.07, -forwardZ * 0.15),
+        radius: 0.12
+      },
+      // Lead reindeer (Rudolph & team)
+      {
+        offset: new THREE.Vector3(forwardX * 0.35, 0.05, forwardZ * 0.35),
+        radius: 0.12
       }
     ];
 
-    const margin = this.safetyMargin;
+    let collidedAny = false;
 
     for (const houseBox of nearbyHouses) {
-      // Expanded bounding box with safety margin
-      const minX = houseBox.min.x - margin;
-      const maxX = houseBox.max.x + margin;
-      const minY = houseBox.min.y - margin;
-      const maxY = houseBox.max.y + margin;
-      const minZ = houseBox.min.z - margin;
-      const maxZ = houseBox.max.z + margin;
-
       for (const node of collisionNodes) {
-        // Find closest point on expanded box to sphere center
-        const closestX = Math.max(minX, Math.min(node.pos.x, maxX));
-        const closestY = Math.max(minY, Math.min(node.pos.y, maxY));
-        const closestZ = Math.max(minZ, Math.min(node.pos.z, maxZ));
+        const nodeWorldX = this.position.x + node.offset.x;
+        const nodeWorldY = this.position.y + node.offset.y;
+        const nodeWorldZ = this.position.z + node.offset.z;
 
-        const dx = node.pos.x - closestX;
-        const dy = node.pos.y - closestY;
-        const dz = node.pos.z - closestZ;
+        // Closest point on house AABB
+        const closestX = Math.max(houseBox.min.x, Math.min(nodeWorldX, houseBox.max.x));
+        const closestY = Math.max(houseBox.min.y, Math.min(nodeWorldY, houseBox.max.y));
+        const closestZ = Math.max(houseBox.min.z, Math.min(nodeWorldZ, houseBox.max.z));
+
+        const dx = nodeWorldX - closestX;
+        const dy = nodeWorldY - closestY;
+        const dz = nodeWorldZ - closestZ;
         const distSq = dx * dx + dy * dy + dz * dz;
 
-        const effectiveRadius = node.radius;
-        if (distSq < effectiveRadius * effectiveRadius) {
-          // A real house impact ends the run. The handler latches, so this is
-          // reported only once even while the physics push resolves.
-          this._reportHouseCrash();
-
+        const r = node.radius;
+        if (distSq < r * r) {
+          collidedAny = true;
           const dist = Math.sqrt(distSq);
           let pushX = 0;
           let pushY = 0;
           let pushZ = 0;
 
           if (dist > 0.0001) {
-            const overlap = effectiveRadius - dist;
-            pushX = (dx / dist) * overlap;
-            pushY = (dy / dist) * overlap;
-            pushZ = (dz / dist) * overlap;
+            const penetration = r - dist;
+            pushX = (dx / dist) * penetration;
+            pushY = (dy / dist) * penetration;
+            pushZ = (dz / dist) * penetration;
           } else {
-            // Sleigh is fully inside box: push in direction of smallest penetration
-            const dists = [
-              { axis: 'x', dir: 1, val: maxX - node.pos.x },
-              { axis: 'x', dir: -1, val: node.pos.x - minX },
-              { axis: 'y', dir: 1, val: maxY - node.pos.y },
-              { axis: 'y', dir: -1, val: node.pos.y - minY },
-              { axis: 'z', dir: 1, val: maxZ - node.pos.z },
-              { axis: 'z', dir: -1, val: node.pos.z - minZ }
-            ];
-            dists.sort((a, b) => a.val - b.val);
-            const minEntry = dists[0];
-            const pushDist = minEntry.val + effectiveRadius;
-            if (minEntry.axis === 'x') pushX = minEntry.dir * pushDist;
-            if (minEntry.axis === 'y') pushY = minEntry.dir * pushDist;
-            if (minEntry.axis === 'z') pushZ = minEntry.dir * pushDist;
+            // Sleigh is fully inside: push up towards roof peak
+            pushY = (houseBox.max.y + r) - nodeWorldY;
           }
 
-          // Apply smooth push to actual sleigh position
+          // Displace sleigh smoothly out of house volume
           this.position.x += pushX;
           this.position.y += pushY;
           this.position.z += pushZ;
 
-          // If pushed upward against roof, zero negative vertical speed
-          if (pushY > 0.05 && this.verticalSpeed < 0) {
-            this.verticalSpeed = 0;
-          }
-          // If pushed laterally against wall, gently dampen forward speed
-          if (Math.hypot(pushX, pushZ) > 0.05 && this.speed > 0) {
-            this.speed = Math.max(0, this.speed - 3.5 * (1.0 / 60.0));
+          // 1. Rooftop gliding & landing:
+          if (nodeWorldY >= houseBox.max.y - 0.10) {
+            // Santa is on or skimming the roof: firmly maintain minimum roof height
+            const roofCeil = houseBox.max.y + 0.04;
+            if (this.position.y < roofCeil) {
+              this.position.y = roofCeil;
+            }
+            if (this.verticalSpeed < 0) {
+              this.verticalSpeed = 0;
+            }
           }
 
-          // Update other node position with new displacement
-          for (const other of collisionNodes) {
-            other.pos.x += pushX;
-            other.pos.y += pushY;
-            other.pos.z += pushZ;
+          // 2. Lateral wall sliding (never stick or stop completely):
+          const pushLenHoriz = Math.hypot(pushX, pushZ);
+          if (pushLenHoriz > 0.001) {
+            const nX = pushX / pushLenHoriz;
+            const nZ = pushZ / pushLenHoriz;
+            const intoWall = forwardX * nX + forwardZ * nZ;
+            if (intoWall < 0) {
+              // Redirect velocity along the wall surface (sliding deflect) with a gentle upward glide
+              this.position.x += nX * 0.02;
+              this.position.z += nZ * 0.02;
+              this.position.y += 0.02; // Guiding lift up over the edge
+              // Maintain healthy forward cruise speed so Santa never gets pinned or stuck
+              this.speed = Math.max(1.0, this.speed * 0.94);
+            }
           }
         }
       }
+    }
+
+    // Trigger crash failure if configured
+    if (collidedAny) {
+      this._reportHouseCrash();
     }
   }
 

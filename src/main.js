@@ -1897,54 +1897,32 @@ class InfiniteChunkSystem {
   constructor(scene, options = {}) {
     this.scene = scene;
     this.chunkSize = 20.0;
-    this.loadRadius = options.loadRadius || 2; // (2 * 2 + 1)^2 = 25 chunks (5x5 grid = 100m x 100m)
-    this.unloadRadius = options.unloadRadius || 3;
+    this.loadRadius = options.loadRadius || 1; // Direct camera view focus
     this.chunks = new Map(); // key "cx,cz" -> ChunkData
-    this.lastCenterChunk = { cx: NaN, cz: NaN };
+    this.chunkPool = []; // Recycled chunk groups for zero-allocation streaming
 
-    // Template resources extracted from terrain.glb
-    this.templateTerrainGroup = null; // Contains terrain planes & cliffs
-    this.templateTerrainMeshes = []; // Array of shared template meshes for zero-copy instantiation
-    this.treePrototypes = []; // Array of { geometry, material, name }
-    this.bushPrototypes = [];
-    this.templateTrees = []; // Local tree transforms from base chunk
-    this.templateBushes = []; // Local bush transforms from base chunk
-    this.templateHouses = []; // House data for central village (0,0) and peripheral settlements
+    // Master template resources extracted from terrain.glb
+    this.templateChunkRoot = null;
+    this.templateTerrainMeshes = [];
+    this.templateFoliageMeshes = [];
+    this.templateHouseMesh = null;
+    this.templateHouseColliders = []; // Local AABBs inside template
     this.sharedMaterials = new Map();
 
     // Height cache & collision grid (65x65 sampled from original terrain template)
     this.heightGridSize = 65;
-    this.heightGrid = null; // Float32Array of 65x65
-    this.edgeHeight = 0.506; // Exact perimeter altitude
+    this.heightGrid = null;
+    this.edgeHeight = 0.506;
 
     // World root group
     this.worldGroup = new THREE.Group();
     this.worldGroup.name = 'InfiniteWorldGroup';
     this.scene.add(this.worldGroup);
 
-    // Collision raycaster fallback
-    this.raycaster = new THREE.Raycaster();
-    this.downVec = new THREE.Vector3(0, -1, 0);
-
-    // Reusable raycaster & vectors for zero-allocation wilderness house placement
-    this._houseRaycaster = new THREE.Raycaster();
-    this._downDir = new THREE.Vector3(0, -1, 0);
-    this._rayOrigin = new THREE.Vector3();
-    this._footprintOffsets = [
-      { dx: -0.12, dz: -0.12 },
-      { dx:  0.12, dz: -0.12 },
-      { dx: -0.12, dz:  0.12 },
-      { dx:  0.12, dz:  0.12 }
-    ];
-
-    // View-frustum based progressive chunk loading
+    // Camera view-frustum streaming
     this.frustum = new THREE.Frustum();
     this.projScreenMatrix = new THREE.Matrix4();
     this.chunkBox = new THREE.Box3();
-    this.loadQueue = [];
-    this.maxLoadsPerFrame = 1; // Strict 1 chunk per frame budget guarantees zero stutter on mobile
-    this.visibleThreshold = options.visibleThreshold || (this.chunkSize * 1.5); // Synchronized to 22m fog horizon
-    this._cullVec = new THREE.Vector3();
   }
 
   // Deterministic seedable random (LCG + Wang Hash)
@@ -1953,39 +1931,34 @@ class InfiniteChunkSystem {
     return n - Math.floor(n);
   }
 
-  // Initialize templates from loaded GLTF
+  // Initialize templates from loaded GLTF (terrain.glb is ~25k polygons)
   initFromGLTF(gltfRoot) {
-    // 1. Compute bounding box to normalize chunk coordinates
     const box = new THREE.Box3().setFromObject(gltfRoot);
     const center = box.getCenter(new THREE.Vector3());
     this.templateOffset = new THREE.Vector3(-center.x, -box.min.y, -center.z);
 
-    // Separate terrain/structures from foliage prototypes
-    const treeMeshMap = new Map();
-    const bushMeshMap = new Map();
-    const trees = [];
-    const bushes = [];
-    const houses = [];
-
-    // Traverse and collect foliage & houses
     gltfRoot.updateMatrixWorld(true);
 
-    const terrainObjects = [];
+    const terrainMeshes = [];
+    const foliageMeshes = [];
+    const houseMeshes = [];
+    const houseColliders = [];
 
     gltfRoot.traverse((child) => {
       if (!child.isMesh) return;
-
-      const name = child.name;
+      const name = child.name || '';
       const mat = child.material;
-      const matName = (mat?.name || '').toLowerCase();
 
-      // Store shared materials
       if (mat && !this.sharedMaterials.has(mat.name)) {
         this.sharedMaterials.set(mat.name, mat);
       }
 
-      // Check if child is tree or bush
-      if (name.startsWith('treeP')) {
+      if (name.startsWith('treeP') || name.startsWith('bushP')) {
+        foliageMeshes.push(child);
+      } else if (name.startsWith('house') || name.startsWith('Cube') || name.includes('building')) {
+        houseMeshes.push(child);
+
+        // Compute true world-space position, orientation & scale
         const wp = new THREE.Vector3();
         const wq = new THREE.Quaternion();
         const ws = new THREE.Vector3();
@@ -1993,174 +1966,70 @@ class InfiniteChunkSystem {
         child.getWorldQuaternion(wq);
         child.getWorldScale(ws);
 
-        // Normalize to chunk local coords [-10, 10]
+        // Normalize to chunk local origin [-10, 10]
         const lx = wp.x + this.templateOffset.x;
         const ly = wp.y + this.templateOffset.y;
         const lz = wp.z + this.templateOffset.z;
 
-        // Group identical trees by geometry shape & material signature into shared prototypes
-        const posCount = child.geometry.attributes.position ? child.geometry.attributes.position.count : 0;
-        const idxCount = child.geometry.index ? child.geometry.index.count : 0;
-        const matKey = child.material ? (child.material.name || child.material.uuid) : 'default';
-        const geoSig = `tree_${posCount}_${idxCount}_${matKey}`;
-
-        if (!treeMeshMap.has(geoSig)) {
-          const protoId = this.treePrototypes.length;
-          treeMeshMap.set(geoSig, {
-            geo: child.geometry,
-            mat: child.material,
-            id: protoId
-          });
-          this.treePrototypes.push({
-            geometry: child.geometry,
-            material: child.material,
-            name: `TreeType_${protoId}`
-          });
+        const hBox = new THREE.Box3();
+        if (child.geometry && !child.geometry.boundingBox) child.geometry.computeBoundingBox();
+        if (child.geometry && child.geometry.boundingBox) {
+          hBox.copy(child.geometry.boundingBox);
+          const m = new THREE.Matrix4().compose(
+            new THREE.Vector3(lx, ly, lz),
+            wq,
+            ws
+          );
+          hBox.applyMatrix4(m);
+          houseColliders.push(hBox);
         }
-        trees.push({
-          protoId: treeMeshMap.get(geoSig).id,
-          pos: new THREE.Vector3(lx, ly, lz),
-          rot: child.rotation.clone(),
-          scale: child.scale.clone()
-        });
-      } else if (name.startsWith('bushP')) {
-        const wp = new THREE.Vector3();
-        child.getWorldPosition(wp);
-        const lx = wp.x + this.templateOffset.x;
-        const ly = wp.y + this.templateOffset.y;
-        const lz = wp.z + this.templateOffset.z;
-
-        // Group identical bushes by geometry signature
-        const posCount = child.geometry.attributes.position ? child.geometry.attributes.position.count : 0;
-        const idxCount = child.geometry.index ? child.geometry.index.count : 0;
-        const matKey = child.material ? (child.material.name || child.material.uuid) : 'default';
-        const geoSig = `bush_${posCount}_${idxCount}_${matKey}`;
-
-        if (!bushMeshMap.has(geoSig)) {
-          const protoId = this.bushPrototypes.length;
-          bushMeshMap.set(geoSig, {
-            geo: child.geometry,
-            mat: child.material,
-            id: protoId
-          });
-          this.bushPrototypes.push({
-            geometry: child.geometry,
-            material: child.material,
-            name: `BushType_${protoId}`
-          });
-        }
-        bushes.push({
-          protoId: bushMeshMap.get(geoSig).id,
-          pos: new THREE.Vector3(lx, ly, lz),
-          rot: child.rotation.clone(),
-          scale: child.scale.clone()
-        });
-      } else if (name.startsWith('house') || name.startsWith('Cube')) {
-        const wp = new THREE.Vector3();
-        child.getWorldPosition(wp);
-        const lx = wp.x + this.templateOffset.x;
-        const ly = wp.y + this.templateOffset.y;
-        const lz = wp.z + this.templateOffset.z;
-        houses.push({
-          meshName: child.name,
-          geo: child.geometry,
-          mat: child.material,
-          pos: new THREE.Vector3(lx, ly, lz),
-          rot: child.rotation.clone(),
-          scale: child.scale.clone()
-        });
+      } else {
+        terrainMeshes.push(child);
       }
     });
 
-    this.templateTrees = trees;
-    this.templateBushes = bushes;
-    this.templateHouses = houses;
+    this.templateHouseColliders = houseColliders;
 
-    // Pre-merge all 109 central village houses into a single high-performance merged mesh
-    const houseGeometries = [];
-    let villageHouseMat = null;
-
-    houses.forEach((h) => {
-      if (!villageHouseMat) villageHouseMat = h.mat;
-      const clonedGeo = h.geo.clone();
-      const m = new THREE.Matrix4().compose(
-        h.pos,
-        new THREE.Quaternion().setFromEuler(h.rot),
-        h.scale
-      );
-      clonedGeo.applyMatrix4(m);
-      houseGeometries.push(clonedGeo);
-    });
-
-    if (houseGeometries.length > 0) {
-      const mergedVillageGeo = BufferGeometryUtils.mergeGeometries(houseGeometries, false);
-      mergedVillageGeo.computeBoundingBox();
-      mergedVillageGeo.computeBoundingSphere();
-      this.mergedVillageMesh = new THREE.Mesh(mergedVillageGeo, villageHouseMat);
-      this.mergedVillageMesh.name = 'MergedVillageHouses';
-      this.mergedVillageMesh.castShadow = true;
-      this.mergedVillageMesh.receiveShadow = true;
-      console.log(`[InfiniteChunkSystem] Merged ${houses.length} village houses into 1 draw call.`);
-    }
-
-    // Clone terrain geometry template (Plane, Plateau, Cliffs, Lake)
-    this.templateTerrainGroup = new THREE.Group();
-    this.templateTerrainGroup.name = 'TemplateTerrainMeshGroup';
-
-    // We clone the root, remove all foliage and houses, and apply the edge blend to terrain vertices
+    // 1. Prepare Base Terrain Group & apply boundary edge blending
     const cleanTerrainRoot = gltfRoot.clone(true);
     const toRemove = [];
     cleanTerrainRoot.traverse((c) => {
-      if (c.name.startsWith('treeP') || c.name.startsWith('bushP') || c.name.startsWith('house') || c.name.startsWith('Cube')) {
+      if (c.name.startsWith('treeP') || c.name.startsWith('bushP') || c.name.startsWith('house') || c.name.startsWith('Cube') || c.name.includes('building')) {
         toRemove.push(c);
       }
     });
-    toRemove.forEach((c) => {
-      if (c.parent) c.parent.remove(c);
-    });
-
-    // Apply template offset to position clean terrain at origin
+    toRemove.forEach((c) => { if (c.parent) c.parent.remove(c); });
     cleanTerrainRoot.position.copy(this.templateOffset);
-    this.templateTerrainGroup.add(cleanTerrainRoot);
 
-    // Apply seamless edge blending to terrain meshes
-    this.applyEdgeBlending(this.templateTerrainGroup);
+    const terrainTemplateGroup = new THREE.Group();
+    terrainTemplateGroup.name = 'TerrainTemplateGroup';
+    terrainTemplateGroup.add(cleanTerrainRoot);
 
-    // Build the high-speed collision & heightfield lookup table
-    this.buildHeightGrid(this.templateTerrainGroup);
+    this.applyEdgeBlending(terrainTemplateGroup);
+    this.buildHeightGrid(terrainTemplateGroup);
 
-    // Merge static terrain template meshes by unique material instance to drastically collapse draw calls
-    // (16 cliffs + 4 terrain planes + 3 plateaus + 1 rock + 1 lake -> only 5 merged meshes!)
-    this.templateTerrainGroup.updateMatrixWorld(true);
+    // Merge terrain meshes by material to minimize draw calls
+    terrainTemplateGroup.updateMatrixWorld(true);
     const materialMeshBuckets = new Map();
-
     cleanTerrainRoot.traverse((child) => {
-      if (!child.isMesh) return;
-      const mat = child.material;
-      if (!mat) return;
-      const matKey = mat.name || mat.uuid;
+      if (!child.isMesh || !child.material) return;
+      const matKey = child.material.name || child.material.uuid;
       if (!materialMeshBuckets.has(matKey)) {
         materialMeshBuckets.set(matKey, {
-          material: mat,
+          material: child.material,
           geometries: [],
-          isLake: (child.name || '').includes('Lake') || (mat.name || '').includes('ice'),
-          isTerrain: (mat.name === 'terrain')
+          isLake: (child.name || '').includes('Lake') || (child.material.name || '').includes('ice')
         });
       }
-
       const clonedGeo = child.geometry.clone();
       clonedGeo.applyMatrix4(child.matrixWorld);
       materialMeshBuckets.get(matKey).geometries.push(clonedGeo);
     });
 
-    // Empty cleanTerrainRoot and replace with merged meshes per material
     while (cleanTerrainRoot.children.length > 0) {
       cleanTerrainRoot.remove(cleanTerrainRoot.children[0]);
     }
     cleanTerrainRoot.position.set(0, 0, 0);
-    cleanTerrainRoot.rotation.set(0, 0, 0);
-    cleanTerrainRoot.scale.set(1, 1, 1);
-    cleanTerrainRoot.updateMatrix();
 
     for (const [matKey, bucket] of materialMeshBuckets.entries()) {
       if (bucket.geometries.length > 0) {
@@ -2168,24 +2037,106 @@ class InfiniteChunkSystem {
         mergedGeo.computeBoundingBox();
         mergedGeo.computeBoundingSphere();
         const mergedMesh = new THREE.Mesh(mergedGeo, bucket.material);
-        mergedMesh.name = `MergedTerrain_${bucket.material.name || 'Mat'}`;
-        // Static ground meshes receive shadows; shadows are cast exclusively by vertical foliage & structures
         mergedMesh.castShadow = false;
         mergedMesh.receiveShadow = !bucket.isLake;
         cleanTerrainRoot.add(mergedMesh);
       }
     }
-
     this.templateTerrainMeshes = [...cleanTerrainRoot.children];
-    console.log(`[InfiniteChunkSystem] Initialized with ${this.treePrototypes.length} tree types, ${this.bushPrototypes.length} bush types, ${this.templateTrees.length} trees, ${this.templateHouses.length} houses, merged terrain meshes: ${cleanTerrainRoot.children.length}.`);
+
+    // 2. Pre-merge village houses into single draw call
+    const houseGeos = [];
+    let villageHouseMat = null;
+    houseMeshes.forEach((h) => {
+      if (!villageHouseMat) villageHouseMat = h.material;
+      const clonedGeo = h.geometry.clone();
+
+      const wp = new THREE.Vector3();
+      const wq = new THREE.Quaternion();
+      const ws = new THREE.Vector3();
+      h.getWorldPosition(wp);
+      h.getWorldQuaternion(wq);
+      h.getWorldScale(ws);
+
+      const m = new THREE.Matrix4().compose(
+        wp.add(this.templateOffset),
+        wq,
+        ws
+      );
+      clonedGeo.applyMatrix4(m);
+      houseGeos.push(clonedGeo);
+    });
+
+    if (houseGeos.length > 0) {
+      const mergedHouseGeo = BufferGeometryUtils.mergeGeometries(houseGeos, false);
+      mergedHouseGeo.computeBoundingBox();
+      mergedHouseGeo.computeBoundingSphere();
+      this.templateHouseMesh = new THREE.Mesh(mergedHouseGeo, villageHouseMat);
+      this.templateHouseMesh.name = 'MergedHouses';
+      this.templateHouseMesh.castShadow = true;
+      this.templateHouseMesh.receiveShadow = true;
+    }
+
+    // 3. Pre-merge foliage (trees & bushes) into 2 clean consolidated instanced meshes
+    const treeMatrices = [];
+    const bushMatrices = [];
+    let treeProtoGeo = null;
+    let treeProtoMat = null;
+    let bushProtoGeo = null;
+    let bushProtoMat = null;
+
+    foliageMeshes.forEach((child) => {
+      const wp = new THREE.Vector3();
+      const wq = new THREE.Quaternion();
+      const ws = new THREE.Vector3();
+      child.getWorldPosition(wp);
+      child.getWorldQuaternion(wq);
+      child.getWorldScale(ws);
+
+      const lp = wp.add(this.templateOffset);
+      const m = new THREE.Matrix4().compose(lp, wq, ws);
+
+      if (child.name.startsWith('treeP')) {
+        if (!treeProtoGeo) {
+          treeProtoGeo = child.geometry;
+          treeProtoMat = child.material;
+        }
+        treeMatrices.push(m);
+      } else {
+        if (!bushProtoGeo) {
+          bushProtoGeo = child.geometry;
+          bushProtoMat = child.material;
+        }
+        bushMatrices.push(m);
+      }
+    });
+
+    this.templateFoliage = [];
+    if (treeProtoGeo && treeMatrices.length > 0) {
+      this.templateFoliage.push({
+        geometry: treeProtoGeo,
+        material: treeProtoMat,
+        matrices: treeMatrices,
+        castShadow: true
+      });
+    }
+    if (bushProtoGeo && bushMatrices.length > 0) {
+      this.templateFoliage.push({
+        geometry: bushProtoGeo,
+        material: bushProtoMat,
+        matrices: bushMatrices,
+        castShadow: false
+      });
+    }
+
+    console.log('[InfiniteChunkSystem] Master single-GLB chunk template initialized (~25k polygons). Ready for fast frustum streaming!');
   }
 
-  // Blend terrain border vertices smoothly to standard level (0.506) and snap perimeter vertices to exact +/-10.0 boundary
   applyEdgeBlending(group) {
     const margin = 1.2;
-    const snapThreshold = 0.12; // Perimeter vertices within 12cm of boundary snap exactly to +/-10.0
+    const snapThreshold = 0.12;
     const targetY = this.edgeHeight;
-    const half = this.chunkSize * 0.5; // 10.0
+    const half = this.chunkSize * 0.5;
 
     group.updateMatrixWorld(true);
 
@@ -2194,7 +2145,6 @@ class InfiniteChunkSystem {
         const geo = child.geometry;
         if (!geo || !geo.attributes.position) return;
 
-        // Clone geometry so we don't mutate Draco shared buffer if shared
         child.geometry = geo.clone();
         const pos = child.geometry.attributes.position;
         const v = new THREE.Vector3();
@@ -2202,7 +2152,6 @@ class InfiniteChunkSystem {
         for (let i = 0; i < pos.count; i++) {
           v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(child.matrixWorld);
 
-          // 1. Snap outer boundary vertices exactly to +/-half (eliminates sub-centimeter gaps between adjacent chunks)
           if (Math.abs(v.x - (-half)) < snapThreshold) v.x = -half;
           if (Math.abs(v.x - half) < snapThreshold) v.x = half;
           if (Math.abs(v.z - (-half)) < snapThreshold) v.z = -half;
@@ -2216,14 +2165,11 @@ class InfiniteChunkSystem {
           );
 
           if (distBorder < margin) {
-            // Cubic Hermite smoothstep blend to target height
             const t = Math.max(0.0, Math.min(1.0, distBorder / margin));
             const smoothT = t * t * (3.0 - 2.0 * t);
-            const blendedY = THREE.MathUtils.lerp(targetY, v.y, smoothT);
-            v.y = blendedY;
+            v.y = THREE.MathUtils.lerp(targetY, v.y, smoothT);
           }
 
-          // Invert world matrix to set local position
           const invMat = new THREE.Matrix4().copy(child.matrixWorld).invert();
           v.applyMatrix4(invMat);
 
@@ -2237,14 +2183,12 @@ class InfiniteChunkSystem {
     });
   }
 
-  // Pre-sample 65x65 height grid across [-10, 10]
   buildHeightGrid(group) {
     const N = this.heightGridSize;
     this.heightGrid = new Float32Array(N * N);
 
     const terrainMeshes = [];
     group.traverse((c) => {
-      // Include all land terrain meshes (cliffs, plateaus, hills, plains, rocks) and exclude water/lake
       if (c.isMesh && !c.name.includes('Lake') && !(c.material?.name || '').includes('ice')) {
         terrainMeshes.push(c);
       }
@@ -2252,41 +2196,47 @@ class InfiniteChunkSystem {
 
     const raycaster = new THREE.Raycaster();
     const half = this.chunkSize * 0.5;
+    const downVec = new THREE.Vector3(0, -1, 0);
 
     for (let j = 0; j < N; j++) {
       const z = -half + (j / (N - 1)) * this.chunkSize;
       for (let i = 0; i < N; i++) {
         const x = -half + (i / (N - 1)) * this.chunkSize;
-        raycaster.set(new THREE.Vector3(x, 25.0, z), this.downVec);
-        const hits = raycaster.intersectObjects(terrainMeshes, true);
-        this.heightGrid[j * N + i] = hits.length > 0 ? hits[0].point.y : this.edgeHeight;
+        raycaster.set(new THREE.Vector3(x, 25.0, z), downVec);
+        let hits = [];
+        for (let m = 0; m < terrainMeshes.length; m++) {
+          const h = raycaster.intersectObject(terrainMeshes[m], false);
+          if (h.length > 0) hits.push(h[0]);
+        }
+        if (hits.length > 0) {
+          hits.sort((a, b) => b.point.y - a.point.y);
+          this.heightGrid[j * N + i] = hits[0].point.y;
+        } else {
+          this.heightGrid[j * N + i] = this.edgeHeight;
+        }
       }
     }
   }
 
-  // Fast O(1) bilinear interpolation height lookup for any world (wx, wz) coordinate
   getHeight(wx, wz) {
     if (!this.heightGrid) return this.edgeHeight;
 
     const half = this.chunkSize * 0.5;
-    // Map to chunk space
     let cx = Math.floor((wx + half) / this.chunkSize);
     let cz = Math.floor((wz + half) / this.chunkSize);
 
     let lx = wx - cx * this.chunkSize;
     let lz = wz - cz * this.chunkSize;
 
-    // Check if chunk has a rotation
-    // When chunk is rotated around Y by angle, inverse rotation maps (lx, lz) back to template coords:
     const rotIdx = this.getChunkRotationIndex(cx, cz);
-    if (rotIdx === 1) { // 90 deg: inverse of +90deg is -90deg: (x, z) -> (-z, x)
+    if (rotIdx === 1) {
       const ox = lx;
       lx = -lz;
       lz = ox;
-    } else if (rotIdx === 2) { // 180 deg: (x, z) -> (-x, -z)
+    } else if (rotIdx === 2) {
       lx = -lx;
       lz = -lz;
-    } else if (rotIdx === 3) { // 270 deg: inverse of +270deg is +90deg: (x, z) -> (z, -x)
+    } else if (rotIdx === 3) {
       const ox = lx;
       lx = lz;
       lz = -ox;
@@ -2320,452 +2270,111 @@ class InfiniteChunkSystem {
   }
 
   getChunkRotationIndex(cx, cz) {
-    if (cx === 0 && cz === 0) return 0; // Central village is always rotation 0
-    const hash = Math.floor(this.hashCoord(cx, cz, 421) * 4);
-    return hash % 4; // 0, 1, 2, or 3 (0, 90, 180, 270 degrees)
+    if (cx === 0 && cz === 0) return 0;
+    return Math.floor(Math.abs(this.hashCoord(cx, cz, 444)) * 4) % 4;
   }
 
-  // Create or retrieve chunk
+  // Fast, instant chunk instantiation from single master GLB template & object pool
   loadChunk(cx, cz) {
     const key = `${cx},${cz}`;
     if (this.chunks.has(key)) return this.chunks.get(key);
 
-    const chunkGroup = new THREE.Group();
-    chunkGroup.name = `Chunk_${key}`;
     const worldX = cx * this.chunkSize;
     const worldZ = cz * this.chunkSize;
-    const isCenter = (cx === 0 && cz === 0);
-    chunkGroup.position.set(worldX, 0, worldZ);
     const rotIdx = this.getChunkRotationIndex(cx, cz);
     const angle = rotIdx * (Math.PI / 2);
 
-    // 1. Terrain Mesh (Shares BufferGeometries with zero-copy instantiation to eliminate stutter)
-    const terrainGroup = new THREE.Group();
-    terrainGroup.name = `Terrain_${key}`;
-    const terrainMeshes = (this.templateTerrainMeshes && this.templateTerrainMeshes.length > 0)
-      ? this.templateTerrainMeshes
-      : (this.templateTerrainGroup ? this.templateTerrainGroup.children : []);
-    terrainMeshes.forEach((tMesh) => {
-      const m = new THREE.Mesh(tMesh.geometry, tMesh.material);
-      m.name = tMesh.name;
-      m.castShadow = false;
-      m.receiveShadow = tMesh.receiveShadow;
-      terrainGroup.add(m);
-    });
-    if (!isCenter && rotIdx !== 0) {
-      terrainGroup.rotation.y = angle;
-    }
-    chunkGroup.add(terrainGroup);
-    chunkGroup.updateMatrixWorld(true);
+    let chunkGroup = null;
+    let instancedMeshes = [];
 
-    // 2. Houses & Settlements (Placed first so vegetation clearings around houses can be enforced)
-    const houseGroup = new THREE.Group();
-    houseGroup.name = `Houses_${key}`;
-    const houseColliders = [];
-    const houseClearings = []; // Centers and clearance radii to prevent trees/bushes from spawning under houses
-    let chunkWildernessHouseMesh = null;
+    // Reuse from pool if available, otherwise construct lightweight chunk unit
+    if (this.chunkPool.length > 0) {
+      const pooled = this.chunkPool.pop();
+      chunkGroup = pooled.group;
+      instancedMeshes = pooled.instancedMeshes;
+      chunkGroup.visible = true;
+    } else {
+      chunkGroup = new THREE.Group();
 
-    if (isCenter) {
-      // Main village: compute world-space bounding boxes for central houses
-      this.templateHouses.forEach((h) => {
-        const box = new THREE.Box3();
-        if (h.geo && !h.geo.boundingBox) h.geo.computeBoundingBox();
-        if (h.geo && h.geo.boundingBox) {
-          box.copy(h.geo.boundingBox);
-          const m = new THREE.Matrix4().compose(
-            h.pos,
-            new THREE.Quaternion().setFromEuler(h.rot),
-            h.scale
-          );
-          box.applyMatrix4(m);
-          box.min.add(chunkGroup.position);
-          box.max.add(chunkGroup.position);
-          houseColliders.push(box);
-        }
+      // 1. Terrain Meshes (zero-copy geometry and material sharing)
+      this.templateTerrainMeshes.forEach((tMesh) => {
+        const m = new THREE.Mesh(tMesh.geometry, tMesh.material);
+        m.name = tMesh.name;
+        m.castShadow = false;
+        m.receiveShadow = tMesh.receiveShadow;
+        chunkGroup.add(m);
       });
-      // Main village: use single high-performance merged village house mesh (109 houses -> 1 draw call)
-      if (this.mergedVillageMesh) {
-        houseGroup.add(this.mergedVillageMesh.clone());
-      } else {
-        this.templateHouses.forEach((h) => {
-          const hMesh = new THREE.Mesh(h.geo, h.mat);
-          hMesh.name = h.meshName;
-          hMesh.position.copy(h.pos);
-          hMesh.rotation.copy(h.rot);
-          hMesh.scale.copy(h.scale);
-          hMesh.castShadow = true;
-          hMesh.receiveShadow = true;
-          houseGroup.add(hMesh);
+
+      // 2. Houses Mesh (zero-copy single merged mesh)
+      if (this.templateHouseMesh) {
+        const hMesh = new THREE.Mesh(this.templateHouseMesh.geometry, this.templateHouseMesh.material);
+        hMesh.name = 'ChunkHouses';
+        hMesh.castShadow = true;
+        hMesh.receiveShadow = true;
+        chunkGroup.add(hMesh);
+      }
+
+      // 3. Foliage InstancedMeshes
+      if (this.templateFoliage) {
+        this.templateFoliage.forEach((f, idx) => {
+          const instMesh = new THREE.InstancedMesh(f.geometry, f.material, f.matrices.length);
+          instMesh.name = `FoliageInst_${idx}`;
+          instMesh.castShadow = f.castShadow;
+          instMesh.receiveShadow = true;
+          for (let i = 0; i < f.matrices.length; i++) {
+            instMesh.setMatrixAt(i, f.matrices[i]);
+          }
+          instMesh.instanceMatrix.needsUpdate = true;
+          chunkGroup.add(instMesh);
+          instancedMeshes.push(instMesh);
         });
       }
-    } else {
-      // Deterministically place outpost/cabin settlements on wilderness chunks (merged into 1 draw call)
-      const houseCount = Math.floor(3 + this.hashCoord(cx, cz, 819) * 3); // 3, 4, or 5
-      const candidates = this.templateHouses.filter(h => h.meshName.startsWith('house'));
-      const wildernessHouseGeos = [];
-      let wildernessHouseMat = null;
-
-      if (candidates.length > 0) {
-        for (let hIdx = 0; hIdx < houseCount; hIdx++) {
-          const h = candidates[hIdx % candidates.length];
-
-          // Try candidate spots to find a solid, gentle snow meadow (avoiding lake water and steep cliffs)
-          let bestOffset = null;
-          let bestY = null;
-
-          for (let attempt = 0; attempt < 12; attempt++) {
-            const seedOffset = attempt * 2.1;
-            const candOffset = new THREE.Vector3(
-              (this.hashCoord(cx + hIdx * 1.7 + seedOffset, cz, 921) - 0.5) * 15.0,
-              0,
-              (this.hashCoord(cx, cz + hIdx * 1.7 + seedOffset, 923) - 0.5) * 15.0
-            );
-
-            const worldHx = worldX + candOffset.x;
-            const worldHz = worldZ + candOffset.z;
-
-            // Raycast in true WORLD coordinates against terrainGroup
-            this._houseRaycaster.set(new THREE.Vector3(worldHx, 25.0, worldHz), this._downDir);
-            const hits = this._houseRaycaster.intersectObject(terrainGroup, true);
-            if (hits.length === 0) continue;
-
-            const centerHit = hits[0];
-            // Reject if inside frozen lake depression (y <= 0.28) or on steep cliff face
-            if (centerHit.point.y <= 0.28 || (centerHit.face && centerHit.face.normal.y < 0.72)) continue;
-
-            // Test 4 footprint corners in world coordinates to ensure ground is reasonably flat
-            let minCornerY = centerHit.point.y;
-            let maxCornerY = centerHit.point.y;
-            let invalidCorner = false;
-
-            for (let c = 0; c < 4; c++) {
-              const corner = this._footprintOffsets[c];
-              this._houseRaycaster.set(new THREE.Vector3(worldHx + corner.dx, 25.0, worldHz + corner.dz), this._downDir);
-              const cHits = this._houseRaycaster.intersectObject(terrainGroup, true);
-              if (cHits.length === 0 || cHits[0].point.y <= 0.28) {
-                invalidCorner = true;
-                break;
-              }
-              minCornerY = Math.min(minCornerY, cHits[0].point.y);
-              maxCornerY = Math.max(maxCornerY, cHits[0].point.y);
-            }
-
-            // Reject if terrain slope across footprint varies excessively
-            if (invalidCorner || (maxCornerY - minCornerY) > 0.12) continue;
-
-            // Bed foundation 0.01m into snow surface to guarantee zero gap beneath base sills
-            bestOffset = candOffset;
-            bestY = minCornerY - 0.01;
-            break;
-          }
-
-          if (!bestOffset) continue;
-
-          const rotY = this.hashCoord(cx, cz + hIdx, 111) * Math.PI * 2;
-          const localM = new THREE.Matrix4().compose(
-            new THREE.Vector3(bestOffset.x, bestY, bestOffset.z),
-            new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rotY, 0)),
-            h.scale
-          );
-
-          // Collect geometry for single merged mesh
-          const transformedGeo = h.geo.clone();
-          transformedGeo.applyMatrix4(localM);
-          wildernessHouseGeos.push(transformedGeo);
-          if (!wildernessHouseMat) wildernessHouseMat = h.mat;
-
-          // Dummy node for delivery system target tracking
-          const dummyNode = new THREE.Object3D();
-          dummyNode.name = `Outpost_${key}_${h.meshName}_${hIdx}`;
-          dummyNode.position.set(bestOffset.x, bestY, bestOffset.z);
-          houseGroup.add(dummyNode);
-
-          // Clear trees within 1.8m so no trunk ever clips into or spawns under the house
-          houseClearings.push({
-            x: bestOffset.x,
-            z: bestOffset.z,
-            radius: 1.8
-          });
-
-          // World bounding box for wilderness house
-          const worldHx = worldX + bestOffset.x;
-          const worldHz = worldZ + bestOffset.z;
-          const box = new THREE.Box3();
-          if (h.geo && !h.geo.boundingBox) h.geo.computeBoundingBox();
-          if (h.geo && h.geo.boundingBox) {
-            box.copy(h.geo.boundingBox);
-            const m = new THREE.Matrix4().compose(
-              new THREE.Vector3(worldHx, bestY, worldHz),
-              new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rotY, 0)),
-              h.scale
-            );
-            box.applyMatrix4(m);
-            houseColliders.push(box);
-          }
-        }
-
-        // Fallback: guarantee at least 1 house per wilderness chunk if all raycast attempts failed
-        if (wildernessHouseGeos.length === 0 && candidates.length > 0) {
-          const h = candidates[0];
-          const groundY = this.getHeight ? this.getHeight(worldX, worldZ) : 0.5;
-          if (groundY > 0.28) {
-            const fallbackOffset = new THREE.Vector3(0, groundY - 0.01, 0);
-            const rotY = this.hashCoord(cx, cz, 111) * Math.PI * 2;
-            const fallbackM = new THREE.Matrix4().compose(
-              fallbackOffset,
-              new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rotY, 0)),
-              h.scale
-            );
-            const transformedGeo = h.geo.clone();
-            transformedGeo.applyMatrix4(fallbackM);
-            wildernessHouseGeos.push(transformedGeo);
-            wildernessHouseMat = h.mat;
-
-            const dummyNode = new THREE.Object3D();
-            dummyNode.name = `Outpost_${key}_${h.meshName}_fallback`;
-            dummyNode.position.copy(fallbackOffset);
-            houseGroup.add(dummyNode);
-
-            houseClearings.push({
-              x: 0,
-              z: 0,
-              radius: 1.8
-            });
-
-            const box = new THREE.Box3();
-            if (h.geo && !h.geo.boundingBox) h.geo.computeBoundingBox();
-            if (h.geo && h.geo.boundingBox) {
-              box.copy(h.geo.boundingBox);
-              const m = new THREE.Matrix4().compose(
-                new THREE.Vector3(worldX, groundY - 0.01, worldZ),
-                new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rotY, 0)),
-                h.scale
-              );
-              box.applyMatrix4(m);
-              houseColliders.push(box);
-            }
-          }
-        }
-
-        // Merge all wilderness houses in this chunk into 1 single draw call (casting crisp shadows)
-        if (wildernessHouseGeos.length > 0 && wildernessHouseMat) {
-          const mergedGeo = BufferGeometryUtils.mergeGeometries(wildernessHouseGeos, false);
-          mergedGeo.computeBoundingBox();
-          mergedGeo.computeBoundingSphere();
-          const mergedMesh = new THREE.Mesh(mergedGeo, wildernessHouseMat);
-          mergedMesh.name = `MergedHouses_${key}`;
-          mergedMesh.castShadow = true; // Wilderness houses cast shadows!
-          mergedMesh.receiveShadow = true;
-          chunkGroup.add(mergedMesh);
-          chunkWildernessHouseMesh = mergedMesh;
-        }
-      }
     }
-    chunkGroup.add(houseGroup);
 
-    // 3. High-Performance Instanced Vegetation (Trees & Bushes)
-    const treeInstances = [];
-    const bushInstances = [];
+    chunkGroup.name = `Chunk_${key}`;
+    chunkGroup.position.set(worldX, 0, worldZ);
+    chunkGroup.rotation.set(0, angle, 0);
+    chunkGroup.updateMatrixWorld(true);
 
-    // Initialize instanced arrays per prototype
-    this.treePrototypes.forEach((proto, id) => {
-      treeInstances.push({ matrices: [], positions: [] });
-    });
-    this.bushPrototypes.forEach((proto, id) => {
-      bushInstances.push({ matrices: [], positions: [] });
-    });
-
-    const dummy = new THREE.Object3D();
+    // Compute transformed house colliders for this chunk rotation
+    const chunkOrigin = new THREE.Vector3(worldX, 0, worldZ);
     const rotMat = new THREE.Matrix4().makeRotationY(angle);
+    const houseColliders = [];
 
-    // Populate trees with deterministic variance and house clearing check
-    // Total budget per chunk rather than per-prototype to ensure wilderness chunks have natural vegetation
-    const treeDensity = isCenter ? 1.0 : (0.50 + this.hashCoord(cx, cz, 71) * 0.35);
-    const maxTotalTrees = isCenter ? Infinity : (IS_MOBILE ? 32 : 64);
-    let totalTreesPlaced = 0;
+    if (this.templateHouseColliders && this.templateHouseColliders.length > 0) {
+      const corners = [
+        new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(),
+        new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()
+      ];
 
-    this.templateTrees.forEach((tData, idx) => {
-      if (totalTreesPlaced >= maxTotalTrees) return;
-      if (this.hashCoord(cx + idx * 0.1, cz + idx * 0.1, 99) > treeDensity) return;
+      for (let i = 0; i < this.templateHouseColliders.length; i++) {
+        const lb = this.templateHouseColliders[i];
+        if (rotIdx === 0) {
+          const b = lb.clone();
+          b.min.add(chunkOrigin);
+          b.max.add(chunkOrigin);
+          houseColliders.push(b);
+        } else {
+          // Transform all 8 corners of the local AABB through rotation matrix
+          corners[0].set(lb.min.x, lb.min.y, lb.min.z).applyMatrix4(rotMat);
+          corners[1].set(lb.max.x, lb.min.y, lb.min.z).applyMatrix4(rotMat);
+          corners[2].set(lb.min.x, lb.max.y, lb.min.z).applyMatrix4(rotMat);
+          corners[3].set(lb.max.x, lb.max.y, lb.min.z).applyMatrix4(rotMat);
+          corners[4].set(lb.min.x, lb.min.y, lb.max.z).applyMatrix4(rotMat);
+          corners[5].set(lb.max.x, lb.min.y, lb.max.z).applyMatrix4(rotMat);
+          corners[6].set(lb.min.x, lb.max.y, lb.max.z).applyMatrix4(rotMat);
+          corners[7].set(lb.max.x, lb.max.y, lb.max.z).applyMatrix4(rotMat);
 
-      dummy.position.copy(tData.pos);
-      dummy.rotation.copy(tData.rot);
-      dummy.scale.copy(tData.scale);
-
-      if (!isCenter) {
-        // Apply chunk rotation
-        dummy.position.applyMatrix4(rotMat);
-        dummy.rotation.y += angle;
-        // Subtle organic jitter
-        const jitter = (this.hashCoord(cx + idx, cz + idx, 555) - 0.5) * 0.4;
-        dummy.rotation.y += jitter;
-        const scaleJitter = 0.88 + this.hashCoord(cx + idx, cz + idx, 777) * 0.28;
-        dummy.scale.multiplyScalar(scaleJitter);
-      }
-
-      // Skip trees that land inside any house clearing
-      let inClearing = false;
-      for (let c = 0; c < houseClearings.length; c++) {
-        const cl = houseClearings[c];
-        if (Math.hypot(dummy.position.x - cl.x, dummy.position.z - cl.z) < cl.radius) {
-          inClearing = true;
-          break;
-        }
-      }
-      if (inClearing) return;
-
-      dummy.updateMatrix();
-      if (treeInstances[tData.protoId]) {
-        treeInstances[tData.protoId].matrices.push(dummy.matrix.clone());
-        treeInstances[tData.protoId].positions.push(dummy.position.clone());
-        totalTreesPlaced++;
-      }
-    });
-
-    // Populate bushes with deterministic variance and house clearing check
-    const maxTotalBushes = isCenter ? Infinity : (IS_MOBILE ? 20 : 40);
-    let totalBushesPlaced = 0;
-
-    this.templateBushes.forEach((bData, idx) => {
-      if (totalBushesPlaced >= maxTotalBushes) return;
-      if (this.hashCoord(cx + idx * 0.13, cz + idx * 0.13, 101) > treeDensity) return;
-
-      dummy.position.copy(bData.pos);
-      dummy.rotation.copy(bData.rot);
-      dummy.scale.copy(bData.scale);
-
-      if (!isCenter) {
-        dummy.position.applyMatrix4(rotMat);
-        dummy.rotation.y += angle;
-      }
-
-      // Skip bushes that land inside any house clearing
-      let inClearing = false;
-      for (let c = 0; c < houseClearings.length; c++) {
-        const cl = houseClearings[c];
-        if (Math.hypot(dummy.position.x - cl.x, dummy.position.z - cl.z) < cl.radius) {
-          inClearing = true;
-          break;
-        }
-      }
-      if (inClearing) return;
-
-      dummy.updateMatrix();
-      if (bushInstances[bData.protoId]) {
-        bushInstances[bData.protoId].matrices.push(dummy.matrix.clone());
-        bushInstances[bData.protoId].positions.push(dummy.position.clone());
-        totalBushesPlaced++;
-      }
-    });
-
-    // Create InstancedMesh objects for foliage
-    const instancedMeshes = [];
-
-    // Helper to setup instance matrix storage & culling metadata
-    const setupInstancedFoliage = (proto, matrices, localPositions, name, castShadow) => {
-      const instMesh = new THREE.InstancedMesh(proto.geometry, proto.material, matrices.length);
-      instMesh.name = name;
-      instMesh.castShadow = castShadow;
-      instMesh.receiveShadow = true;
-      for (let i = 0; i < matrices.length; i++) {
-        instMesh.setMatrixAt(i, matrices[i]);
-      }
-      instMesh.instanceMatrix.needsUpdate = true;
-      instMesh.computeBoundingSphere();
-      // Store raw source arrays for real-time camera frustum & distance culling
-      instMesh.userData.allMatrices = matrices;
-      instMesh.userData.localPositions = localPositions;
-      instMesh.userData.canCastShadowOriginal = castShadow;
-      chunkGroup.add(instMesh);
-      instancedMeshes.push(instMesh);
-    };
-
-    if (IS_MOBILE) {
-      // Mobile: create separate InstancedMeshes per prototype so correct geometries and materials are preserved
-      for (let id = 0; id < this.treePrototypes.length; id++) {
-        if (treeInstances[id] && treeInstances[id].matrices.length > 0) {
-          const proto = this.treePrototypes[id];
-          setupInstancedFoliage(
-            proto,
-            treeInstances[id].matrices,
-            treeInstances[id].positions,
-            `Instanced_Tree_${id}_${key}`,
-            true
-          );
-        }
-      }
-      for (let id = 0; id < this.bushPrototypes.length; id++) {
-        if (bushInstances[id] && bushInstances[id].matrices.length > 0) {
-          const proto = this.bushPrototypes[id];
-          setupInstancedFoliage(
-            proto,
-            bushInstances[id].matrices,
-            bushInstances[id].positions,
-            `Instanced_Bush_${id}_${key}`,
-            false
-          );
-        }
-      }
-    } else {
-      // Group trees into 2 main varieties (Pine & Fir) to collapse 6 draw calls down to 2
-      const treeGroup0 = [];
-      const treePos0 = [];
-      const treeGroup1 = [];
-      const treePos1 = [];
-
-      for (let id = 0; id < this.treePrototypes.length; id++) {
-        const targetList = (id % 2 === 0) ? treeGroup0 : treeGroup1;
-        const targetPos = (id % 2 === 0) ? treePos0 : treePos1;
-        if (treeInstances[id]) {
-          for (let i = 0; i < treeInstances[id].matrices.length; i++) {
-            targetList.push(treeInstances[id].matrices[i]);
-            targetPos.push(treeInstances[id].positions[i]);
+          const rotBox = new THREE.Box3();
+          for (let c = 0; c < 8; c++) {
+            rotBox.expandByPoint(corners[c]);
           }
+          rotBox.min.add(chunkOrigin);
+          rotBox.max.add(chunkOrigin);
+          houseColliders.push(rotBox);
         }
-      }
-
-      [
-        { matrices: treeGroup0, positions: treePos0, gIdx: 0 },
-        { matrices: treeGroup1, positions: treePos1, gIdx: 1 }
-      ].forEach(({ matrices, positions, gIdx }) => {
-        if (matrices.length > 0 && this.treePrototypes[gIdx]) {
-          const proto = this.treePrototypes[gIdx];
-          setupInstancedFoliage(
-            proto,
-            matrices,
-            positions,
-            `Instanced_Trees_Group_${gIdx}_${key}`,
-            true
-          );
-        }
-      });
-
-      // Combine all bushes into 1 unified InstancedMesh to collapse 4 draw calls down to 1
-      const allBushMatrices = [];
-      const allBushPositions = [];
-
-      for (let id = 0; id < this.bushPrototypes.length; id++) {
-        if (bushInstances[id]) {
-          for (let i = 0; i < bushInstances[id].matrices.length; i++) {
-            allBushMatrices.push(bushInstances[id].matrices[i]);
-            allBushPositions.push(bushInstances[id].positions[i]);
-          }
-        }
-      }
-
-      if (allBushMatrices.length > 0 && this.bushPrototypes.length > 0) {
-        const proto = this.bushPrototypes[0];
-        setupInstancedFoliage(
-          proto,
-          allBushMatrices,
-          allBushPositions,
-          `Instanced_Bushes_Unified_${key}`,
-          false
-        );
       }
     }
-    chunkGroup.add(houseGroup);
-
     this.worldGroup.add(chunkGroup);
 
     const chunkData = {
@@ -2774,14 +2383,11 @@ class InfiniteChunkSystem {
       cz,
       group: chunkGroup,
       instancedMeshes,
-      houseGroup,
-      houseColliders,
-      wildernessHouseMesh: chunkWildernessHouseMesh
+      houseColliders
     };
 
     this.chunks.set(key, chunkData);
 
-    // Notify delivery system of newly loaded chunk targets
     if (window.deliverySystem && window.deliverySystem.syncChunkTargets) {
       window.deliverySystem.syncChunkTargets(key, cx, cz);
     }
@@ -2815,48 +2421,46 @@ class InfiniteChunkSystem {
     return nearby;
   }
 
-  // Unload distant chunk to free GPU resources and memory
+  // Recycle chunk into pool and unregister from active scene
   unloadChunk(key) {
     const chunk = this.chunks.get(key);
     if (!chunk) return;
 
     this.worldGroup.remove(chunk.group);
+    chunk.group.visible = false;
 
-    // Dispose instanced geometries/buffers
-    if (chunk.instancedMeshes) {
-      chunk.instancedMeshes.forEach((im) => {
-        if (im.parent) im.parent.remove(im);
-        im.dispose();
-      });
-    }
+    // Return to pool for reuse (zero garbage collection overhead)
+    this.chunkPool.push({
+      group: chunk.group,
+      instancedMeshes: chunk.instancedMeshes
+    });
 
     this.chunks.delete(key);
 
-    // Notify delivery system to unload visual markers for this chunk
     if (window.deliverySystem && window.deliverySystem.unloadChunkTargets) {
       window.deliverySystem.unloadChunkTargets(key);
     }
   }
 
-  // Helper to test if chunk bounding box is inside or intersecting the camera frustum (with generous margin)
+  // Test if chunk bounding box is inside or intersecting camera frustum
   isChunkInView(cx, cz) {
     const half = this.chunkSize * 0.5;
     const wx = cx * this.chunkSize;
     const wz = cz * this.chunkSize;
-    const pad = 6.0; // Margin ensures chunks at screen borders don't vanish or pop
+    const pad = 4.0; // Small margin to prevent edge flicker
     this.chunkBox.min.set(wx - half - pad, -4.0, wz - half - pad);
     this.chunkBox.max.set(wx + half + pad, 20.0, wz + half + pad);
     return this.frustum.intersectsBox(this.chunkBox);
   }
 
-  // View-based progressive chunk streaming called every animation frame
+  // Strict Frustum-Driven Streaming & Immediate Destruction of off-camera chunks
   update(targetPos, cam = camera) {
-    if (!this.templateTerrainGroup) return;
+    if (!this.templateTerrainMeshes || this.templateTerrainMeshes.length === 0) return;
 
     const half = this.chunkSize * 0.5;
-    const focusPos = targetPos || (controls ? controls.target : cam.position);
-    const centerCx = Math.floor((focusPos.x + half) / this.chunkSize);
-    const centerCz = Math.floor((focusPos.z + half) / this.chunkSize);
+    const focusPos = targetPos || cam.position;
+    const playerCx = Math.floor((focusPos.x + half) / this.chunkSize);
+    const playerCz = Math.floor((focusPos.z + half) / this.chunkSize);
 
     // Update camera view frustum
     if (cam) {
@@ -2865,123 +2469,32 @@ class InfiniteChunkSystem {
     }
 
     const r = this.loadRadius;
-    const un = this.unloadRadius;
     const neededKeys = new Set();
-    const candidates = [];
 
-    // Scan candidate chunks within load radius
+    // 1. Identify chunks that are currently in the camera's view frustum or under Santa
     for (let dx = -r; dx <= r; dx++) {
       for (let dz = -r; dz <= r; dz++) {
-        const cx = centerCx + dx;
-        const cz = centerCz + dz;
+        const cx = playerCx + dx;
+        const cz = playerCz + dz;
         const key = `${cx},${cz}`;
-        const isCenter = (cx === 0 && cz === 0) || (cx === centerCx && cz === centerCz);
+
+        // Keep chunk if directly under player (for ground altitude collision) or in camera view
+        const isPlayerFootprint = (cx === playerCx && cz === playerCz);
         const inFrustum = this.isChunkInView(cx, cz);
 
-        // Keep chunks that are in view, or the center village/player chunk
-        if (isCenter || inFrustum) {
+        if (isPlayerFootprint || inFrustum) {
           neededKeys.add(key);
-
           if (!this.chunks.has(key)) {
-            // Distance from camera for priority queue
-            const wx = cx * this.chunkSize;
-            const wz = cz * this.chunkSize;
-            const distSq = (wx - cam.position.x) * (wx - cam.position.x) + (wz - cam.position.z) * (wz - cam.position.z);
-            candidates.push({ cx, cz, key, distSq, inFrustum });
+            this.loadChunk(cx, cz);
           }
         }
       }
     }
 
-    // 1. Process progressive loading queue: closest chunks in camera view load first
-    if (candidates.length > 0) {
-      candidates.sort((a, b) => a.distSq - b.distSq);
-      // Strict mobile budget: 6 active chunks on mobile, 9 on desktop (covering the 22m fog horizon)
-      const maxActiveChunks = IS_MOBILE ? 6 : 9;
-      if (this.chunks.size < maxActiveChunks) {
-        // Stagger loading: load max 1 chunk per tick to maintain 60 FPS without hitching
-        const loadBatch = candidates.slice(0, this.maxLoadsPerFrame);
-        for (const c of loadBatch) {
-          if (this.chunks.size >= maxActiveChunks) break;
-          this.loadChunk(c.cx, c.cz);
-        }
-      }
-    }
-
-    // 2. Frustum-cull active chunks and unload chunks out of radius
+    // 2. Immediate destruction: Any chunk that left the camera view and is not under the player is unloaded
     const keysToRemove = [];
     for (const [key, chunk] of this.chunks.entries()) {
-      // Smooth vertical emergence into the atmospheric fog
-      // Chunk sits solidly at y = 0
-      const dist = Math.max(Math.abs(chunk.cx - centerCx), Math.abs(chunk.cz - centerCz));
-      const inView = this.isChunkInView(chunk.cx, chunk.cz);
-      const isPlayerChunk = (chunk.cx === centerCx && chunk.cz === centerCz);
-      const isOriginChunk = (chunk.cx === 0 && chunk.cz === 0);
-
-      // Keep immediate 3x3 neighbor chunks around Santa always active to prevent aggressive edge popping
-      const isNeighbor = (Math.abs(chunk.cx - centerCx) <= 1 && Math.abs(chunk.cz - centerCz) <= 1);
-      const cwx = chunk.cx * this.chunkSize;
-      const cwz = chunk.cz * this.chunkSize;
-      const chunkDistToCam = Math.hypot(cwx - cam.position.x, cwz - cam.position.z);
-      const shouldBeVisible = (isNeighbor || (inView && chunkDistToCam <= 65.0));
-      chunk.group.visible = shouldBeVisible;
-
-      // Dynamic Distance Culling for foliage: smoothly cull only distant trees submerged in atmospheric fog
-      if (chunk.group.visible && chunk.instancedMeshes && chunk.instancedMeshes.length > 0) {
-        const cwx = chunk.cx * this.chunkSize;
-        const cwz = chunk.cz * this.chunkSize;
-        // Fog starts around 20m and blocks view by 28-35m; cull foliage submerged deep in fog
-        const maxDistSq = IS_MOBILE ? (28.0 * 28.0) : (38.0 * 38.0); // Smooth radial distance: no harsh chunk-grid cutoffs! 
-
-        for (let m = 0; m < chunk.instancedMeshes.length; m++) {
-          const im = chunk.instancedMeshes[m];
-          const allMatrices = im.userData.allMatrices;
-          const localPositions = im.userData.localPositions;
-          if (!allMatrices || !localPositions) continue;
-
-          let visibleCount = 0;
-          for (let i = 0; i < allMatrices.length; i++) {
-            const lp = localPositions[i];
-            this._cullVec.set(cwx + lp.x, lp.y, cwz + lp.z);
-
-            // Cull distant trees that are submerged deep in fog or far away
-            const dSq = this._cullVec.distanceToSquared(cam.position);
-            if (dSq > maxDistSq) continue;
-
-            // Compact visible matrices to front of instanced buffer
-            if (visibleCount !== i) {
-              im.setMatrixAt(visibleCount, allMatrices[i]);
-            }
-            visibleCount++;
-          }
-
-          if (im.count !== visibleCount) {
-            im.count = visibleCount;
-            im.instanceMatrix.needsUpdate = true;
-          }
-        }
-      }
-
-      // Dynamic Shadow Pass Culling: chunks far from shadowFocus don't cast shadows onto Santa's view frustum
-      const chunkDistToShadow = Math.hypot(cwx - shadowFocus.x, cwz - shadowFocus.z);
-      const canCastShadow = chunkDistToShadow <= (IS_MOBILE ? 22.0 : 32.0);
-
-      if (chunk.instancedMeshes) {
-        for (let m = 0; m < chunk.instancedMeshes.length; m++) {
-          const im = chunk.instancedMeshes[m];
-          if (im.userData.canCastShadowOriginal) {
-            im.castShadow = canCastShadow;
-          }
-        }
-      }
-      if (chunk.wildernessHouseMesh) {
-        chunk.wildernessHouseMesh.castShadow = canCastShadow;
-      }
-
-      if (isOriginChunk) continue; // Keep main village anchor cached so houses are never permanently deleted
-
-      // Unload if out of radius, or if not in camera view and beyond immediate neighbors
-      if (dist > un || (!inView && dist > 1)) {
+      if (!neededKeys.has(key)) {
         keysToRemove.push(key);
       }
     }
@@ -2991,21 +2504,16 @@ class InfiniteChunkSystem {
     }
   }
 
-  // Get current active chunks diagnostics
   getDiagnostics() {
     return {
       activeChunksCount: this.chunks.size,
       activeChunkKeys: Array.from(this.chunks.keys()),
-      centerChunk: this.lastCenterChunk,
-      prototypes: {
-        trees: this.treePrototypes.length,
-        bushes: this.bushPrototypes.length,
-        templateHouses: this.templateHouses.length
-      }
+      pooledChunksCount: this.chunkPool.length,
+      polygonsPerChunk: '~25k',
+      totalActivePolygons: `~${(this.chunks.size * 25).toFixed(0)}k`
     };
   }
 }
-
 // Instantiate infinite chunk manager (Desktop & Mobile: 3x3 focused grid = 60m x 60m)
 const chunkSystem = new InfiniteChunkSystem(scene, {
   loadRadius: 1,
@@ -3509,6 +3017,27 @@ let frameCount = 0;
 let fps = 0;
 const clock = new THREE.Clock();
 
+
+window._printScenePolys = function() {
+  let list = [];
+  let total = 0;
+  scene.traverse(o => {
+    if (o.isMesh && o.visible) {
+      let tri = 0;
+      if (o.isInstancedMesh) {
+        const count = o.count !== undefined ? o.count : (o.instanceMatrix ? o.instanceMatrix.count : 1);
+        tri = (o.geometry.index ? o.geometry.index.count / 3 : o.geometry.attributes.position.count / 3) * count;
+      } else if (o.geometry) {
+        tri = o.geometry.index ? o.geometry.index.count / 3 : o.geometry.attributes.position.count / 3;
+      }
+      total += Math.round(tri);
+      list.push({ name: o.name || 'unnamed', type: o.type, tri: Math.round(tri), parent: o.parent ? o.parent.name : '' });
+    }
+  });
+  list.sort((a,b) => b.tri - a.tri);
+  window._visibleSceneTriangles = total;
+};
+setInterval(() => { if (window._printScenePolys) window._printScenePolys(); }, 1000);
 function animate(currentTime) {
   requestAnimationFrame(animate);
 
@@ -3676,7 +3205,8 @@ function animate(currentTime) {
   if (currentTime >= lastTime + 1000) {
     fps = Math.round((frameCount * 1000) / (currentTime - lastTime));
     if (fpsElement) {
-      fpsElement.textContent = `FPS: ${fps} | Calls: ${sceneCalls} | Polys: ${sceneTriangles.toLocaleString()}`;
+      const visTri = window._visibleSceneTriangles || sceneTriangles;
+      fpsElement.textContent = `FPS: ${fps} | Calls: ${sceneCalls} | Polys: ${visTri.toLocaleString()}`;
     }
     frameCount = 0;
     lastTime = currentTime;

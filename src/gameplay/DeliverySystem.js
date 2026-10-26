@@ -72,8 +72,9 @@ export class DeliverySystem {
     this._createHUD();
 
     // Gift geometry & materials (reused across drops)
-    this.giftBoxGeo = new THREE.BoxGeometry(0.55, 0.55, 0.55);
-    this.giftRibbonGeo = new THREE.BoxGeometry(0.57, 0.57, 0.14);
+    // Sized to match the miniature village and sleigh scale
+    this.giftBoxGeo = new THREE.BoxGeometry(0.12, 0.12, 0.12);
+    this.giftRibbonGeo = new THREE.BoxGeometry(0.125, 0.125, 0.03);
     this.giftColors = [
       { box: 0xe74c3c, ribbon: 0xf1c40f }, // Red & Gold
       { box: 0x27ae60, ribbon: 0xe74c3c }, // Green & Red
