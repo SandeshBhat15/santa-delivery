@@ -102,7 +102,7 @@ export class MagicTrail {
         void main() {
           vUv = uv;
           float u = uv.x;                                              // 0 at the head, 1 at the tail
-          float w = uWidth * (.2 + .8 * smoothstep(0., .35, u)) * (1. - .7 * u);
+          float w = uWidth * (.75 + .25 * smoothstep(0., .25, u)) * (1. - .7 * u);
           float off = sin(u * 18. - uTime * 4. + uPh) * uWob * u;      // ripple along the trail
           vec3 p = position + aSide * ((uv.y * 2. - 1.) * w + off);
           gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.);
@@ -134,6 +134,12 @@ export class MagicTrail {
     const last = pts[pts.length - 1];
     if (!last || Math.hypot(last.x - position.x, last.y - position.y, last.z - position.z) > this.minDist) {
       pts.push({ x: position.x, y: position.y, z: position.z, t: time });
+    } else {
+      // Keep head vertex pinned directly to the sledge anchor each frame
+      last.x = position.x;
+      last.y = position.y;
+      last.z = position.z;
+      last.t = time;
     }
 
     const n = Math.min(pts.length, this.maxPoints);
