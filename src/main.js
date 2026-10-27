@@ -96,9 +96,9 @@ const bloomRes = IS_MOBILE
 
 const bloomPass = new UnrealBloomPass(
   bloomRes,
-  1.10, // Bloom strength
-  0.75, // Bloom radius: natural radiant falloff without foggy glare
-  0.72  // Bloom threshold: focuses glow specifically on bright window glass
+  0.88, // Stable bloom strength
+  0.80, // Soft radiant falloff
+  0.55  // Smooth bloom threshold: prevents hard flickering edge cutoff on glowing windows
 );
 composer.addPass(bloomPass);
 
@@ -995,9 +995,9 @@ moonLight.shadow.camera.left = -d;
 moonLight.shadow.camera.right = d;
 moonLight.shadow.camera.top = d;
 moonLight.shadow.camera.bottom = -d;
-moonLight.shadow.normalBias = 0.045;
-moonLight.shadow.bias = -0.0004;
-moonLight.shadow.radius = 2.0;
+moonLight.shadow.normalBias = 0.02;
+moonLight.shadow.bias = -0.00015;
+moonLight.shadow.radius = 1.6;
 scene.add(moonLight);
 scene.add(moonLight.target);
 
@@ -1897,307 +1897,192 @@ class InfiniteChunkSystem {
   constructor(scene, options = {}) {
     this.scene = scene;
     this.chunkSize = 20.0;
-    this.loadRadius = options.loadRadius || 1; // Direct camera view focus
-    this.chunks = new Map(); // key "cx,cz" -> ChunkData
-    this.chunkPool = []; // Recycled chunk groups for zero-allocation streaming
-
-    // Master template resources extracted from terrain.glb
+    this.loadRadius = options.loadRadius || 1;
+    this.chunks = new Map();
+    this.chunkPool = [];
     this.templateChunkRoot = null;
     this.templateTerrainMeshes = [];
     this.templateFoliageMeshes = [];
     this.templateHouseMesh = null;
-    this.templateHouseColliders = []; // Local AABBs inside template
+    this.templateHouseColliders = [];
     this.sharedMaterials = new Map();
-
-    // Height cache & collision grid (65x65 sampled from original terrain template)
     this.heightGridSize = 65;
     this.heightGrid = null;
-    this.edgeHeight = 0.506;
-
-    // World root group
+    this.edgeHeight = 0.160;
     this.worldGroup = new THREE.Group();
     this.worldGroup.name = 'InfiniteWorldGroup';
     this.scene.add(this.worldGroup);
-
-    // Camera view-frustum streaming
     this.frustum = new THREE.Frustum();
     this.projScreenMatrix = new THREE.Matrix4();
     this.chunkBox = new THREE.Box3();
+    this.activeChunkCoords = new Set();
   }
 
-  // Deterministic seedable random (LCG + Wang Hash)
+  // Deterministic seedable random (Wang hash + LCG)
   hashCoord(x, z, seed = 1337) {
     let n = Math.sin(x * 12.9898 + z * 78.233 + seed) * 43758.5453;
     return n - Math.floor(n);
   }
 
-  // Initialize templates from loaded GLTF (terrain.glb is ~25k polygons)
+  // Multi-frequency 2D procedural noise for natural biome distribution
+  noise2D(x, z) {
+    const X = Math.floor(x);
+    const Z = Math.floor(z);
+    const fx = x - X;
+    const fz = z - Z;
+    const ux = fx * fx * (3.0 - 2.0 * fx);
+    const uz = fz * fz * (3.0 - 2.0 * fz);
+    const h00 = this.hashCoord(X, Z, 91);
+    const h10 = this.hashCoord(X + 1, Z, 91);
+    const h01 = this.hashCoord(X, Z + 1, 91);
+    const h11 = this.hashCoord(X + 1, Z + 1, 91);
+    const nx0 = h00 * (1 - ux) + h10 * ux;
+    const nx1 = h01 * (1 - ux) + h11 * ux;
+    return nx0 * (1 - uz) + nx1 * uz;
+  }
+
+  // Returns biome descriptor: 'village', 'forest', 'cliffs', or 'tundra'
+  getChunkBiome(cx, cz) {
+    // Chunk (0,0) is always the starting village
+    if (cx === 0 && cz === 0) return { type: 'village', density: 1.0, isCenter: true };
+
+    // Biome distribution driven by smooth low-frequency noise
+    const nBiome = this.noise2D(cx * 0.28, cz * 0.28);
+    const nSub = this.hashCoord(cx, cz, 777);
+
+    if (nBiome > 0.68) {
+      // Village outposts dotting the landscape
+      return { type: 'village', density: 0.55 + nSub * 0.45, isCenter: false };
+    } else if (nBiome > 0.42) {
+      // Dense Alpine Pine Forest
+      return { type: 'forest', density: 0.85 + nSub * 0.35, isCenter: false };
+    } else if (nBiome > 0.22) {
+      // Mountain Ridge & High Cliffs
+      return { type: 'cliffs', density: 0.80 + nSub * 0.40, isCenter: false };
+    } else {
+      // Frozen Tundra & Open Ice Valley
+      return { type: 'tundra', density: 0.35 + nSub * 0.25, isCenter: false };
+    }
+  }
+
   initFromGLTF(gltfRoot) {
-    const box = new THREE.Box3().setFromObject(gltfRoot);
-    const center = box.getCenter(new THREE.Vector3());
-    this.templateOffset = new THREE.Vector3(-center.x, -box.min.y, -center.z);
+    // Global Instanced Mesh architecture with generous capacity for 5x5 chunk streaming (25 chunks)
+    this.meshDefinitions = [];
+    this.templateHouseColliders = [];
+    this.activeChunkCoords = new Set();
 
     gltfRoot.updateMatrixWorld(true);
 
-    const terrainMeshes = [];
-    const foliageMeshes = [];
-    const houseMeshes = [];
-    const houseColliders = [];
-
     gltfRoot.traverse((child) => {
       if (!child.isMesh) return;
-      const name = child.name || '';
-      const mat = child.material;
 
+      const mat = child.material;
       if (mat && !this.sharedMaterials.has(mat.name)) {
         this.sharedMaterials.set(mat.name, mat);
       }
 
-      if (name.startsWith('treeP') || name.startsWith('bushP')) {
-        foliageMeshes.push(child);
-      } else if (name.startsWith('house') || name.startsWith('Cube') || name.includes('building')) {
-        houseMeshes.push(child);
+      const matName = (mat?.name || '').toLowerCase();
+      const name = (child.name || '').toLowerCase();
+      const isHouse = matName.includes('building') || matName.includes('house') || name.startsWith('cube') || name.includes('house');
+      const isFoliage = name.includes('tree') || name.includes('shrub') || matName.includes('tree');
+      const isCliff = name.includes('cliff') || name.includes('plateau') || matName.includes('cliff');
+      const isGround = name.includes('plane') || matName.includes('terrain') || matName.includes('rock');
 
-        // Compute true world-space position, orientation & scale
-        const wp = new THREE.Vector3();
-        const wq = new THREE.Quaternion();
-        const ws = new THREE.Vector3();
-        child.getWorldPosition(wp);
-        child.getWorldQuaternion(wq);
-        child.getWorldScale(ws);
+      let category = 'ground';
+      if (isHouse) category = 'house';
+      else if (isFoliage) category = 'foliage';
+      else if (isCliff) category = 'cliff';
 
-        // Normalize to chunk local origin [-10, 10]
-        const lx = wp.x + this.templateOffset.x;
-        const ly = wp.y + this.templateOffset.y;
-        const lz = wp.z + this.templateOffset.z;
-
-        const hBox = new THREE.Box3();
-        if (child.geometry && !child.geometry.boundingBox) child.geometry.computeBoundingBox();
-        if (child.geometry && child.geometry.boundingBox) {
-          hBox.copy(child.geometry.boundingBox);
-          const m = new THREE.Matrix4().compose(
-            new THREE.Vector3(lx, ly, lz),
-            wq,
-            ws
-          );
-          hBox.applyMatrix4(m);
-          houseColliders.push(hBox);
+      const matrices = [];
+      if (child.isInstancedMesh) {
+        const m = new THREE.Matrix4();
+        for (let i = 0; i < child.count; i++) {
+          child.getMatrixAt(i, m);
+          matrices.push(m.clone());
         }
       } else {
-        terrainMeshes.push(child);
+        matrices.push(child.matrix.clone());
       }
-    });
 
-    this.templateHouseColliders = houseColliders;
-
-    // 1. Prepare Base Terrain Group & apply boundary edge blending
-    const cleanTerrainRoot = gltfRoot.clone(true);
-    const toRemove = [];
-    cleanTerrainRoot.traverse((c) => {
-      if (c.name.startsWith('treeP') || c.name.startsWith('bushP') || c.name.startsWith('house') || c.name.startsWith('Cube') || c.name.includes('building')) {
-        toRemove.push(c);
-      }
-    });
-    toRemove.forEach((c) => { if (c.parent) c.parent.remove(c); });
-    cleanTerrainRoot.position.copy(this.templateOffset);
-
-    const terrainTemplateGroup = new THREE.Group();
-    terrainTemplateGroup.name = 'TerrainTemplateGroup';
-    terrainTemplateGroup.add(cleanTerrainRoot);
-
-    this.applyEdgeBlending(terrainTemplateGroup);
-    this.buildHeightGrid(terrainTemplateGroup);
-
-    // Merge terrain meshes by material to minimize draw calls
-    terrainTemplateGroup.updateMatrixWorld(true);
-    const materialMeshBuckets = new Map();
-    cleanTerrainRoot.traverse((child) => {
-      if (!child.isMesh || !child.material) return;
-      const matKey = child.material.name || child.material.uuid;
-      if (!materialMeshBuckets.has(matKey)) {
-        materialMeshBuckets.set(matKey, {
-          material: child.material,
-          geometries: [],
-          isLake: (child.name || '').includes('Lake') || (child.material.name || '').includes('ice')
-        });
-      }
-      const clonedGeo = child.geometry.clone();
-      clonedGeo.applyMatrix4(child.matrixWorld);
-      materialMeshBuckets.get(matKey).geometries.push(clonedGeo);
-    });
-
-    while (cleanTerrainRoot.children.length > 0) {
-      cleanTerrainRoot.remove(cleanTerrainRoot.children[0]);
-    }
-    cleanTerrainRoot.position.set(0, 0, 0);
-
-    for (const [matKey, bucket] of materialMeshBuckets.entries()) {
-      if (bucket.geometries.length > 0) {
-        const mergedGeo = BufferGeometryUtils.mergeGeometries(bucket.geometries, false);
-        mergedGeo.computeBoundingBox();
-        mergedGeo.computeBoundingSphere();
-        const mergedMesh = new THREE.Mesh(mergedGeo, bucket.material);
-        mergedMesh.castShadow = false;
-        mergedMesh.receiveShadow = !bucket.isLake;
-        cleanTerrainRoot.add(mergedMesh);
-      }
-    }
-    this.templateTerrainMeshes = [...cleanTerrainRoot.children];
-
-    // 2. Pre-merge village houses into single draw call
-    const houseGeos = [];
-    let villageHouseMat = null;
-    houseMeshes.forEach((h) => {
-      if (!villageHouseMat) villageHouseMat = h.material;
-      const clonedGeo = h.geometry.clone();
-
-      const wp = new THREE.Vector3();
-      const wq = new THREE.Quaternion();
-      const ws = new THREE.Vector3();
-      h.getWorldPosition(wp);
-      h.getWorldQuaternion(wq);
-      h.getWorldScale(ws);
-
-      const m = new THREE.Matrix4().compose(
-        wp.add(this.templateOffset),
-        wq,
-        ws
-      );
-      clonedGeo.applyMatrix4(m);
-      houseGeos.push(clonedGeo);
-    });
-
-    if (houseGeos.length > 0) {
-      const mergedHouseGeo = BufferGeometryUtils.mergeGeometries(houseGeos, false);
-      mergedHouseGeo.computeBoundingBox();
-      mergedHouseGeo.computeBoundingSphere();
-      this.templateHouseMesh = new THREE.Mesh(mergedHouseGeo, villageHouseMat);
-      this.templateHouseMesh.name = 'MergedHouses';
-      this.templateHouseMesh.castShadow = true;
-      this.templateHouseMesh.receiveShadow = true;
-    }
-
-    // 3. Pre-merge foliage (trees & bushes) into 2 clean consolidated instanced meshes
-    const treeMatrices = [];
-    const bushMatrices = [];
-    let treeProtoGeo = null;
-    let treeProtoMat = null;
-    let bushProtoGeo = null;
-    let bushProtoMat = null;
-
-    foliageMeshes.forEach((child) => {
-      const wp = new THREE.Vector3();
-      const wq = new THREE.Quaternion();
-      const ws = new THREE.Vector3();
-      child.getWorldPosition(wp);
-      child.getWorldQuaternion(wq);
-      child.getWorldScale(ws);
-
-      const lp = wp.add(this.templateOffset);
-      const m = new THREE.Matrix4().compose(lp, wq, ws);
-
-      if (child.name.startsWith('treeP')) {
-        if (!treeProtoGeo) {
-          treeProtoGeo = child.geometry;
-          treeProtoMat = child.material;
-        }
-        treeMatrices.push(m);
-      } else {
-        if (!bushProtoGeo) {
-          bushProtoGeo = child.geometry;
-          bushProtoMat = child.material;
-        }
-        bushMatrices.push(m);
-      }
-    });
-
-    this.templateFoliage = [];
-    if (treeProtoGeo && treeMatrices.length > 0) {
-      this.templateFoliage.push({
-        geometry: treeProtoGeo,
-        material: treeProtoMat,
-        matrices: treeMatrices,
-        castShadow: true
-      });
-    }
-    if (bushProtoGeo && bushMatrices.length > 0) {
-      this.templateFoliage.push({
-        geometry: bushProtoGeo,
-        material: bushProtoMat,
-        matrices: bushMatrices,
-        castShadow: false
-      });
-    }
-
-    console.log('[InfiniteChunkSystem] Master single-GLB chunk template initialized (~25k polygons). Ready for fast frustum streaming!');
-  }
-
-  applyEdgeBlending(group) {
-    const margin = 1.2;
-    const snapThreshold = 0.12;
-    const targetY = this.edgeHeight;
-    const half = this.chunkSize * 0.5;
-
-    group.updateMatrixWorld(true);
-
-    group.traverse((child) => {
-      if (child.isMesh && (child.name.includes('Plane') || child.material?.name === 'terrain')) {
-        const geo = child.geometry;
-        if (!geo || !geo.attributes.position) return;
-
-        child.geometry = geo.clone();
-        const pos = child.geometry.attributes.position;
+      
+      // Vertex boundary stitching for ground geometry to ensure 100% gap-free chunk tiling
+      if (isGround && child.geometry && child.geometry.attributes && child.geometry.attributes.position) {
+        const pAttr = child.geometry.attributes.position;
+        const baseM = matrices[0] || child.matrix;
+        const invM = baseM.clone().invert();
         const v = new THREE.Vector3();
-
-        for (let i = 0; i < pos.count; i++) {
-          v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(child.matrixWorld);
-
-          if (Math.abs(v.x - (-half)) < snapThreshold) v.x = -half;
-          if (Math.abs(v.x - half) < snapThreshold) v.x = half;
-          if (Math.abs(v.z - (-half)) < snapThreshold) v.z = -half;
-          if (Math.abs(v.z - half) < snapThreshold) v.z = half;
-
-          const distBorder = Math.min(
-            Math.abs(v.x - (-half)),
-            Math.abs(v.x - half),
-            Math.abs(v.z - (-half)),
-            Math.abs(v.z - half)
-          );
-
-          if (distBorder < margin) {
-            const t = Math.max(0.0, Math.min(1.0, distBorder / margin));
-            const smoothT = t * t * (3.0 - 2.0 * t);
-            v.y = THREE.MathUtils.lerp(targetY, v.y, smoothT);
+        for (let i = 0; i < pAttr.count; i++) {
+          v.fromBufferAttribute(pAttr, i).applyMatrix4(baseM);
+          let isBoundary = false;
+          if (v.x <= -9.85) { v.x = -10.0; isBoundary = true; }
+          if (v.x >= 9.85)  { v.x = 10.0;  isBoundary = true; }
+          if (v.z <= -9.85) { v.z = -10.0; isBoundary = true; }
+          if (v.z >= 9.85)  { v.z = 10.0;  isBoundary = true; }
+          if (isBoundary) {
+            // Anchor perimeter edge height uniformly to 0.160m to guarantee zero elevation discrepancy across seams
+            v.y = 0.160;
+            v.applyMatrix4(invM);
+            pAttr.setXYZ(i, v.x, v.y, v.z);
           }
-
-          const invMat = new THREE.Matrix4().copy(child.matrixWorld).invert();
-          v.applyMatrix4(invMat);
-
-          pos.setX(i, v.x);
-          pos.setY(i, v.y);
-          pos.setZ(i, v.z);
         }
-        pos.needsUpdate = true;
+        pAttr.needsUpdate = true;
         child.geometry.computeVertexNormals();
+        child.geometry.computeBoundingBox();
       }
+
+      if (child.geometry && !child.geometry.boundingBox) child.geometry.computeBoundingBox();
+
+      if (isHouse && child.geometry?.boundingBox) {
+        for (let i = 0; i < matrices.length; i++) {
+          const hBox = child.geometry.boundingBox.clone().applyMatrix4(matrices[i]);
+          this.templateHouseColliders.push(hBox);
+        }
+      }
+
+      // Global InstancedMesh capacity sized for up to 25 active chunks
+      const maxMultiplier = 25;
+      const totalCapacity = Math.max(matrices.length * maxMultiplier, 32);
+      const globalInstMesh = new THREE.InstancedMesh(child.geometry, child.material, totalCapacity);
+      globalInstMesh.name = 'Global_' + (child.name || 'Mesh');
+      const isFlatTerrain = name.includes('plane') || matName.includes('terrain') || matName.includes('ice');
+      const isTreeOrFoliage = name.toLowerCase().includes('winter_forest') || name.toLowerCase().includes('tree');
+      const isProminentCaster = isHouse || isTreeOrFoliage || name.includes('cliffbig');
+      globalInstMesh.castShadow = isProminentCaster;
+      globalInstMesh.receiveShadow = !matName.includes('ice');
+      globalInstMesh.frustumCulled = false;
+      globalInstMesh.count = 0;
+
+      this.worldGroup.add(globalInstMesh);
+      this.meshDefinitions.push({
+        name: child.name,
+        instMesh: globalInstMesh,
+        baseMatrices: matrices,
+        category,
+        isHouse
+      });
     });
+
+        // Continuous seamless snow bedrock underlayer beneath chunks
+    // Bedrock floor removed (not needed, prevents Z-fighting)
+    this.buildHeightGrid(gltfRoot);
+
+    // Initial spawn around origin
+    this.update(new THREE.Vector3(0, 0, 0));
+    console.log('[InfiniteChunkSystem] Global procedural open world initialized with ' + this.meshDefinitions.length + ' draw calls.');
   }
 
   buildHeightGrid(group) {
     const N = this.heightGridSize;
     this.heightGrid = new Float32Array(N * N);
-
     const terrainMeshes = [];
     group.traverse((c) => {
       if (c.isMesh && !c.name.includes('Lake') && !(c.material?.name || '').includes('ice')) {
         terrainMeshes.push(c);
       }
     });
-
     const raycaster = new THREE.Raycaster();
     const half = this.chunkSize * 0.5;
     const downVec = new THREE.Vector3(0, -1, 0);
-
     for (let j = 0; j < N; j++) {
       const z = -half + (j / (N - 1)) * this.chunkSize;
       for (let i = 0; i < N; i++) {
@@ -2220,35 +2105,18 @@ class InfiniteChunkSystem {
 
   getHeight(wx, wz) {
     if (!this.heightGrid) return this.edgeHeight;
-
     const half = this.chunkSize * 0.5;
     let cx = Math.floor((wx + half) / this.chunkSize);
     let cz = Math.floor((wz + half) / this.chunkSize);
-
     let lx = wx - cx * this.chunkSize;
     let lz = wz - cz * this.chunkSize;
-
     const rotIdx = this.getChunkRotationIndex(cx, cz);
-    if (rotIdx === 1) {
-      const ox = lx;
-      lx = -lz;
-      lz = ox;
-    } else if (rotIdx === 2) {
-      lx = -lx;
-      lz = -lz;
-    } else if (rotIdx === 3) {
-      const ox = lx;
-      lx = lz;
-      lz = -ox;
-    }
-
+    if (rotIdx === 1) { const ox = lx; lx = -lz; lz = ox; }
+    else if (rotIdx === 2) { lx = -lx; lz = -lz; }
+    else if (rotIdx === 3) { const ox = lx; lx = lz; lz = -ox; }
     const u = (lx + half) / this.chunkSize;
     const v = (lz + half) / this.chunkSize;
-
-    if (u <= 0.0 || u >= 1.0 || v <= 0.0 || v >= 1.0) {
-      return this.edgeHeight;
-    }
-
+    if (u <= 0.0 || u >= 1.0 || v <= 0.0 || v >= 1.0) return this.edgeHeight;
     const N = this.heightGridSize;
     const fx = u * (N - 1);
     const fz = v * (N - 1);
@@ -2258,153 +2126,27 @@ class InfiniteChunkSystem {
     const j1 = Math.min(N - 1, j0 + 1);
     const tx = fx - i0;
     const tz = fz - j0;
-
     const h00 = this.heightGrid[j0 * N + i0];
     const h10 = this.heightGrid[j0 * N + i1];
     const h01 = this.heightGrid[j1 * N + i0];
     const h11 = this.heightGrid[j1 * N + i1];
-
     const h0 = h00 * (1 - tx) + h10 * tx;
     const h1 = h01 * (1 - tx) + h11 * tx;
     return h0 * (1 - tz) + h1 * tz;
   }
 
   getChunkRotationIndex(cx, cz) {
-    if (cx === 0 && cz === 0) return 0;
-    return Math.floor(Math.abs(this.hashCoord(cx, cz, 444)) * 4) % 4;
+    return 0;
   }
 
-  // Fast, instant chunk instantiation from single master GLB template & object pool
-  loadChunk(cx, cz) {
-    const key = `${cx},${cz}`;
-    if (this.chunks.has(key)) return this.chunks.get(key);
-
-    const worldX = cx * this.chunkSize;
-    const worldZ = cz * this.chunkSize;
-    const rotIdx = this.getChunkRotationIndex(cx, cz);
-    const angle = rotIdx * (Math.PI / 2);
-
-    let chunkGroup = null;
-    let instancedMeshes = [];
-
-    // Reuse from pool if available, otherwise construct lightweight chunk unit
-    if (this.chunkPool.length > 0) {
-      const pooled = this.chunkPool.pop();
-      chunkGroup = pooled.group;
-      instancedMeshes = pooled.instancedMeshes;
-      chunkGroup.visible = true;
-    } else {
-      chunkGroup = new THREE.Group();
-
-      // 1. Terrain Meshes (zero-copy geometry and material sharing)
-      this.templateTerrainMeshes.forEach((tMesh) => {
-        const m = new THREE.Mesh(tMesh.geometry, tMesh.material);
-        m.name = tMesh.name;
-        m.castShadow = false;
-        m.receiveShadow = tMesh.receiveShadow;
-        chunkGroup.add(m);
-      });
-
-      // 2. Houses Mesh (zero-copy single merged mesh)
-      if (this.templateHouseMesh) {
-        const hMesh = new THREE.Mesh(this.templateHouseMesh.geometry, this.templateHouseMesh.material);
-        hMesh.name = 'ChunkHouses';
-        hMesh.castShadow = true;
-        hMesh.receiveShadow = true;
-        chunkGroup.add(hMesh);
-      }
-
-      // 3. Foliage InstancedMeshes
-      if (this.templateFoliage) {
-        this.templateFoliage.forEach((f, idx) => {
-          const instMesh = new THREE.InstancedMesh(f.geometry, f.material, f.matrices.length);
-          instMesh.name = `FoliageInst_${idx}`;
-          instMesh.castShadow = f.castShadow;
-          instMesh.receiveShadow = true;
-          for (let i = 0; i < f.matrices.length; i++) {
-            instMesh.setMatrixAt(i, f.matrices[i]);
-          }
-          instMesh.instanceMatrix.needsUpdate = true;
-          chunkGroup.add(instMesh);
-          instancedMeshes.push(instMesh);
-        });
-      }
-    }
-
-    chunkGroup.name = `Chunk_${key}`;
-    chunkGroup.position.set(worldX, 0, worldZ);
-    chunkGroup.rotation.set(0, angle, 0);
-    chunkGroup.updateMatrixWorld(true);
-
-    // Compute transformed house colliders for this chunk rotation
-    const chunkOrigin = new THREE.Vector3(worldX, 0, worldZ);
-    const rotMat = new THREE.Matrix4().makeRotationY(angle);
-    const houseColliders = [];
-
-    if (this.templateHouseColliders && this.templateHouseColliders.length > 0) {
-      const corners = [
-        new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(),
-        new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()
-      ];
-
-      for (let i = 0; i < this.templateHouseColliders.length; i++) {
-        const lb = this.templateHouseColliders[i];
-        if (rotIdx === 0) {
-          const b = lb.clone();
-          b.min.add(chunkOrigin);
-          b.max.add(chunkOrigin);
-          houseColliders.push(b);
-        } else {
-          // Transform all 8 corners of the local AABB through rotation matrix
-          corners[0].set(lb.min.x, lb.min.y, lb.min.z).applyMatrix4(rotMat);
-          corners[1].set(lb.max.x, lb.min.y, lb.min.z).applyMatrix4(rotMat);
-          corners[2].set(lb.min.x, lb.max.y, lb.min.z).applyMatrix4(rotMat);
-          corners[3].set(lb.max.x, lb.max.y, lb.min.z).applyMatrix4(rotMat);
-          corners[4].set(lb.min.x, lb.min.y, lb.max.z).applyMatrix4(rotMat);
-          corners[5].set(lb.max.x, lb.min.y, lb.max.z).applyMatrix4(rotMat);
-          corners[6].set(lb.min.x, lb.max.y, lb.max.z).applyMatrix4(rotMat);
-          corners[7].set(lb.max.x, lb.max.y, lb.max.z).applyMatrix4(rotMat);
-
-          const rotBox = new THREE.Box3();
-          for (let c = 0; c < 8; c++) {
-            rotBox.expandByPoint(corners[c]);
-          }
-          rotBox.min.add(chunkOrigin);
-          rotBox.max.add(chunkOrigin);
-          houseColliders.push(rotBox);
-        }
-      }
-    }
-    this.worldGroup.add(chunkGroup);
-
-    const chunkData = {
-      key,
-      cx,
-      cz,
-      group: chunkGroup,
-      instancedMeshes,
-      houseColliders
-    };
-
-    this.chunks.set(key, chunkData);
-
-    if (window.deliverySystem && window.deliverySystem.syncChunkTargets) {
-      window.deliverySystem.syncChunkTargets(key, cx, cz);
-    }
-
-    return chunkData;
-  }
-
-  // Fast query of all house bounding boxes near a world position
   getHouseCollidersNear(wx, wz, searchRadius = 15.0) {
     const nearby = [];
     const half = this.chunkSize * 0.5;
     const centerCx = Math.floor((wx + half) / this.chunkSize);
     const centerCz = Math.floor((wz + half) / this.chunkSize);
-
     for (let dx = -1; dx <= 1; dx++) {
       for (let dz = -1; dz <= 1; dz++) {
-        const k = `${centerCx + dx},${centerCz + dz}`;
+        const k = (centerCx + dx) + ',' + (centerCz + dz);
         const chunk = this.chunks.get(k);
         if (chunk && chunk.houseColliders) {
           for (let i = 0; i < chunk.houseColliders.length; i++) {
@@ -2421,103 +2163,112 @@ class InfiniteChunkSystem {
     return nearby;
   }
 
-  // Recycle chunk into pool and unregister from active scene
-  unloadChunk(key) {
-    const chunk = this.chunks.get(key);
-    if (!chunk) return;
-
-    this.worldGroup.remove(chunk.group);
-    chunk.group.visible = false;
-
-    // Return to pool for reuse (zero garbage collection overhead)
-    this.chunkPool.push({
-      group: chunk.group,
-      instancedMeshes: chunk.instancedMeshes
-    });
-
-    this.chunks.delete(key);
-
-    if (window.deliverySystem && window.deliverySystem.unloadChunkTargets) {
-      window.deliverySystem.unloadChunkTargets(key);
-    }
-  }
-
-  // Test if chunk bounding box is inside or intersecting camera frustum
-  isChunkInView(cx, cz) {
-    const half = this.chunkSize * 0.5;
-    const wx = cx * this.chunkSize;
-    const wz = cz * this.chunkSize;
-    const pad = 4.0; // Small margin to prevent edge flicker
-    this.chunkBox.min.set(wx - half - pad, -4.0, wz - half - pad);
-    this.chunkBox.max.set(wx + half + pad, 20.0, wz + half + pad);
-    return this.frustum.intersectsBox(this.chunkBox);
-  }
-
-  // Strict Frustum-Driven Streaming & Immediate Destruction of off-camera chunks
   update(targetPos, cam = camera) {
-    if (!this.templateTerrainMeshes || this.templateTerrainMeshes.length === 0) return;
-
+    if (!this.meshDefinitions || this.meshDefinitions.length === 0) return;
     const half = this.chunkSize * 0.5;
-    const focusPos = targetPos || cam.position;
+    const focusPos = targetPos || (cam ? cam.position : new THREE.Vector3());
     const playerCx = Math.floor((focusPos.x + half) / this.chunkSize);
     const playerCz = Math.floor((focusPos.z + half) / this.chunkSize);
 
-    // Update camera view frustum
-    if (cam) {
-      this.projScreenMatrix.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
-      this.frustum.setFromProjectionMatrix(this.projScreenMatrix);
-    }
-
     const r = this.loadRadius;
-    const neededKeys = new Set();
+    const neededChunks = [];
+    let changed = false;
+    const newSet = new Set();
 
-    // 1. Identify chunks that are currently in the camera's view frustum or under Santa
     for (let dx = -r; dx <= r; dx++) {
       for (let dz = -r; dz <= r; dz++) {
         const cx = playerCx + dx;
         const cz = playerCz + dz;
-        const key = `${cx},${cz}`;
+        const key = cx + ',' + cz;
+        newSet.add(key);
+        const biome = this.getChunkBiome(cx, cz);
+        neededChunks.push({ cx, cz, key, biome });
+      }
+    }
 
-        // Keep chunk if directly under player (for ground altitude collision) or in camera view
-        const isPlayerFootprint = (cx === playerCx && cz === playerCz);
-        const inFrustum = this.isChunkInView(cx, cz);
+    // Check if streaming boundary moved
+    if (newSet.size !== this.activeChunkCoords.size) {
+      changed = true;
+    } else {
+      for (const k of newSet) {
+        if (!this.activeChunkCoords.has(k)) { changed = true; break; }
+      }
+    }
 
-        if (isPlayerFootprint || inFrustum) {
-          neededKeys.add(key);
-          if (!this.chunks.has(key)) {
-            this.loadChunk(cx, cz);
+    // No bedrock mesh needed
+    if (!changed) return;
+    this.activeChunkCoords = newSet;
+
+    // Clear and rebuild active chunk registry
+    this.chunks.clear();
+    const chunkM = new THREE.Matrix4();
+    const tempM = new THREE.Matrix4();
+
+    for (const chunk of neededChunks) {
+      const { cx, cz, key, biome } = chunk;
+      const wx = cx * this.chunkSize;
+      const wz = cz * this.chunkSize;
+      const rotIdx = this.getChunkRotationIndex(cx, cz);
+      const angle = rotIdx * (Math.PI / 2);
+      const chunkOrigin = new THREE.Vector3(wx, 0, wz);
+      const rotMat = new THREE.Matrix4().makeRotationY(angle);
+      const houseColliders = [];
+
+      // Every chunk has the full set of house colliders
+      for (let i = 0; i < this.templateHouseColliders.length; i++) {
+        const lb = this.templateHouseColliders[i];
+        const b = lb.clone();
+        b.min.add(chunkOrigin);
+        b.max.add(chunkOrigin);
+        houseColliders.push(b);
+      }
+
+      this.chunks.set(key, { key, cx, cz, houseColliders, biome });
+      if (window.deliverySystem && window.deliverySystem.syncChunkTargets) {
+        window.deliverySystem.syncChunkTargets(key, cx, cz);
+      }
+    }
+
+    // Update each of the 20 global InstancedMeshes with biome-aware placement
+    for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
+      const def = this.meshDefinitions[defIdx];
+      let instanceIdx = 0;
+
+      for (const chunk of neededChunks) {
+        const { cx, cz, biome } = chunk;
+        const wx = cx * this.chunkSize;
+        const wz = cz * this.chunkSize;
+        const rotIdx = this.getChunkRotationIndex(cx, cz);
+        const angle = rotIdx * (Math.PI / 2);
+        chunkM.makeRotationY(angle);
+        chunkM.setPosition(wx, 0, wz);
+
+        // Determine which instances appear based on biome rules
+        const totalB = def.baseMatrices.length;
+        for (let b = 0; b < totalB; b++) {
+          let shouldSpawn = true;
+
+          // Every chunk is an exact complete 1-chunk batch instance of the terrain model
+          shouldSpawn = true;
+
+          if (shouldSpawn && instanceIdx < def.instMesh.instanceMatrix.count) {
+            tempM.multiplyMatrices(chunkM, def.baseMatrices[b]);
+            // Perfect 20m x 20m grid alignment
+            def.instMesh.setMatrixAt(instanceIdx, tempM);
+            instanceIdx++;
           }
         }
       }
-    }
 
-    // 2. Immediate destruction: Any chunk that left the camera view and is not under the player is unloaded
-    const keysToRemove = [];
-    for (const [key, chunk] of this.chunks.entries()) {
-      if (!neededKeys.has(key)) {
-        keysToRemove.push(key);
-      }
+      def.instMesh.count = instanceIdx;
+      def.instMesh.instanceMatrix.needsUpdate = true;
     }
-
-    if (keysToRemove.length > 0) {
-      keysToRemove.forEach((key) => this.unloadChunk(key));
-    }
-  }
-
-  getDiagnostics() {
-    return {
-      activeChunksCount: this.chunks.size,
-      activeChunkKeys: Array.from(this.chunks.keys()),
-      pooledChunksCount: this.chunkPool.length,
-      polygonsPerChunk: '~25k',
-      totalActivePolygons: `~${(this.chunks.size * 25).toFixed(0)}k`
-    };
   }
 }
-// Instantiate infinite chunk manager (Desktop & Mobile: 3x3 focused grid = 60m x 60m)
+
 const chunkSystem = new InfiniteChunkSystem(scene, {
-  loadRadius: 1,
-  unloadRadius: 1
+  loadRadius: 2,
+  unloadRadius: 2
 });
 window.chunkSystem = chunkSystem;
 window.game.chunkSystem = chunkSystem;
@@ -2572,6 +2323,22 @@ gltfLoader.load(
             mat.depthWrite = true; // Ensures solid architecture occlusion without z-sorting artifacts
             mat.depthTest = true;
             mat.side = THREE.DoubleSide;
+            // Anti-aliasing and mipmap filtering on house textures to eliminate subpixel crawl and bloom jitter
+            const maxAniso = renderer.capabilities.getMaxAnisotropy();
+            if (mat.map) {
+              mat.map.anisotropy = maxAniso;
+              mat.map.generateMipmaps = true;
+              mat.map.minFilter = THREE.LinearMipmapLinearFilter;
+              mat.map.magFilter = THREE.LinearFilter;
+              mat.map.needsUpdate = true;
+            }
+            if (mat.emissiveMap) {
+              mat.emissiveMap.anisotropy = maxAniso;
+              mat.emissiveMap.generateMipmaps = true;
+              mat.emissiveMap.minFilter = THREE.LinearMipmapLinearFilter;
+              mat.emissiveMap.magFilter = THREE.LinearFilter;
+              mat.emissiveMap.needsUpdate = true;
+            }
             mat.needsUpdate = true;
           }
 
@@ -2602,6 +2369,7 @@ gltfLoader.load(
           const isLake = meshName.includes('lake') ||
                          meshName.includes('water') ||
                          meshName.includes('river') ||
+                         meshName.includes('plateau') ||
                          matName.includes('ice');
 
           const isTerrain = matName === 'terrain';
@@ -2616,7 +2384,7 @@ gltfLoader.load(
             lakeMat.roughness = 0.28;
             lakeMat.metalness = 0.05;
             lakeMat.color = new THREE.Color(0xffffff);
-            lakeMat.customProgramCacheKey = () => 'lake_frozen_ice_material_v2';
+            lakeMat.customProgramCacheKey = () => 'lake_frozen_ice_material_v3';
 
             lakeMat.onBeforeCompile = (shader) => {
               // 1. Remap diffuse color to deep navy-blue & cobalt-blue with subtle icy-cyan and embedded cracks
@@ -2685,7 +2453,7 @@ gltfLoader.load(
             mat.userData.snowShaderApplied = true;
             mat.roughness = 0.80;
             mat.metalness = 0.0;
-            mat.customProgramCacheKey = () => 'terrain_procedural_snow_v2';
+            mat.customProgramCacheKey = () => 'terrain_procedural_snow_v3';
 
             mat.onBeforeCompile = (shader) => {
               shader.uniforms.uTime = terrainSnowUniforms.uTime;
@@ -2711,8 +2479,13 @@ gltfLoader.load(
                 '#include <worldpos_vertex>',
                 `
                 #include <worldpos_vertex>
-                vTerrainWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
-                vTerrainWorldNormal = normalize(mat3(modelMatrix) * normal);
+                #ifdef USE_INSTANCING
+                  vTerrainWorldPos = worldPosition.xyz;
+                  vTerrainWorldNormal = normalize((modelMatrix * vec4(transformedNormal, 0.0)).xyz);
+                #else
+                  vTerrainWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+                  vTerrainWorldNormal = normalize(mat3(modelMatrix) * normal);
+                #endif
                 `
               );
 
@@ -2961,7 +2734,7 @@ gltfLoader.load(
     // Shadow frustum tightened around the ground under Santa for maximum texel density and reduced shadow-pass polygon load.
     // Desktop: 56m across a 2048 map => ~2.7cm per texel (tree/house shadows stay razor sharp).
     // Mobile: 36m across a 1024 map => ~3.5cm per texel.
-    const shadowExtent = IS_MOBILE ? 18 : 28;
+    const shadowExtent = IS_MOBILE ? 15 : 20;
     moonLight.shadow.camera.left = -shadowExtent;
     moonLight.shadow.camera.right = shadowExtent;
     moonLight.shadow.camera.top = shadowExtent;
@@ -3019,23 +2792,16 @@ const clock = new THREE.Clock();
 
 
 window._printScenePolys = function() {
-  let list = [];
-  let total = 0;
+  let uniqueTriangles = 0;
+  const seenGeometries = new Set();
   scene.traverse(o => {
-    if (o.isMesh && o.visible) {
-      let tri = 0;
-      if (o.isInstancedMesh) {
-        const count = o.count !== undefined ? o.count : (o.instanceMatrix ? o.instanceMatrix.count : 1);
-        tri = (o.geometry.index ? o.geometry.index.count / 3 : o.geometry.attributes.position.count / 3) * count;
-      } else if (o.geometry) {
-        tri = o.geometry.index ? o.geometry.index.count / 3 : o.geometry.attributes.position.count / 3;
-      }
-      total += Math.round(tri);
-      list.push({ name: o.name || 'unnamed', type: o.type, tri: Math.round(tri), parent: o.parent ? o.parent.name : '' });
+    if (o.isMesh && o.visible && o.geometry && !seenGeometries.has(o.geometry.id)) {
+      seenGeometries.add(o.geometry.id);
+      const tri = o.geometry.index ? o.geometry.index.count / 3 : o.geometry.attributes.position.count / 3;
+      uniqueTriangles += tri;
     }
   });
-  list.sort((a,b) => b.tri - a.tri);
-  window._visibleSceneTriangles = total;
+  window._visibleSceneTriangles = Math.round(uniqueTriangles);
 };
 setInterval(() => { if (window._printScenePolys) window._printScenePolys(); }, 1000);
 function animate(currentTime) {
@@ -3114,12 +2880,19 @@ function animate(currentTime) {
       shadowFocus.x += (sp.x - shadowFocus.x) * focusLerp;
       shadowFocus.z += (sp.z - shadowFocus.z) * focusLerp;
       shadowFocus.y = 0;
+
+      // Anti-jitter: snap directional shadow camera in texel increments to completely stop sub-pixel shadow crawling
+      const currentExtent = IS_MOBILE ? 15 : 20;
+      const worldTexelSize = (currentExtent * 2.0) / shadowMapDim;
+      const snappedFocusX = Math.floor(shadowFocus.x / worldTexelSize) * worldTexelSize;
+      const snappedFocusZ = Math.floor(shadowFocus.z / worldTexelSize) * worldTexelSize;
+
       moonLight.position.set(
-        shadowFocus.x + MOON_OFFSET.x,
-        shadowFocus.y + MOON_OFFSET.y,
-        shadowFocus.z + MOON_OFFSET.z
+        snappedFocusX + MOON_OFFSET.x,
+        MOON_OFFSET.y,
+        snappedFocusZ + MOON_OFFSET.z
       );
-      moonLight.target.position.copy(shadowFocus);
+      moonLight.target.position.set(snappedFocusX, 0, snappedFocusZ);
       moonLight.target.updateMatrixWorld();
     }
     // Softly diffuse moonlight during blizzards

@@ -293,11 +293,18 @@ export class SleighController {
 
       this.reindeers = [];
       const reinBaseGeo = new THREE.CylinderGeometry(0.0018, 0.0018, 1.0, 4);
+      // Batched InstancedMesh for all 4 reins: collapses 4 draw calls into 1
+      const instancedReins = new THREE.InstancedMesh(reinBaseGeo, reinMat, deerConfigs.length);
+      instancedReins.name = 'BatchedReins';
+      instancedReins.castShadow = false;
+      instancedReins.receiveShadow = false;
+      masterGroup.add(instancedReins);
+      this.instancedReins = instancedReins;
+      this._reinDummy = new THREE.Object3D();
 
-      deerConfigs.forEach((cfg) => {
+      deerConfigs.forEach((cfg, idx) => {
         const deerClone = SkeletonUtils.clone(deerRigNode);
         deerClone.name = cfg.name;
-        // Apply position relative to original deer placement in GLB
         deerClone.position.set(cfg.x, 0, cfg.z);
 
         const mixer = new THREE.AnimationMixer(deerClone);
@@ -306,22 +313,20 @@ export class SleighController {
         mixer.setTime(cfg.timeOffset);
         this.mixers.push(mixer);
 
-        // Attach fairy lights directly to the head bone so they sway with the deer's gallop stride
         this._attachAntlerFairyLights(deerClone);
-
         masterGroup.add(deerClone);
 
-        // Connect reins from sleigh hitch to reindeer collar
         const hitch = cfg.x < 0 ? hitchLeft : hitchRight;
         const collarOffset = new THREE.Vector3(0, 0.12, 0.05);
         const collar = new THREE.Vector3(cfg.x, 0, cfg.z).add(collarOffset);
         const dir = new THREE.Vector3().subVectors(collar, hitch);
         const len = dir.length();
-        const rein = new THREE.Mesh(reinBaseGeo.clone(), reinMat);
-        rein.position.copy(hitch).addScaledVector(dir, 0.5);
-        rein.scale.set(1, len, 1);
-        rein.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
-        masterGroup.add(rein);
+
+        this._reinDummy.position.copy(hitch).addScaledVector(dir, 0.5);
+        this._reinDummy.scale.set(1, len, 1);
+        this._reinDummy.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+        this._reinDummy.updateMatrix();
+        instancedReins.setMatrixAt(idx, this._reinDummy.matrix);
 
         this.reindeers.push({
           mesh: deerClone,
@@ -332,9 +337,11 @@ export class SleighController {
           timeOffset: cfg.timeOffset,
           hitchPos: hitch,
           collarOffset: collarOffset,
-          reinMesh: rein
+          reinIndex: idx
         });
       });
+      instancedReins.instanceMatrix.needsUpdate = true;
+
     } else if (deerRigNode) {
       this._attachAntlerFairyLights(deerRigNode);
       masterGroup.add(deerRigNode);
@@ -437,15 +444,22 @@ export class SleighController {
     fairyLightsGroup.add(instSockets);
     fairyLightsGroup.add(instBulbs);
 
-    // Connecting wires
+    // Connecting wires (single batched draw call per lead deer)
     const wireMat = new THREE.LineBasicMaterial({ color: 0x1b3820 });
+    const wirePts = [];
     [leftBranch, rightBranch].forEach((branch) => {
-      const wirePoints = branch.map(pt => new THREE.Vector3(pt.x, pt.y, pt.z));
-      const wireCurve = new THREE.CatmullRomCurve3(wirePoints);
-      const wireGeo = new THREE.BufferGeometry().setFromPoints(wireCurve.getPoints(12));
-      const wireLine = new THREE.Line(wireGeo, wireMat);
-      fairyLightsGroup.add(wireLine);
+      const branchPts = branch.map(pt => new THREE.Vector3(pt.x, pt.y, pt.z));
+      const curve = new THREE.CatmullRomCurve3(branchPts);
+      const pts = curve.getPoints(10);
+      for (let i = 0; i < pts.length - 1; i++) {
+        wirePts.push(pts[i], pts[i + 1]);
+      }
     });
+    const wireGeo = new THREE.BufferGeometry().setFromPoints(wirePts);
+    const wireSegments = new THREE.LineSegments(wireGeo, wireMat);
+    wireSegments.castShadow = false;
+    wireSegments.receiveShadow = false;
+    fairyLightsGroup.add(wireSegments);
 
     headBone.add(fairyLightsGroup);
   }
@@ -1068,19 +1082,22 @@ export class SleighController {
         d.mesh.rotation.x = climbPitchLead * leadFactor;
         d.mesh.rotation.z = -(this.turnInput || 0.0) * 0.15 * leadFactor;
 
-        // Dynamically update harness rein line connecting sleigh hitch to reindeer collar (zero per-frame allocation)
-        if (d.reinMesh && d.hitchPos) {
+        // Dynamically update harness rein line in the batched InstancedMesh
+        if (this.instancedReins && d.hitchPos && this._reinDummy) {
           this._reinCollarPos.copy(d.mesh.position).add(d.collarOffset);
           this._reinDir.subVectors(this._reinCollarPos, d.hitchPos);
           const len = this._reinDir.length();
-          d.reinMesh.position.copy(d.hitchPos).addScaledVector(this._reinDir, 0.5);
-          d.reinMesh.scale.set(1, len, 1);
+          this._reinDummy.position.copy(d.hitchPos).addScaledVector(this._reinDir, 0.5);
+          this._reinDummy.scale.set(1, len, 1);
           if (len > 0.001) {
             this._reinDir.multiplyScalar(1.0 / len);
-            d.reinMesh.quaternion.setFromUnitVectors(this._upVec, this._reinDir);
+            this._reinDummy.quaternion.setFromUnitVectors(this._upVec, this._reinDir);
           }
+          this._reinDummy.updateMatrix();
+          this.instancedReins.setMatrixAt(d.reinIndex, this._reinDummy.matrix);
         }
       }
+      if (this.instancedReins) this.instancedReins.instanceMatrix.needsUpdate = true;
     }
 
     // 10. Compute anchor world position attached directly to the sledge

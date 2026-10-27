@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { soundManager } from './SoundManager.js';
+import { GiftDropMarker } from './GiftDropMarker.js';
 
 export class DeliverySystem {
   constructor(scene, chunkSystem, sleighController, isMobile = false) {
@@ -46,6 +47,8 @@ export class DeliverySystem {
     this.markersGroup = new THREE.Group();
     this.markersGroup.name = 'DeliveryMarkersGroup';
     this.scene.add(this.markersGroup);
+    this.giftDropMarker = new GiftDropMarker(this.markersGroup, 0.085);
+    this.roofPatches = new Map();
 
     // Optional collectible stars placed along the route
     this.starsGroup = new THREE.Group();
@@ -714,144 +717,163 @@ export class DeliverySystem {
     }, 2400);
   }
 
-  // Deterministic target selection for a chunk (3 to 4 houses per chunk)
-  syncChunkTargets(chunkKey, cx, cz) {
-    if (!this.chunkSystem) return;
 
-    const isCenter = (cx === 0 && cz === 0);
-    const chunkSize = this.chunkSystem.chunkSize || 20.0;
-    const worldChunkOrigin = new THREE.Vector3(cx * chunkSize, 0, cz * chunkSize);
+  _getRoofPatchesForDef(def) {
+    if (this.roofPatches.has(def.name)) {
+      return this.roofPatches.get(def.name);
+    }
+    const geo = def.instMesh?.geometry;
+    if (!geo || !geo.attributes.position) return { left: [], right: [] };
 
-    // Retrieve eligible house instances in this chunk
-    let candidatePositions = [];
+    const pos = geo.attributes.position;
+    const idx = geo.index;
+    const count = idx ? idx.count / 3 : pos.count / 3;
+    const bbox = geo.boundingBox || new THREE.Box3().setFromBufferAttribute(pos);
+    const maxY = bbox.max.y;
+    const minY = bbox.min.y;
 
-    if (isCenter && this.chunkSystem.templateHouses) {
-      // Pick signature landmark houses across flight quadrants
-      const landmarkNames = ['house4', 'houseP_11', 'houseP_70', 'houseP_23'];
-      const matchedLandmarks = [];
+    const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
+    const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), fn = new THREE.Vector3();
+    const up = new THREE.Vector3(0, 1, 0);
 
-      landmarkNames.forEach((targetName, i) => {
-        const houseTemplate = this.chunkSystem.templateHouses.find((h) => h.meshName === targetName);
-        if (houseTemplate && houseTemplate.geo) {
-          if (!houseTemplate.geo.boundingBox) houseTemplate.geo.computeBoundingBox();
-          const box = houseTemplate.geo.boundingBox.clone();
-          const m = new THREE.Matrix4().compose(
-            houseTemplate.pos,
-            new THREE.Quaternion().setFromEuler(houseTemplate.rot),
-            houseTemplate.scale
-          );
-          box.applyMatrix4(m);
+    const leftPatches = [];
+    const rightPatches = [];
 
-          // Exact rooftop peak centered precisely above the house
-          const exactRoof = new THREE.Vector3(
-            (box.min.x + box.max.x) * 0.5,
-            box.max.y,
-            (box.min.z + box.max.z) * 0.5
-          );
+    for (let i = 0; i < count; i++) {
+      const i0 = idx ? idx.getX(i * 3) : i * 3;
+      const i1 = idx ? idx.getX(i * 3 + 1) : i * 3 + 1;
+      const i2 = idx ? idx.getX(i * 3 + 2) : i * 3 + 2;
+      vA.fromBufferAttribute(pos, i0);
+      vB.fromBufferAttribute(pos, i1);
+      vC.fromBufferAttribute(pos, i2);
 
-          matchedLandmarks.push(exactRoof);
-          candidatePositions.push({
-            houseId: `center_village_house_${i}`,
-            worldPos: exactRoof
-          });
-        }
-      });
+      e1.subVectors(vB, vA);
+      e2.subVectors(vC, vA);
+      fn.crossVectors(e1, e2).normalize();
 
-      // The village contains ~109 houses. Derive extra rooftop targets from actual house colliders
-      // so a full run is always available even before neighbouring chunks stream in.
-      const chunkData = this.chunkSystem.chunks.get(chunkKey);
-      const colliders = chunkData && Array.isArray(chunkData.houseColliders)
-        ? chunkData.houseColliders
-        : [];
-      const extras = [];
-      const seen = [];
+      const centerY = (vA.y + vB.y + vC.y) / 3;
+      const hRel = (centerY - minY) / (maxY - minY || 1);
+      const dotUp = fn.dot(up);
 
-      for (let i = 0; i < colliders.length; i++) {
-        const box = colliders[i];
-        if (!box || !box.min || !box.max) continue;
-        const sizeX = box.max.x - box.min.x;
-        const sizeZ = box.max.z - box.min.z;
-        if (sizeX < 0.18 || sizeZ < 0.18) continue;
-        const topY = box.max.y;
-        if (topY < 0.55 || topY > 1.35) continue;
-
-        const x = (box.min.x + box.max.x) * 0.5;
-        const z = (box.min.z + box.max.z) * 0.5;
-
-        // Keep distance from the landmark roofs so targets don't bunch up
-        if (matchedLandmarks.some((roof) => Math.hypot(roof.x - x, roof.z - z) < 1.0)) {
-          continue;
-        }
-        if (seen.some((p) => Math.hypot(p.x - x, p.z - z) < 0.65)) continue;
-
-        seen.push({ x, z });
-        extras.push({ x, y: topY, z, dist: Math.hypot(x, z) });
-      }
-
-      extras.sort((a, b) => a.dist - b.dist);
-      extras.slice(0, 3).forEach((extra, i) => {
-        candidatePositions.push({
-          houseId: `center_village_extra_${i}`,
-          worldPos: new THREE.Vector3(extra.x, extra.y, extra.z)
-        });
-      });
-    } else {
-      // Wilderness chunk settlement: compute exact rooftop centers from actual house colliders
-      const chunkData = this.chunkSystem.chunks.get(chunkKey);
-      const colliders = chunkData && Array.isArray(chunkData.houseColliders)
-        ? chunkData.houseColliders
-        : [];
-
-      if (colliders.length > 0) {
-        const roofCandidates = [];
-        for (let idx = 0; idx < colliders.length; idx++) {
-          const box = colliders[idx];
-          if (!box || !box.min || !box.max) continue;
-          const sizeX = box.max.x - box.min.x;
-          const sizeZ = box.max.z - box.min.z;
-          if (sizeX < 0.18 || sizeZ < 0.18) continue;
-          if (box.max.y < 0.55 || box.max.y > 1.35) continue;
-
-          roofCandidates.push({
-            x: (box.min.x + box.max.x) * 0.5,
-            y: box.max.y,
-            z: (box.min.z + box.max.z) * 0.5
-          });
-        }
-
-        roofCandidates.sort((a, b) =>
-          Math.hypot(a.x - worldChunkOrigin.x, a.z - worldChunkOrigin.z) -
-          Math.hypot(b.x - worldChunkOrigin.x, b.z - worldChunkOrigin.z)
-        );
-
-        const targetCount = Math.min(roofCandidates.length, (Math.abs(cx * 7 + cz * 13) % 2 === 0 ? 4 : 3));
-        for (let idx = 0; idx < targetCount; idx++) {
-          const roof = roofCandidates[idx];
-          candidatePositions.push({
-            houseId: `wilderness_${chunkKey}_roof_${idx}`,
-            worldPos: new THREE.Vector3(roof.x, roof.y, roof.z)
-          });
+      // Usable sloped roof area: between 45% and 88% of house height, avoiding vertical walls & chimney peak
+      if (hRel >= 0.45 && hRel <= 0.88 && dotUp >= 0.30 && dotUp <= 0.95) {
+        const cx = (vA.x + vB.x + vC.x) / 3;
+        const cz = (vA.z + vB.z + vC.z) / 3;
+        // Keep margin away from extreme outer eaves
+        if (Math.abs(cx) < 0.082 && Math.abs(cz) < 0.082) {
+          const pt = {
+            pos: new THREE.Vector3(cx, centerY, cz),
+            normal: fn.clone()
+          };
+          if (fn.x < -0.05) leftPatches.push(pt);
+          else if (fn.x > 0.05) rightPatches.push(pt);
         }
       }
     }
 
-    // Register or refresh delivery candidates. The run route is locked when the
-    // run starts, so streaming new chunks never steals focus from the active target.
-    candidatePositions.forEach((cand) => {
-      let houseData = this.trackedHouses.get(cand.houseId);
+    const result = { left: leftPatches, right: rightPatches };
+    this.roofPatches.set(def.name, result);
+    return result;
+  }
+
+  _sampleRandomRooftopPoint(houseData) {
+    if (!this.chunkSystem) return { pos: houseData.worldPos.clone(), rot: new THREE.Quaternion() };
+
+    // Align precisely with the house instance's position, rotation and roof ridge
+    if (houseData.def && houseData.baseMatrix) {
+      const geo = houseData.def.instMesh?.geometry;
+      if (!geo.boundingBox) geo.computeBoundingBox();
+
+      const chunkSize = this.chunkSystem.chunkSize || 20.0;
+      const [cx, cz] = (houseData.chunkKey || '0,0').split(',').map(Number);
+      const chunkOffset = new THREE.Vector3(cx * chunkSize, 0, cz * chunkSize);
+
+      const hPos = new THREE.Vector3();
+      const hRot = new THREE.Quaternion();
+      const hScale = new THREE.Vector3();
+      houseData.baseMatrix.decompose(hPos, hRot, hScale);
+
+      // Model's rooftop ridge peak in local coordinates (centered along X=0, peak at top of bounding box)
+      // Lift slightly (+0.022m) so the ring never clips or z-fights with the roof geometry
+      const topY = geo.boundingBox.max.y + 0.022;
+      
+      // Subtle longitudinal slide along the house roof ridge (local Z axis) avoiding chimney / outer edges
+      const zOffset = (Math.random() - 0.5) * 0.045;
+      const localRidgePoint = new THREE.Vector3(0.0, topY, zOffset);
+      localRidgePoint.multiply(hScale);
+      localRidgePoint.applyQuaternion(hRot);
+
+      const worldSpot = hPos.clone().add(chunkOffset).add(localRidgePoint);
+      return { pos: worldSpot, rot: hRot.clone() };
+    }
+
+    const fallback = houseData.worldPos.clone();
+    return { pos: fallback, rot: new THREE.Quaternion() };
+  }
+
+  syncChunkTargets(chunkKey, cx, cz) {
+    if (!this.chunkSystem || !this.chunkSystem.meshDefinitions) return;
+
+    const chunkSize = this.chunkSystem.chunkSize || 20.0;
+    const chunkOrigin = new THREE.Vector3(cx * chunkSize, 0, cz * chunkSize);
+    const houseDefs = this.chunkSystem.meshDefinitions.filter(d => d.category === 'house');
+    if (houseDefs.length === 0) return;
+
+    // Collect all real houses in this chunk
+    const allHouses = [];
+    const v = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+    const s = new THREE.Vector3();
+
+    for (let defIdx = 0; defIdx < houseDefs.length; defIdx++) {
+      const def = houseDefs[defIdx];
+      const geo = def.instMesh.geometry;
+      if (!geo.boundingBox) geo.computeBoundingBox();
+      const topLocalY = geo.boundingBox.max.y;
+
+      for (let b = 0; b < def.baseMatrices.length; b++) {
+        const baseM = def.baseMatrices[b];
+        baseM.decompose(v, q, s);
+
+        const worldRoof = new THREE.Vector3(v.x, v.y + topLocalY * s.y, v.z).add(chunkOrigin);
+        allHouses.push({
+          def,
+          defName: def.name,
+          baseIndex: b,
+          baseMatrix: baseM,
+          worldPos: worldRoof
+        });
+      }
+    }
+
+    // Select 4-5 well-spaced houses per chunk for delivery targets
+    allHouses.sort((a, b) =>
+      Math.hypot(a.worldPos.x - chunkOrigin.x, a.worldPos.z - chunkOrigin.z) -
+      Math.hypot(b.worldPos.x - chunkOrigin.x, b.worldPos.z - chunkOrigin.z)
+    );
+
+    const step = Math.max(1, Math.floor(allHouses.length / 5));
+    for (let i = 0; i < 5 && i * step < allHouses.length; i++) {
+      const h = allHouses[i * step];
+      const houseId = `chunk_${chunkKey}_house_${i}`;
+      let houseData = this.trackedHouses.get(houseId);
       if (!houseData) {
         houseData = {
-          houseId: cand.houseId,
-          chunkKey: chunkKey,
-          worldPos: cand.worldPos.clone(),
+          houseId,
+          chunkKey,
+          def: h.def,
+          baseMatrix: h.baseMatrix,
+          worldPos: h.worldPos.clone(),
           delivered: false,
           marker: null
         };
-        this.trackedHouses.set(cand.houseId, houseData);
+        this.trackedHouses.set(houseId, houseData);
       } else {
-        houseData.worldPos.copy(cand.worldPos);
+        houseData.def = h.def;
+        houseData.baseMatrix = h.baseMatrix;
+        houseData.worldPos.copy(h.worldPos);
       }
-    });
+    }
 
     this._updateVisualMarkers();
   }
@@ -1057,56 +1079,13 @@ export class DeliverySystem {
     const sleighPos = this.sleighController.position;
     const camera = this.sleighController?.camera;
 
-    // 1. Animate the single active golden beam marker
-    for (let i = this.markersGroup.children.length - 1; i >= 0; i--) {
-      const marker = this.markersGroup.children[i];
-      const u = marker.userData;
-      if (!u) continue;
-
-      // Delivery completion: smooth golden dissolve
-      if (u.isFading) {
-        u.fadeProgress += delta * 1.5; // ~0.7s smooth dissolve
-        const alpha = Math.max(0.0, 1.0 - u.fadeProgress);
-        marker.traverse((child) => {
-          if (child.material) {
-            const baseOp = child.material.userData?.baseOpacity !== undefined
-              ? child.material.userData.baseOpacity
-              : 0.85;
-            if (child.material.uniforms?.uOpacity) {
-              child.material.uniforms.uOpacity.value = baseOp * alpha;
-            } else {
-              child.material.opacity = baseOp * alpha;
-            }
-          }
-        });
-        if (u.fadeProgress >= 1.0) {
-          this.markersGroup.remove(marker);
-          if (u.houseData) u.houseData.marker = null;
-        }
-        continue;
-      }
-
-      // Simple proximity check, mirroring triggerDelivery() exactly so READY
-      // TO DROP always means a drop right now will land.
-      const isActive = !!this.activeTarget && this.activeTarget.houseId === u.houseData.houseId;
-      const isInRange = isActive &&
-        !u.houseData.delivered &&
-        this._isInDeliveryRange(sleighPos);
-
-      if (isInRange !== u.inRange) {
-        u.inRange = isInRange;
-        if (u.beamMat) {
-          u.beamMat.uniforms.uOpacity.value =
-            u.beamMat.userData.baseOpacity * (isInRange ? 1.35 : 1.0);
-        }
-      }
-
-      // Beam breathing glow and subtle shimmer over time
-      if (u.beamMat) {
-        u.beamMat.uniforms.uTime.value = elapsedTime;
-      }
+    // 1. Animate active upright GiftDropMarker
+    if (this.giftDropMarker && this.activeTarget) {
+      const camDist = camera ? camera.position.distanceTo(this.activeTarget.worldPos) : 15.0;
+      const inRange = this._isInDeliveryRange(sleighPos);
+      this.giftDropMarker.setState(inRange ? 'inrange' : 'default');
+      this.giftDropMarker.update(delta, elapsedTime, camDist);
     }
-
     // 2. Animate falling gifts with golden sparkle trailing motes
     for (let i = this.activeGifts.length - 1; i >= 0; i--) {
       const gift = this.activeGifts[i];
@@ -1231,6 +1210,8 @@ export class DeliverySystem {
     // Brief celebration: one sparkle burst and the success chime.
     this._spawnSparkleBurst(houseData.worldPos);
     soundManager.playSuccess();
+    if (this.giftDropMarker) this.giftDropMarker.burst();
+    if (this.giftDropMarker) this.giftDropMarker.burst();
 
     this.showBanner(
       `GIFT DELIVERED! +${points} PTS • ${this.deliveriesMade}/${this.deliveriesRequired}`,
@@ -1476,19 +1457,25 @@ export class DeliverySystem {
   _activateTarget(houseData) {
     this.activeTarget = houseData || null;
 
-    // Remove stale (non-fading) markers so only one beacon is visible.
-    Array.from(this.markersGroup.children).forEach((marker) => {
-      if (marker.userData?.houseData === houseData) return;
-      if (marker.userData?.isFading) return;
-      this.markersGroup.remove(marker);
-      if (marker.userData?.houseData) marker.userData.houseData.marker = null;
-    });
+    if (!this.giftDropMarker) {
+      this.giftDropMarker = new GiftDropMarker(this.markersGroup, 0.16);
+    }
 
     if (houseData) {
-      if (!houseData.marker) {
-        const marker = this._createTargetMarker(houseData);
-        houseData.marker = marker;
-        this.markersGroup.add(marker);
+      if (!this.giftDropMarker.group.parent) {
+        this.markersGroup.add(this.giftDropMarker.group);
+      }
+      // Sample roof ridge location and house orientation
+      const dropData = this._sampleRandomRooftopPoint(houseData);
+      houseData.worldPos.copy(dropData.pos);
+      this.giftDropMarker.setPosition(dropData.pos.x, dropData.pos.y, dropData.pos.z);
+      this.giftDropMarker.setRotation(dropData.rot);
+      this.giftDropMarker.setState('default');
+      this.giftDropMarker.setVisible(true);
+      houseData.marker = this.giftDropMarker.group;
+    } else {
+      if (this.giftDropMarker) {
+        this.giftDropMarker.setVisible(false);
       }
     }
 

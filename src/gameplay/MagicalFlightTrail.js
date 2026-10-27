@@ -196,18 +196,18 @@ export class MagicalFlightTrail {
           if (vAlpha <= 0.003) discard;
 
           vec2 uv = gl_PointCoord - vec2(0.5);
-          float dist = length(uv) * 2.0;
-          if (dist > 1.0) discard;
+          float dist = length(uv);
+          if (dist > 0.48) discard;
 
           float shape = 0.0;
 
           if (vType < 0.5) {
-            // --- Tiny golden dust mote: soft halo with a small hot center ---
-            float halo = exp(-dist * dist * 3.4);
-            float core = exp(-dist * dist * 12.0);
-            shape = halo * 0.55 + core * 0.95;
+            // --- Tiny golden dust mote: radiant round Gaussian core ---
+            float halo = exp(-dist * dist * 38.0);
+            float core = exp(-dist * 16.0);
+            shape = halo * 0.70 + core * 0.85;
           } else if (vType < 1.5) {
-            // --- Occasional four-point star glint (thin diffraction rays) ---
+            // --- Four-point star glint (tapered diffraction rays + glowing center) ---
             float cosA = cos(vRot);
             float sinA = sin(vRot);
             vec2 rotUv = vec2(
@@ -217,22 +217,23 @@ export class MagicalFlightTrail {
 
             float ax = abs(rotUv.x);
             float ay = abs(rotUv.y);
-            float rayX = max(0.0, 1.0 - ax * 2.3) * exp(-ay * ay * 150.0);
-            float rayY = max(0.0, 1.0 - ay * 2.3) * exp(-ax * ax * 150.0);
-            float bulb = exp(-dist * dist * 20.0);
+            // Sharp rays tapering cleanly to zero within 0.40 radius
+            float rayX = max(0.0, 1.0 - ax * 2.8) * exp(-ay * ay * 220.0);
+            float rayY = max(0.0, 1.0 - ay * 2.8) * exp(-ax * ax * 220.0);
+            float bulb = exp(-dist * dist * 45.0);
 
-            shape = (rayX + rayY) * 1.35 + bulb * 0.55;
+            shape = (rayX + rayY) * 1.50 + bulb * 0.70;
           } else {
-            // --- Soft icy mote: cool, diffuse, no hard edge ---
-            shape = exp(-dist * dist * 4.2) * (1.0 - smoothstep(0.82, 1.0, dist));
+            // --- Soft icy mote: smooth circular diffuse mote ---
+            shape = exp(-dist * dist * 42.0);
           }
 
-          // Radial falloff that reaches zero inside the quad, so the sprite
-          // edge can never show up as a square against the night sky.
-          shape *= 1.0 - smoothstep(0.64, 0.96, dist);
+          // Antialiased circular cutoff: forces alpha to 0.0 well inside the round disc,
+          // physically making square quad borders impossible.
+          shape *= smoothstep(0.48, 0.28, dist);
 
-          // Dissipate if the dust drifts right up to the lens.
-          float nearFade = smoothstep(0.04, 0.16, vEyeDist);
+          // Camera-near safety fade: smoothly fades out before getting too close to the lens
+          float nearFade = smoothstep(0.12, 0.35, vEyeDist);
 
           // Respect the scene's winter fog so the dust belongs in the world.
           float fogFactor = clamp(
@@ -245,7 +246,6 @@ export class MagicalFlightTrail {
           float finalAlpha = shape * vAlpha * nearFade * fogFade;
           if (finalAlpha <= 0.004) discard;
 
-          // Stay just under the bloom threshold: the soft halo is the glow.
           vec3 finalRgb = vColor * finalAlpha * uBrightness;
           gl_FragColor = vec4(finalRgb, finalAlpha);
         }
