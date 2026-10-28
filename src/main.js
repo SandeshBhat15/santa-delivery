@@ -2,13 +2,13 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { SleighController } from './gameplay/SleighController.js';
 import { DeliverySystem } from './gameplay/DeliverySystem.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { KawaseBloomPass } from './postprocessing/KawaseBloomPass.js';
 
 // --- DOM Elements ---
 const container = document.getElementById('app');
@@ -47,7 +47,7 @@ const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini
 
 // --- Renderer ---
 const renderer = new THREE.WebGLRenderer({
-  antialias: false,
+  antialias: true,
   powerPreference: 'high-performance'
 });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -74,31 +74,18 @@ window.camera = camera;
 window.controls = controls;
 
 // --- Cinematic Post-Processing Pipeline (Bloom for Glowing Window Hearths) ---
+// --- Full Cinematic Unreal Bloom Pipeline with Anti-Black-Square Protection ---
 const composer = new EffectComposer(renderer);
 
 const renderPass = new RenderPass(scene, camera);
-const originalRenderPassRender = renderPass.render.bind(renderPass);
-renderPass.render = function (renderer, writeBuffer, readBuffer, deltaTime, maskActive) {
-  renderer.info.autoReset = false;
-  renderer.info.reset();
-  originalRenderPassRender(renderer, writeBuffer, readBuffer, deltaTime, maskActive);
-  renderPass.sceneCalls = renderer.info.render.calls;
-  renderPass.sceneTriangles = renderer.info.render.triangles;
-  renderer.info.autoReset = true;
-};
 composer.addPass(renderPass);
 
-// UnrealBloomPass: Warm, crisp radiant glow with soft falloff that preserves architecture clarity
-// On mobile, render bloom at half resolution (standard HDR pipeline) to save massive fillrate
-const bloomRes = IS_MOBILE
-  ? new THREE.Vector2(Math.floor(window.innerWidth * 0.5), Math.floor(window.innerHeight * 0.5))
-  : new THREE.Vector2(window.innerWidth, window.innerHeight);
-
-const bloomPass = new UnrealBloomPass(
+const bloomRes = new THREE.Vector2(window.innerWidth, window.innerHeight);
+const bloomPass = new KawaseBloomPass(
   bloomRes,
-  0.88, // Stable bloom strength
-  0.80, // Soft radiant falloff
-  0.55  // Smooth bloom threshold: prevents hard flickering edge cutoff on glowing windows
+  1.4,  // Rich, warm cinematic bloom intensity
+  0.32, // Smooth threshold for glowing windows, aurora, and lanterns
+  2.2   // Wide, soft blur scattering radius
 );
 composer.addPass(bloomPass);
 
@@ -658,7 +645,7 @@ const skyDomeMat = new THREE.ShaderMaterial({
       float auroraSuppression = 1.0 - uWeatherOvercast * 0.85;
 
       // Subtle atmospheric scattering halo around the aurora curtains
-      vec3 composite = baseSky * (1.0 - aurora.a * 0.32 * auroraSuppression) + (aurora.rgb * 0.92) * auroraSuppression;
+      vec3 composite = baseSky * (1.0 - aurora.a * 0.32 * auroraSuppression) + (aurora.rgb * 1.35) * auroraSuppression;
       gl_FragColor = vec4(composite, 1.0);
     }
   `,
@@ -1341,7 +1328,7 @@ class VillageLightingSystem {
       uVillageLightMap: { value: this.lightMapTexture },
       uLightBoundsMin: { value: this.boundsMin },
       uLightBoundsSize: { value: this.boundsSize },
-      uGroundWarmthIntensity: { value: 1.0 }
+      uGroundWarmthIntensity: { value: 1.45 }
     };
 
     // Tracked houses: Map of mesh -> { mesh, name, lastWorldPos: Vector3, isCustom: boolean }
@@ -2345,7 +2332,7 @@ gltfLoader.load(
           // 1. Process meshes with explicit emission textures (like house glowing windows)
           if (mat.emissiveMap) {
             mat.emissive = new THREE.Color(0xffa63b);
-            mat.emissiveIntensity = 2.4;
+            mat.emissiveIntensity = 3.6;
             mat.toneMapped = true;
             mat.needsUpdate = true;
           }
@@ -2361,7 +2348,7 @@ gltfLoader.load(
             meshName.includes('window')
           ) {
             mat.emissive = new THREE.Color(0xffa63b);
-            mat.emissiveIntensity = 2.4;
+            mat.emissiveIntensity = 3.6;
             mat.toneMapped = true;
             mat.needsUpdate = true;
           }
@@ -2589,12 +2576,13 @@ gltfLoader.load(
 
                 // 3. Crystalline Moonlight Sheen & Delicate Multi-Frequency Glitter
                 vec3 halfVec = normalize(viewDir + moonDir);
-                float specAngle = max(0.0, dot(sWNorm, halfVec));
+                float specAngle = clamp(dot(sWNorm, halfVec), 0.0, 1.0);
                 float moonSheen = pow(specAngle, 16.0) * (0.28 + 0.72 * sMacroDrift);
                 float glitter1 = snowNoise(sWPos.xz * 32.0 + sin(uTime * 0.4) * 0.03);
                 float glitter2 = snowNoise(sWPos.xz * 68.0 - cos(uTime * 0.3) * 0.03);
-                float glitter = pow(glitter1 * glitter2 * specAngle, 4.5) * 1.6;
-                vec3 sparkleColor = vec3(0.92, 0.96, 1.0) * (moonSheen * 0.22 + glitter * 0.28) * uSparkleIntensity;
+                float glitterBase = clamp(glitter1 * glitter2 * specAngle, 0.0, 1.0);
+                float glitter = pow(glitterBase, 4.5) * 1.6;
+                vec3 sparkleColor = vec3(0.92, 0.96, 1.0) * clamp(moonSheen * 0.22 + glitter * 0.28, 0.0, 1.0) * uSparkleIntensity;
 
                 // 4. Harmonious Mixing with Existing Terrain Texture
                 // Modulate the snow with the low-poly faceting of the original texture
@@ -2970,8 +2958,9 @@ function animate(currentTime) {
 
   // Render scene with cinematic bloom for ethereal aurora glow & warm house hearths
   composer.render();
-  const sceneCalls = renderPass.sceneCalls || renderer.info.render.calls;
-  const sceneTriangles = renderPass.sceneTriangles || renderer.info.render.triangles;
+  // renderer.render(scene, camera);
+  const sceneCalls = renderer.info.render.calls;
+  const sceneTriangles = renderer.info.render.triangles;
 
   // FPS & Draw Call Telemetry
   frameCount++;

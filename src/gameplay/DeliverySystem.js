@@ -1135,17 +1135,39 @@ export class DeliverySystem {
       sp.age += delta;
       if (sp.age >= sp.maxAge) {
         this.scene.remove(sp.mesh);
+        if (sp.mesh.geometry) sp.mesh.geometry.dispose();
+        if (sp.mesh.material) sp.mesh.material.dispose();
         this.activeSparkles.splice(i, 1);
       } else {
         const t = sp.age / sp.maxAge;
         const posAttr = sp.mesh.geometry.attributes.position;
+        const applyCurve = sp.curved && sp.curveTargetDir;
         for (let j = 0; j < sp.velocities.length; j++) {
-          posAttr.setX(j, posAttr.getX(j) + sp.velocities[j].x * delta);
-          posAttr.setY(j, posAttr.getY(j) + sp.velocities[j].y * delta);
-          posAttr.setZ(j, posAttr.getZ(j) + sp.velocities[j].z * delta);
+          const vel = sp.velocities[j];
+          if (applyCurve) {
+            // Smoothly steer velocity from initial direction toward target direction
+            const steerRate = 2.4 * delta;
+            vel.x += (sp.curveTargetDir.x * vel.targetSpeed - vel.x) * steerRate;
+            vel.y += (sp.curveTargetDir.y * vel.targetSpeed - vel.y) * steerRate;
+            vel.z += (sp.curveTargetDir.z * vel.targetSpeed - vel.z) * steerRate;
+            // Slight natural airy drag
+            vel.x *= (1.0 - 0.25 * delta);
+            vel.y *= (1.0 - 0.25 * delta);
+            vel.z *= (1.0 - 0.25 * delta);
+          }
+          posAttr.setX(j, posAttr.getX(j) + vel.x * delta);
+          posAttr.setY(j, posAttr.getY(j) + vel.y * delta);
+          posAttr.setZ(j, posAttr.getZ(j) + vel.z * delta);
         }
         posAttr.needsUpdate = true;
-        sp.mesh.material.opacity = (1.0 - t);
+        // Non-linear smooth fade-in and graceful fade-out
+        if (sp.curved) {
+          const fadeIn = Math.min(1.0, sp.age / 0.25);
+          const fadeOut = Math.max(0.0, 1.0 - Math.pow(t, 1.6));
+          sp.mesh.material.opacity = (sp.baseOpacity || 0.95) * fadeIn * fadeOut;
+        } else {
+          sp.mesh.material.opacity = (1.0 - t);
+        }
       }
     }
   }
@@ -1207,10 +1229,18 @@ export class DeliverySystem {
       houseData.marker.userData.isFading = true;
     }
 
-    // Brief celebration: one sparkle burst and the success chime.
-    this._spawnSparkleBurst(houseData.worldPos);
+    // Look up the next target if available to subtly bias chimney burst drift
+    let nextTarget = null;
+    if (this.deliveriesMade < this.deliveriesRequired) {
+      nextTarget = this.runTargets[this.deliveriesMade];
+      if (!nextTarget || nextTarget.delivered) {
+        nextTarget = this.runTargets.find((t) => !t.delivered && t.houseId !== houseData.houseId) || null;
+      }
+    }
+
+    // Brief celebration: one sparkle burst (with gentle drift toward next target) and success chime.
+    this._spawnSparkleBurst(houseData.worldPos, nextTarget ? nextTarget.worldPos : null);
     soundManager.playSuccess();
-    if (this.giftDropMarker) this.giftDropMarker.burst();
     if (this.giftDropMarker) this.giftDropMarker.burst();
 
     this.showBanner(
@@ -1473,6 +1503,16 @@ export class DeliverySystem {
       this.giftDropMarker.setState('default');
       this.giftDropMarker.setVisible(true);
       houseData.marker = this.giftDropMarker.group;
+
+      // Subtle environmental hint: emit small cluster of warm golden sparkles drifting toward next house
+      if (this.sleighController && this.runActive) {
+        const forward = new THREE.Vector3(
+          -Math.sin(this.sleighController.rotationY || 0),
+          0,
+          -Math.cos(this.sleighController.rotationY || 0)
+        );
+        this._spawnDirectionalSparkles(this.sleighController.position, houseData.worldPos, forward);
+      }
     } else {
       if (this.giftDropMarker) {
         this.giftDropMarker.setVisible(false);
@@ -1848,12 +1888,24 @@ export class DeliverySystem {
     }
   }
 
-  _spawnSparkleBurst(worldPos) {
+  _spawnSparkleBurst(worldPos, targetPos = null) {
     const count = this.isMobile ? 24 : 60;
     const geo = new THREE.BufferGeometry();
     const positions = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
     const velocities = [];
+
+    // Optional gentle drift toward target house
+    let driftX = 0, driftY = 0, driftZ = 0;
+    if (targetPos) {
+      const dX = targetPos.x - worldPos.x;
+      const dY = targetPos.y - worldPos.y;
+      const dZ = targetPos.z - worldPos.z;
+      const len = Math.hypot(dX, dY, dZ) || 1.0;
+      driftX = (dX / len) * 0.9;
+      driftY = Math.max(0.2, (dY / len) * 0.9);
+      driftZ = (dZ / len) * 0.9;
+    }
 
     for (let i = 0; i < count; i++) {
       positions[i * 3] = worldPos.x;
@@ -1869,9 +1921,9 @@ export class DeliverySystem {
       const angle = Math.random() * Math.PI * 2;
       const speed = 2.5 + Math.random() * 4.5;
       velocities.push({
-        x: Math.cos(angle) * speed,
-        y: 1.5 + Math.random() * 5.0,
-        z: Math.sin(angle) * speed
+        x: Math.cos(angle) * speed + driftX,
+        y: 1.5 + Math.random() * 5.0 + driftY,
+        z: Math.sin(angle) * speed + driftZ
       });
     }
 
@@ -1895,6 +1947,103 @@ export class DeliverySystem {
       velocities: velocities,
       age: 0.0,
       maxAge: 1.2
+    });
+  }
+
+  /**
+   * Spawns a sparse, subtle cluster of warm golden sparkles that gently drift
+   * along a short curved arc pointing toward the next target house.
+   * Does NOT form a line, ribbon, or beam; dissipates naturally within 1.5-1.8s.
+   */
+  _spawnDirectionalSparkles(originPos, targetPos, sleighForward) {
+    if (!originPos || !targetPos) return;
+
+    // Unit vector toward next target
+    const toTarget = new THREE.Vector3().subVectors(targetPos, originPos);
+    const dist = toTarget.length();
+    if (dist < 0.001) return;
+    toTarget.normalize();
+
+    // Sleigh forward vector (or default north if not provided)
+    const forward = sleighForward ? sleighForward.clone().normalize() : new THREE.Vector3(0, 0, -1);
+
+    const count = this.isMobile ? 10 : 15;
+    const geo = new THREE.BufferGeometry();
+    const positions = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
+    const velocities = [];
+
+    // Subtle spawn volume slightly forward / above Santa
+    for (let i = 0; i < count; i++) {
+      const spreadX = (Math.random() - 0.5) * 0.18;
+      const spreadY = (Math.random() - 0.3) * 0.14;
+      const spreadZ = (Math.random() - 0.5) * 0.18;
+
+      positions[i * 3]     = originPos.x + forward.x * 0.22 + spreadX;
+      positions[i * 3 + 1] = originPos.y + 0.12 + spreadY;
+      positions[i * 3 + 2] = originPos.z + forward.z * 0.22 + spreadZ;
+
+      // Pure warm golden palette: gold, champagne, amber
+      const goldTone = Math.random();
+      if (goldTone < 0.5) {
+        // Warm brilliant gold
+        colors[i * 3]     = 1.0;
+        colors[i * 3 + 1] = 0.82;
+        colors[i * 3 + 2] = 0.22;
+      } else if (goldTone < 0.8) {
+        // Soft golden champagne
+        colors[i * 3]     = 1.0;
+        colors[i * 3 + 1] = 0.92;
+        colors[i * 3 + 2] = 0.45;
+      } else {
+        // Rich amber glint
+        colors[i * 3]     = 1.0;
+        colors[i * 3 + 1] = 0.72;
+        colors[i * 3 + 2] = 0.15;
+      }
+
+      // Initial velocity combines Santa's forward glide + initial forward puff,
+      // which will steer smoothly toward the target direction over time.
+      const initialForwardBias = 0.45 + Math.random() * 0.35;
+      const targetBias = 0.55 + Math.random() * 0.35;
+      const speed = 1.35 + Math.random() * 0.65;
+
+      const initVelX = (forward.x * initialForwardBias + toTarget.x * targetBias + (Math.random() - 0.5) * 0.2) * speed;
+      const initVelY = (0.2 + toTarget.y * 0.35 + (Math.random() - 0.5) * 0.15) * speed;
+      const initVelZ = (forward.z * initialForwardBias + toTarget.z * targetBias + (Math.random() - 0.5) * 0.2) * speed;
+
+      velocities.push({
+        x: initVelX,
+        y: initVelY,
+        z: initVelZ,
+        targetSpeed: speed
+      });
+    }
+
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    const mat = new THREE.PointsMaterial({
+      map: this._starGlintTexture || null,
+      size: this.isMobile ? 0.18 : 0.24,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+
+    const sparkleMesh = new THREE.Points(geo, mat);
+    this.scene.add(sparkleMesh);
+
+    this.activeSparkles.push({
+      mesh: sparkleMesh,
+      velocities: velocities,
+      curved: true,
+      curveTargetDir: toTarget,
+      baseOpacity: 0.95,
+      age: 0.0,
+      maxAge: 1.6 + Math.random() * 0.3
     });
   }
 
