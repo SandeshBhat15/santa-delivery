@@ -94,23 +94,23 @@ class SoundManager {
     if (!this.ctx || this.ctx.state !== 'running') return;
     try {
       const now = this.ctx.currentTime;
-      // Bright two-note sparkle (B6 -> E7) for optional collectibles
-      const notes = [1975.53, 2637.02];
+      // Rich three-note festive sparkle chime (B6 -> D#7 -> F#7)
+      const notes = [1975.53, 2489.02, 2959.96];
       notes.forEach((freq, idx) => {
         const osc = this.ctx.createOscillator();
         const gain = this.ctx.createGain();
-        const startTime = now + idx * 0.07;
+        const startTime = now + idx * 0.055;
 
-        osc.type = 'sine';
+        osc.type = 'triangle';
         osc.frequency.setValueAtTime(freq, startTime);
 
-        gain.gain.setValueAtTime(0.22, startTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.35);
+        gain.gain.setValueAtTime(0.24, startTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.38);
 
         osc.connect(gain);
         gain.connect(this.ctx.destination);
         osc.start(startTime);
-        osc.stop(startTime + 0.35);
+        osc.stop(startTime + 0.38);
       });
     } catch (e) {}
   }

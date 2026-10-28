@@ -63,20 +63,19 @@ export class SleighController {
     this.joystick = { x: 0, y: 0 };
     this.verticalInput = 0.0;
 
-    // Flight simulation dynamics: smooth, floaty, magical lift & descent
-    this.climbRate = 1.7;
-    this.descendRate = 1.5;
+    // Flight simulation dynamics: smooth, floaty, natural aerodynamic lift & descent
+    this.climbRate = 1.35;    // m/s: gentle, majestic climb rate
+    this.descendRate = 1.25;  // m/s: graceful, controlled descent rate
     this.verticalSpeed = 0.0;
-    this.verticalAccel = 4.5; // gentle, non-snappy vertical acceleration
-    this.verticalDecel = 3.8; // smooth vertical damping
-    this.pitchMax = 0.32;     // natural pitch angle (radians) during climb/dive
+    this.verticalAccel = 3.2; // organic, non-snappy vertical momentum
+    this.verticalDecel = 2.4; // soft floating leveling deceleration
+    this.pitchMax = 0.28;     // natural pitch angle (radians) during climb/dive
 
     // Dynamic Terrain-Relative Altitude Limits (meters above local terrain)
     this.minAltitudeAboveTerrain = 0.01; // Skims ground level with runners directly in the snow
-    this.targetFlightAltitude = 0.40;    // Player-controlled cruising flight level above terrain (scaled for mini rig)
-    // NOTE: maxAltitudeAboveTerrain is intentionally removed — the sleigh can now climb freely.
-    // Only the terrain floor (minAltitudeAboveTerrain) is enforced for safety.
-    this.altitudeSoftBuffer = 0.06;      // Distance from ground floor where vertical damping begins
+    this.targetFlightAltitude = 0.58;    // Comfortable cruising height above terrain
+    this.maxAltitudeAboveTerrain = 1.15; // Soft natural ceiling: keeps village in beautiful view
+    this.altitudeSoftBuffer = 0.08;      // Distance from boundaries where vertical damping begins
 
     // Sleigh & Reindeer Collision Bounds (meters)
     // Sleigh body + reindeer team total footprint calibrated for the half-size rig
@@ -87,8 +86,8 @@ export class SleighController {
     this._crashGraceUntil = 0;
 
     // Follow camera offset & sensitivity (calibrated close third-person follow camera for mini rig)
-    this.camDistance = isMobile ? 1.05 : 0.82;
-    this.camHeight = isMobile ? 0.42 : 0.32;
+    this.camDistance = isMobile ? 0.82 : 0.65;
+    this.camHeight = isMobile ? 0.33 : 0.25;
     this.camTargetPos = new THREE.Vector3();
     this.camLookPos = new THREE.Vector3();
     this._currentCamLookPos = new THREE.Vector3();
@@ -908,6 +907,7 @@ export class SleighController {
 
     const currentAltitude = this.position.y - localGroundH;
     const minAlt = this.minAltitudeAboveTerrain;
+    const maxAlt = this.maxAltitudeAboveTerrain || 1.15;
     const buffer = this.altitudeSoftBuffer;
 
     let vertCommand = 0.0;
@@ -921,26 +921,35 @@ export class SleighController {
     }
     vertCommand = Math.max(-1.0, Math.min(1.0, vertCommand));
 
-    // Smooth soft-damping near the ground floor only (no upper ceiling)
+    // Smooth soft-damping near both terrain ground floor and upper ceiling
     let descendFactor = 1.0;
-
     if (currentAltitude < minAlt + buffer) {
-      // Approaching terrain: softly taper descend rate to zero
       descendFactor = Math.max(0.0, (currentAltitude - minAlt) / buffer);
+    }
+    let climbFactor = 1.0;
+    if (currentAltitude > maxAlt - buffer) {
+      climbFactor = Math.max(0.0, (maxAlt - currentAltitude) / buffer);
     }
 
     let targetVertSpeed = 0.0;
     if (vertCommand > 0) {
-      // Climb freely — no ceiling clamp
-      targetVertSpeed = this.climbRate * vertCommand;
-      this.targetFlightAltitude = this.targetFlightAltitude + this.climbRate * vertCommand * delta * 0.9;
+      // Natural aerodynamic climb with soft ceiling cushion
+      targetVertSpeed = this.climbRate * vertCommand * climbFactor;
+      this.targetFlightAltitude = Math.min(
+        maxAlt,
+        this.targetFlightAltitude + this.climbRate * vertCommand * climbFactor * delta * 0.85
+      );
     } else if (vertCommand < 0) {
+      // Graceful aerodynamic descent toward snow floor
       targetVertSpeed = -this.descendRate * Math.abs(vertCommand) * descendFactor;
-      this.targetFlightAltitude = Math.max(minAlt, this.targetFlightAltitude - this.descendRate * Math.abs(vertCommand) * delta * 0.9);
+      this.targetFlightAltitude = Math.max(
+        minAlt + 0.05,
+        this.targetFlightAltitude - this.descendRate * Math.abs(vertCommand) * delta * 0.85
+      );
     } else {
-      // Smoothly track the player's chosen flight level (whether ground-level skimming or rooftop height)
+      // Smoothly hold current cruising altitude with organic critically damped leveling
       const altDelta = this.targetFlightAltitude - currentAltitude;
-      targetVertSpeed = THREE.MathUtils.clamp(altDelta * 2.2, -this.descendRate * 0.6, this.climbRate * 0.6);
+      targetVertSpeed = THREE.MathUtils.clamp(altDelta * 2.0, -this.descendRate * 0.5, this.climbRate * 0.5);
     }
 
     // Predictive smooth contour lift: naturally glide up hills before hitting them

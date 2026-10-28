@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { soundManager } from './SoundManager.js';
 import { GiftDropMarker } from './GiftDropMarker.js';
+import { TargetGuidanceFlow } from './TargetGuidanceFlow.js';
 
 export class DeliverySystem {
   constructor(scene, chunkSystem, sleighController, isMobile = false) {
@@ -60,6 +61,9 @@ export class DeliverySystem {
     this.activeGifts = [];
     this.activeSparkles = [];
 
+    // Next-target guidance: temporary golden particle flow arcing toward destination
+    this.guidanceFlow = new TargetGuidanceFlow(this.scene, this.isMobile);
+
     // Current chunk tracking
     this.currentChunkKey = '0,0';
     this.currentChunkTargets = [];
@@ -102,10 +106,10 @@ export class DeliverySystem {
     this._beamGeo = new THREE.CylinderGeometry(0.085, 0.055, this._beamHeight, 18, 1, true);
     this._beamGeo.translate(0, this._beamHeight * 0.5, 0);
 
-    // Classic 3D 5-point star with beveled faceting and smooth centroid centering
+    // Classic 3D 5-point star shape with beveled diamond faceting
     const starShape = new THREE.Shape();
     for (let i = 0; i < 10; i++) {
-      const radius = i % 2 === 0 ? 0.11 : 0.048;
+      const radius = i % 2 === 0 ? 0.135 : 0.055;
       const angle = -Math.PI / 2 + (i * Math.PI) / 5;
       const px = Math.cos(angle) * radius;
       const py = Math.sin(angle) * radius;
@@ -115,23 +119,32 @@ export class DeliverySystem {
     starShape.closePath();
 
     this._starGeo = new THREE.ExtrudeGeometry(starShape, {
-      depth: 0.032,
+      depth: 0.040,
       bevelEnabled: true,
-      bevelSegments: 1,
+      bevelSegments: 2,
       steps: 1,
-      bevelSize: 0.010,
-      bevelThickness: 0.012
+      bevelSize: 0.018,
+      bevelThickness: 0.020
     });
     this._starGeo.center();
 
-    // Warm golden star PBR material with soft emissive luminance (subtle, non-blinding)
+    // Inner glowing core diamond sphere
+    this._starCoreGeo = new THREE.OctahedronGeometry(0.048, 1);
+
+    // Warm golden star PBR material with radiant emissive luminance
     this._starMat = new THREE.MeshStandardMaterial({
-      color: 0xffcb38,
-      emissive: 0xf39c12,
-      emissiveIntensity: 0.75,
-      metalness: 0.68,
-      roughness: 0.28,
+      color: 0xffd23f,
+      emissive: 0xf59e0b,
+      emissiveIntensity: 0.90,
+      metalness: 0.72,
+      roughness: 0.22,
       toneMapped: true
+    });
+
+    // Brilliant diamond star core material
+    this._starCoreMat = new THREE.MeshBasicMaterial({
+      color: 0xfffae6,
+      wireframe: false
     });
 
     // Soft localized golden halo glow
@@ -140,7 +153,7 @@ export class DeliverySystem {
       color: 0xffca3d,
       blending: THREE.AdditiveBlending,
       transparent: true,
-      opacity: 0.38,
+      opacity: 0.45,
       depthWrite: false,
       fog: false,
       toneMapped: true
@@ -489,8 +502,13 @@ export class DeliverySystem {
           <div class="control-label">FLIGHT</div>
         </div>
 
-        <!-- Bottom-Right: One clearly labeled drop action, for mouse, touch and keyboard -->
+        <!-- Bottom-Right: Clearly labeled guide and drop actions -->
         <div id="drop-zone">
+          <button id="btn-guide-wind" class="btn-guide-small" type="button" title="Summon Guiding Wind (G)">
+            <span class="guide-icon">🌬️</span>
+            <span class="guide-label">GUIDE</span>
+            <span class="guide-key" aria-hidden="true">G</span>
+          </button>
           <div id="drop-status" class="drop-status far" aria-live="polite">GET CLOSER</div>
           <button id="btn-drop-gift" class="btn-drop-large" type="button">
             <span class="drop-icon">🎁</span>
@@ -539,6 +557,7 @@ export class DeliverySystem {
 
     this._setupVirtualJoystick();
     this._setupDropButton();
+    this._setupGuideWind();
 
     const replayBtn = document.getElementById('btn-replay');
     if (replayBtn) {
@@ -701,6 +720,35 @@ export class DeliverySystem {
 
     dropBtn.addEventListener('pointerdown', trigger);
     dropBtn.addEventListener('click', trigger);
+  }
+
+  _setupGuideWind() {
+    const guideBtn = document.getElementById('btn-guide-wind');
+    const triggerWind = (e) => {
+      if (e) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      this.summonGuidingWind();
+    };
+
+    if (guideBtn) {
+      guideBtn.addEventListener('pointerdown', triggerWind);
+      guideBtn.addEventListener('click', triggerWind);
+    }
+
+    // Keyboard 'G' summons the Ghost of Tsushima guiding wind
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'KeyG' && !e.repeat) {
+        triggerWind();
+      }
+    });
+  }
+
+  summonGuidingWind() {
+    if (!this.runActive || this.runComplete || !this.activeTarget || !this.guidanceFlow) return;
+    this.guidanceFlow.summonWind();
+    this.showBanner('🌬️ GUIDING WIND SUMMONED', 'info');
   }
 
   showBanner(message, type = 'success') {
@@ -1129,7 +1177,17 @@ export class DeliverySystem {
     // 3. Spin, bob and collect the optional route stars
     this._updateStars(delta, elapsedTime);
 
-    // 4. Update sparkle particle effects
+    // 4. Update next-target guidance particle flow (Ghost of Tsushima guiding wind)
+    if (this.guidanceFlow) {
+      const forward = new THREE.Vector3(
+        -Math.sin(this.sleighController.rotationY || 0),
+        0,
+        -Math.cos(this.sleighController.rotationY || 0)
+      );
+      this.guidanceFlow.update(delta, sleighPos, forward);
+    }
+
+    // 5. Update sparkle particle effects
     for (let i = this.activeSparkles.length - 1; i >= 0; i--) {
       const sp = this.activeSparkles[i];
       sp.age += delta;
@@ -1229,7 +1287,7 @@ export class DeliverySystem {
       houseData.marker.userData.isFading = true;
     }
 
-    // Look up the next target if available to subtly bias chimney burst drift
+    // Look up the next target if available to subtly bias chimney burst drift and launch particle flow
     let nextTarget = null;
     if (this.deliveriesMade < this.deliveriesRequired) {
       nextTarget = this.runTargets[this.deliveriesMade];
@@ -1243,6 +1301,17 @@ export class DeliverySystem {
     soundManager.playSuccess();
     if (this.giftDropMarker) this.giftDropMarker.burst();
 
+    // Trigger golden guiding wind stream from Santa toward the next rooftop marker
+    if (nextTarget && this.sleighController && this.guidanceFlow) {
+      const sleighPos = this.sleighController.position;
+      const forward = new THREE.Vector3(
+        -Math.sin(this.sleighController.rotationY || 0),
+        0,
+        -Math.cos(this.sleighController.rotationY || 0)
+      );
+      this.guidanceFlow.setTarget(sleighPos, forward, nextTarget.worldPos);
+    }
+
     this.showBanner(
       `GIFT DELIVERED! +${points} PTS • ${this.deliveriesMade}/${this.deliveriesRequired}`,
       'success'
@@ -1254,6 +1323,7 @@ export class DeliverySystem {
 
     clearTimeout(this._nextTargetTimeout);
     clearTimeout(this._finishTimeout);
+    // Don't clear guidance flow here so the wind continues guiding the player during the transition to the next target
 
     if (this.deliveriesMade >= this.deliveriesRequired) {
       this._finishTimeout = setTimeout(() => this._finishRun(true), 1100);
@@ -1280,6 +1350,9 @@ export class DeliverySystem {
   startRun(resetFlight = true) {
     clearTimeout(this._nextTargetTimeout);
     clearTimeout(this._finishTimeout);
+    if (this.guidanceFlow) {
+      this.guidanceFlow.clear();
+    }
     clearTimeout(this._bannerTimeout);
     this._nextTargetTimeout = null;
     this._finishTimeout = null;
@@ -1291,6 +1364,9 @@ export class DeliverySystem {
     this.activeGifts.length = 0;
     this.activeSparkles.forEach((sp) => this.scene.remove(sp.mesh));
     this.activeSparkles.length = 0;
+    if (this.guidanceFlow) {
+      this.guidanceFlow.clear();
+    }
 
     // Reset every registered house and remove all markers
     this.trackedHouses.forEach((houseData) => {
@@ -1367,79 +1443,44 @@ export class DeliverySystem {
       return;
     }
 
-    const byDistance = (a, b) => {
-      const da = Math.hypot(a.worldPos.x - origin.x, a.worldPos.z - origin.z);
-      const db = Math.hypot(b.worldPos.x - origin.x, b.worldPos.z - origin.z);
-      return da - db;
-    };
-
-    const center = all.filter((h) => h.chunkKey === '0,0').sort(byDistance);
-    const outposts = all.filter((h) => h.chunkKey !== '0,0').sort(byDistance);
-
-    // Four signature village roofs, then a greedy nearest-neighbour ordering
-    // through them so the opening deliveries form a readable loop.
+    // Balanced random rooftop selection across loaded chunks with enjoyable flight separation
+    // distance (7.5m - 12.5m) so Santa naturally glides between village rooftops in ~4-6 seconds.
     const route = [];
-    const remaining = center.slice(0, 4);
+    const usedIds = new Set();
     let cursor = origin;
+    const minDistance = 7.5;  // Comfortable separation in meters
+    const maxDistance = 14.0; // Avoid excessively distant outliers
 
-    while (remaining.length > 0 && route.length < 4) {
-      let bestIndex = 0;
-      let bestDist = Infinity;
-      for (let i = 0; i < remaining.length; i++) {
-        const d = Math.hypot(
-          remaining[i].worldPos.x - cursor.x,
-          remaining[i].worldPos.z - cursor.z
-        );
-        if (d < bestDist) {
-          bestDist = d;
-          bestIndex = i;
-        }
-      }
-      const picked = remaining.splice(bestIndex, 1)[0];
-      route.push(picked);
-      cursor = picked.worldPos;
-    }
+    while (route.length < this.deliveriesRequired) {
+      // Find all unused houses within the ideal distance band (7.5m - 14.0m)
+      let candidates = all.filter((h) => {
+        if (usedIds.has(h.houseId)) return false;
+        const d = Math.hypot(h.worldPos.x - cursor.x, h.worldPos.z - cursor.z);
+        return d >= minDistance && d <= maxDistance;
+      });
 
-    // Final delivery is an outpost just outside the village, giving the run a
-    // short "leave home" beat without adding navigation friction.
-    const used = new Set(route.map((h) => h.houseId));
-    const remainingOutposts = outposts.filter((h) => !used.has(h.houseId));
-    while (route.length < this.deliveriesRequired && remainingOutposts.length > 0) {
-      let bestIndex = 0;
-      let bestDist = Infinity;
-      for (let i = 0; i < remainingOutposts.length; i++) {
-        const d = Math.hypot(
-          remainingOutposts[i].worldPos.x - cursor.x,
-          remainingOutposts[i].worldPos.z - cursor.z
-        );
-        if (d < bestDist) {
-          bestDist = d;
-          bestIndex = i;
-        }
+      // If strict distance band yields no candidates, accept any house at least minDistance away
+      if (candidates.length === 0) {
+        candidates = all.filter((h) => {
+          if (usedIds.has(h.houseId)) return false;
+          const d = Math.hypot(h.worldPos.x - cursor.x, h.worldPos.z - cursor.z);
+          return d >= minDistance;
+        });
       }
-      const picked = remainingOutposts.splice(bestIndex, 1)[0];
-      route.push(picked);
-      cursor = picked.worldPos;
-    }
 
-    // If no neighbouring outposts have streamed in yet, fall back to the extra
-    // village rooftops so the run always contains five reachable deliveries.
-    const usedIds = new Set(route.map((h) => h.houseId));
-    const remainingCenters = center.filter((h) => !usedIds.has(h.houseId));
-    while (route.length < this.deliveriesRequired && remainingCenters.length > 0) {
-      let bestIndex = 0;
-      let bestDist = Infinity;
-      for (let i = 0; i < remainingCenters.length; i++) {
-        const d = Math.hypot(
-          remainingCenters[i].worldPos.x - cursor.x,
-          remainingCenters[i].worldPos.z - cursor.z
-        );
-        if (d < bestDist) {
-          bestDist = d;
-          bestIndex = i;
-        }
+      // If still empty, accept any unused house
+      if (candidates.length === 0) {
+        candidates = all.filter((h) => !usedIds.has(h.houseId));
       }
-      const picked = remainingCenters.splice(bestIndex, 1)[0];
+
+      // If all houses have been used, break
+      if (candidates.length === 0) break;
+
+      // Pick randomly from the eligible candidates
+      const randomIndex = Math.floor(Math.random() * candidates.length);
+      const picked = candidates[randomIndex];
+
+      usedIds.add(picked.houseId);
       route.push(picked);
       cursor = picked.worldPos;
     }
@@ -1455,25 +1496,25 @@ export class DeliverySystem {
       next = this.runTargets.find((target) => !target.delivered) || null;
     }
 
-    // Chunks stream while the player flies. If the route was shorter than five
-    // at start, adopt the nearest newly registered rooftop instead of ending.
+    // Chunks stream while the player flies. If the route was shorter than required,
+    // adopt a random distant newly registered rooftop instead of ending.
     if (!next) {
       const usedIds = new Set(this.runTargets.map((target) => target.houseId));
-      const candidates = Array.from(this.trackedHouses.values())
-        .filter((house) => !house.delivered && !usedIds.has(house.houseId));
       const sleighPos = this.sleighController.position;
-      let bestDist = Infinity;
-      for (let i = 0; i < candidates.length; i++) {
-        const d = Math.hypot(
-          candidates[i].worldPos.x - sleighPos.x,
-          candidates[i].worldPos.z - sleighPos.z
-        );
-        if (d < bestDist) {
-          bestDist = d;
-          next = candidates[i];
-        }
+      let candidates = Array.from(this.trackedHouses.values())
+        .filter((house) => !house.delivered && !usedIds.has(house.houseId));
+
+      // Prefer houses at comfortable distance (7.5m - 14.0m away)
+      const distantCandidates = candidates.filter((h) => {
+        const d = Math.hypot(h.worldPos.x - sleighPos.x, h.worldPos.z - sleighPos.z);
+        return d >= 7.5 && d <= 14.0;
+      });
+
+      const pool = distantCandidates.length > 0 ? distantCandidates : candidates;
+      if (pool.length > 0) {
+        next = pool[Math.floor(Math.random() * pool.length)];
+        this.runTargets.push(next);
       }
-      if (next) this.runTargets.push(next);
     }
 
     if (!next) {
@@ -1504,14 +1545,14 @@ export class DeliverySystem {
       this.giftDropMarker.setVisible(true);
       houseData.marker = this.giftDropMarker.group;
 
-      // Subtle environmental hint: emit small cluster of warm golden sparkles drifting toward next house
-      if (this.sleighController && this.runActive) {
+      // Launch / update the golden guiding wind stream toward the newly activated target
+      if (this.sleighController && this.runActive && this.guidanceFlow) {
         const forward = new THREE.Vector3(
           -Math.sin(this.sleighController.rotationY || 0),
           0,
           -Math.cos(this.sleighController.rotationY || 0)
         );
-        this._spawnDirectionalSparkles(this.sleighController.position, houseData.worldPos, forward);
+        this.guidanceFlow.setTarget(this.sleighController.position, forward, houseData.worldPos);
       }
     } else {
       if (this.giftDropMarker) {
@@ -1533,6 +1574,9 @@ export class DeliverySystem {
 
     clearTimeout(this._nextTargetTimeout);
     clearTimeout(this._finishTimeout);
+    if (this.guidanceFlow) {
+      this.guidanceFlow.clear();
+    }
 
     // Let the final beacon dissolve instead of snapping off
     if (this.activeTarget?.marker?.userData) {
@@ -1715,11 +1759,11 @@ export class DeliverySystem {
           ? this.chunkSystem.getHeight(posX, posZ)
           : 0.5;
 
-        // Safe flight elevation: elevated comfortably above ground & trees (+0.95m to +1.35m)
-        const elevationOffset = 0.95 + ((starId % 3) * 0.14);
-        let finalY = terrainY + elevationOffset;
+        // Precise flight elevation: align directly with locked cruising altitude (0.58m above terrain)
+        const targetClearance = this.sleighController?.targetFlightAltitude || 0.58;
+        let finalY = terrainY + targetClearance;
 
-        // Ensure clearance from nearby house colliders
+        // Ensure clearance over nearby house colliders
         if (this.chunkSystem?.getHouseCollidersNear) {
           const colliders = this.chunkSystem.getHouseCollidersNear(posX, posZ, 2.2);
           if (colliders && colliders.length > 0) {
@@ -1727,7 +1771,7 @@ export class DeliverySystem {
             for (let c = 0; c < colliders.length; c++) {
               if (colliders[c].max.y > maxRoofY) maxRoofY = colliders[c].max.y;
             }
-            finalY = Math.max(finalY, maxRoofY + 0.65);
+            finalY = Math.max(finalY, maxRoofY + targetClearance);
           }
         }
 
@@ -1746,13 +1790,18 @@ export class DeliverySystem {
         group.name = `RouteStar_${starId}`;
         group.position.set(posX, finalY, posZ);
 
+        // 1. Faceted golden outer star
         const starMesh = new THREE.Mesh(this._starGeo, this._starMat);
         starMesh.rotation.z = (starId * 0.65) % Math.PI;
         group.add(starMesh);
 
-        // Soft ambient halo (subtle, non-blinding)
+        // 2. Diamond sparkling core
+        const coreMesh = new THREE.Mesh(this._starCoreGeo, this._starCoreMat);
+        group.add(coreMesh);
+
+        // 3. Soft ambient golden aura
         const halo = new THREE.Sprite(this._starHaloMat);
-        halo.scale.set(0.30, 0.30, 0.30);
+        halo.scale.set(0.38, 0.38, 0.38);
         group.add(halo);
 
         this.starsGroup.add(group);
@@ -1760,6 +1809,7 @@ export class DeliverySystem {
           id: starId,
           group,
           mesh: starMesh,
+          core: coreMesh,
           baseY: finalY,
           phase: starId * 1.15,
           collected: false
@@ -1780,18 +1830,38 @@ export class DeliverySystem {
 
     for (let i = this.activeStars.length - 1; i >= 0; i--) {
       const star = this.activeStars[i];
-      // Gentle, serene rotation and subtle floating bob
-      star.mesh.rotation.y += delta * 1.5;
-      star.group.position.y = star.baseY + Math.sin(elapsedTime * 2.0 + star.phase) * 0.035;
-
       if (!this.runActive || star.collected) continue;
+
+      // Serene multi-axis rotation & floating bob
+      star.mesh.rotation.y += delta * 1.8;
+      star.mesh.rotation.x = Math.sin(elapsedTime * 1.5 + star.phase) * 0.15;
+      if (star.core) {
+        star.core.rotation.y -= delta * 2.5;
+        star.core.rotation.z += delta * 1.2;
+      }
+
+      // Smooth floating hover bob
+      const targetBaseY = star.baseY + Math.sin(elapsedTime * 2.2 + star.phase) * 0.045;
 
       const dx = sleighPos.x - star.group.position.x;
       const dy = sleighPos.y - star.group.position.y;
       const dz = sleighPos.z - star.group.position.z;
+      const distSq = dx * dx + dy * dy + dz * dz;
+      const dist = Math.sqrt(distSq);
 
-      // Smooth spherical proximity pickup (~0.75m radius)
-      if (dx * dx + dz * dz <= 0.85 * 0.85 && Math.abs(dy) <= 0.70) {
+      // Smooth Magnetic Attraction ("Coin Magnet" within 1.6m range)
+      if (dist < 1.6 && dist > 0.001) {
+        const pullSpeed = THREE.MathUtils.clamp((1.6 - dist) * 7.5, 2.0, 10.0);
+        star.group.position.x += (dx / dist) * pullSpeed * delta;
+        star.group.position.y += (dy / dist) * pullSpeed * delta;
+        star.group.position.z += (dz / dist) * pullSpeed * delta;
+      } else {
+        // Natural return to hover anchor if out of magnetic pull
+        star.group.position.y += (targetBaseY - star.group.position.y) * Math.min(delta * 4.0, 1.0);
+      }
+
+      // Pickup trigger (0.60m spherical proximity)
+      if (dist <= 0.60) {
         this._collectStar(star, i);
       }
     }
@@ -1817,7 +1887,7 @@ export class DeliverySystem {
   }
 
   _spawnStarSparkleBurst(worldPos) {
-    const count = this.isMobile ? 12 : 20;
+    const count = this.isMobile ? 24 : 45;
     const geo = new THREE.BufferGeometry();
     const positions = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
@@ -1828,18 +1898,23 @@ export class DeliverySystem {
       positions[i * 3 + 1] = worldPos.y;
       positions[i * 3 + 2] = worldPos.z;
 
-      // Soft warm gold and star-white sparkle colors
-      const isGold = Math.random() > 0.3;
-      colors[i * 3]     = 1.0;
-      colors[i * 3 + 1] = isGold ? 0.82 : 0.95;
-      colors[i * 3 + 2] = isGold ? 0.28 : 0.85;
+      // Radiant festive gold, warm champagne, and diamond starburst
+      const colorTier = Math.random();
+      if (colorTier > 0.6) {
+        colors[i * 3] = 1.0; colors[i * 3 + 1] = 0.98; colors[i * 3 + 2] = 0.85; // Diamond
+      } else if (colorTier > 0.25) {
+        colors[i * 3] = 1.0; colors[i * 3 + 1] = 0.85; colors[i * 3 + 2] = 0.25; // Gold
+      } else {
+        colors[i * 3] = 1.0; colors[i * 3 + 1] = 0.60; colors[i * 3 + 2] = 0.12; // Amber
+      }
 
-      const angle = Math.random() * Math.PI * 2;
-      const speed = 1.6 + Math.random() * 2.4;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = (Math.random() - 0.5) * Math.PI;
+      const speed = 1.8 + Math.random() * 3.2;
       velocities.push({
-        x: Math.cos(angle) * speed,
-        y: 0.6 + Math.random() * 2.2,
-        z: Math.sin(angle) * speed
+        x: Math.cos(phi) * Math.cos(theta) * speed,
+        y: Math.sin(phi) * speed * 0.8 + 0.8,
+        z: Math.cos(phi) * Math.sin(theta) * speed
       });
     }
 
@@ -1847,10 +1922,10 @@ export class DeliverySystem {
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
     const mat = new THREE.PointsMaterial({
-      size: this.isMobile ? 0.22 : 0.28,
+      size: this.isMobile ? 0.25 : 0.34,
       vertexColors: true,
       transparent: true,
-      opacity: 0.95,
+      opacity: 1.0,
       blending: THREE.AdditiveBlending,
       depthWrite: false
     });
@@ -1862,7 +1937,7 @@ export class DeliverySystem {
       mesh: sparkleMesh,
       velocities: velocities,
       age: 0.0,
-      maxAge: 0.38
+      maxAge: 0.48
     });
   }
 

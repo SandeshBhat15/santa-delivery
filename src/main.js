@@ -1069,8 +1069,8 @@ const snowFragmentShader = `
     float alpha = clamp(1.0 - r2, 0.0, 1.0);
     alpha = alpha * alpha; // Smooth natural falloff
 
-    // Coloration: Crisp ice-white core
-    vec3 flakeColor = vec3(1.0, 1.0, 1.0);
+    // Coloration: Crisp winter matte snow (held under bloom threshold 0.30 so snowfall never glows)
+    vec3 flakeColor = vec3(0.24, 0.26, 0.28);
 
     float finalAlpha = alpha * uOpacity * vDepthFade;
     if (finalAlpha < 0.005) discard;
