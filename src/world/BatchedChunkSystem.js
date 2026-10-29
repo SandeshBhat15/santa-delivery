@@ -3,44 +3,85 @@ import * as THREE from 'three';
 export const USE_LEGACY = typeof window !== 'undefined' && window.location.search.includes('legacy=1');
 
 /**
- * BatchedChunkSystem — Ultra-Low Draw Call Global Instanced World System
+ * BatchedChunkSystem — Ultra-Low Draw Call Dynamic Chunk Streaming World System
  *
- * Implements Item 4 fallback architecture specified by user:
- * - Exactly ONE InstancedMesh per template mesh definition across the whole world (~20 total).
- * - Shares materials natively without any batching attribute mismatch hazards.
- * - frustumCulled = false to eliminate any culling drop-outs.
- * - Full visual fidelity matching the legacy path on desktop & mobile:
- *   houses (2,725 instances), foliage/trees (15,725 instances), cliffs (400 instances),
- *   terrain (25 instances), rock (25 instances), lake (25 instances).
- * - Total draw calls: ~20 in main pass + ~10-15 in shadow pass = ~35-40 draw calls total!
- * - Sync initialization: 100% synchronous, so sleighController and deliverySystem initialize immediately.
+ * Implements the exact Dynamic Chunk Streaming architecture:
+ * 1. terrain.glb loaded & parsed EXACTLY ONCE at startup.
+ *    - Keeps shared geometries, materials, and tile instance matrices as Float32Array per mesh type.
+ *    - Extracts per-tile gameplay data (house colliders, height grid).
+ *    - Never adds GLTF root to the scene.
+ * 2. Starts with ONLY the chunks needed for initial camera view and player surroundings.
+ * 3. Chunks are lightweight records: grid coordinates (cx, cz), slotIndex in shared instance buffers.
+ *    - Generating a chunk = copying cached tile matrices into shared instance buffer at slotIndex * count * 16,
+ *      offsetting x & z by chunk world origin, and registering colliders/targets.
+ *    - Zero GLB loading, zero object cloning, zero allocations in steady state.
+ * 4. Dynamic streaming:
+ *    - Throttled check (at most every 200 ms unless camera moves across chunk boundary or rotates > 15 deg).
+ *    - Needed set: chunks intersecting camera frustum up to fog/far distance (or 75m) + Chebyshev radius 1 around player.
+ *    - Missing needed chunks queued and generated (nearest & view-aligned first, at most 1 per frame).
+ *    - Chunks unneeded for > 2.0s and > 1 chunk outside needed set are destroyed.
+ * 5. Destroying a chunk:
+ *    - Swap-remove slot with the last active chunk in the shared instance buffer.
+ *    - Unregister colliders, glow lights, DeliverySystem targets.
+ *    - Reusable chunk record returned to pool. Shared geometries and materials are NEVER disposed.
+ * 6. Rendering:
+ *    - ONE InstancedMesh per mesh type for the whole world (~20 total).
+ *    - Pre-sized for max capacity (MAX_CHUNKS = 20 chunks).
+ *    - instMesh.count = activeChunks * baseCount.
+ *    - instanceMatrix.needsUpdate = true only when loaded set changes.
+ *    - frustumCulled = false with bounding sphere encompassing active area.
+ * 7. Console logging:
+ *    - Emits: [Chunk] <cx,cz> | <GENERATED|DESTROYED> | Loaded: <N> | Instances: H:<h> T:<t> C:<c> G:<g> | Calls: <calls> | Memory: Geo:<geo> Tex:<tex>
  */
 export class BatchedChunkSystem {
   constructor(scene, options = {}) {
     this.scene = scene;
     this.chunkSize = 20.0;
-    this.loadRadius = options.loadRadius || 2;
+    this.maxLoadedChunks = options.maxLoadedChunks || 20; // Capacity buffer (typically 7-12 active)
     this.isMobile = options.isMobile ?? false;
+
+    // Active loaded chunks: Map of key ("cx,cz") -> ChunkRecord
     this.chunks = new Map();
+    // Slot array: slotIndex (0 .. activeChunkCount - 1) -> ChunkRecord
+    this.slots = new Array(this.maxLoadedChunks).fill(null);
+    this.activeChunkCount = 0;
+
+    // Reusable chunk record pool
+    this.chunkPool = [];
+
+    // Template data extracted from terrain.glb
+    this.meshDefinitions = [];
     this.templateHouseColliders = [];
     this.sharedMaterials = new Map();
     this.heightGridSize = 65;
     this.heightGrid = null;
     this.edgeHeight = 0.160;
 
+    // World render group holding the ~20 global InstancedMeshes
     this.worldGroup = new THREE.Group();
     this.worldGroup.name = 'BatchedWorldGroup';
     this.scene.add(this.worldGroup);
 
-    this.meshDefinitions = [];
     this.instancedMeshes = [];
-    this.activeChunkCoords = new Set();
 
-    // Fast vector scratchpad
+    // Streaming queues and update throttle state
+    this.generationQueue = [];
+    this.lastStreamCheckTime = 0;
+    this.lastStreamCamPos = new THREE.Vector3();
+    this.lastStreamCamQuat = new THREE.Quaternion();
+    this.lastFocusChunkX = NaN;
+    this.lastFocusChunkZ = NaN;
+
+    // Frustum and camera scratch objects
+    this._projScreenMatrix = new THREE.Matrix4();
+    this._frustum = new THREE.Frustum();
+    this._tempBox = new THREE.Box3();
+    this._tempVec = new THREE.Vector3();
     this._camPos = new THREE.Vector3();
+    this._camDir = new THREE.Vector3();
     this._sleighPos = new THREE.Vector3();
 
-    // Pre-calculated instance count stats
+    // Stats
     this.stats = {
       houses: 0,
       trees: 0,
@@ -180,12 +221,14 @@ export class BatchedChunkSystem {
   }
 
   /**
-   * Synchronous initialization from terrain GLTF root
+   * Synchronously parse terrain GLTF root once, caching geometries, materials and raw matrices.
    */
   initFromGLTF(gltfRoot) {
     this.meshDefinitions = [];
     this.templateHouseColliders = [];
     this.chunks.clear();
+    this.slots.fill(null);
+    this.activeChunkCount = 0;
 
     gltfRoot.updateMatrixWorld(true);
 
@@ -220,7 +263,7 @@ export class BatchedChunkSystem {
         matrices.push(child.matrix.clone());
       }
 
-      // Vertex boundary stitching for ground geometry to ensure 100% gap-free chunk tiling
+      // Vertex boundary stitching for ground geometry to guarantee 100% gap-free chunk tiling
       if (isGround && child.geometry && child.geometry.attributes && child.geometry.attributes.position) {
         const pAttr = child.geometry.attributes.position;
         const baseM = matrices[0] || child.matrix;
@@ -256,6 +299,12 @@ export class BatchedChunkSystem {
       const isTreeOrFoliage = name.toLowerCase().includes('winter_forest') || name.toLowerCase().includes('tree');
       const isProminentCaster = isHouse || isTreeOrFoliage || name.includes('cliffbig');
 
+      // Convert matrices to flat Float32Array for high-speed block copying
+      const rawMatrixData = new Float32Array(matrices.length * 16);
+      for (let i = 0; i < matrices.length; i++) {
+        matrices[i].toArray(rawMatrixData, i * 16);
+      }
+
       const refInstMesh = new THREE.InstancedMesh(child.geometry, child.material, matrices.length);
       refInstMesh.name = 'Ref_' + (child.name || 'Mesh');
       refInstMesh.visible = false;
@@ -266,6 +315,8 @@ export class BatchedChunkSystem {
         material: child.material,
         instMesh: refInstMesh,
         baseMatrices: matrices,
+        rawMatrixData,
+        baseCount: matrices.length,
         category,
         isHouse,
         isFoliage,
@@ -276,125 +327,387 @@ export class BatchedChunkSystem {
 
     this.buildHeightGrid(gltfRoot);
 
-    // Pre-build metadata for all 25 chunks (loadRadius = 2 => [-2..2])
-    const r = this.loadRadius;
-    const chunkOrigin = new THREE.Vector3();
-    for (let cx = -r; cx <= r; cx++) {
-      for (let cz = -r; cz <= r; cz++) {
-        const key = cx + ',' + cz;
-        this.activeChunkCoords.add(key);
-        const wx = cx * this.chunkSize;
-        const wz = cz * this.chunkSize;
-        chunkOrigin.set(wx, 0, wz);
-        const biome = this.getChunkBiome(cx, cz);
-        const houseColliders = [];
-        for (let i = 0; i < this.templateHouseColliders.length; i++) {
-          const b = this.templateHouseColliders[i].clone();
-          b.min.add(chunkOrigin);
-          b.max.add(chunkOrigin);
-          houseColliders.push(b);
-        }
-        this.chunks.set(key, { key, cx, cz, houseColliders, biome, meshes: [] });
-      }
-    }
-
-    // Build Global InstancedMeshes (ONE per mesh type across the whole 25-chunk world)
-    this.buildGlobalInstancedMeshes();
+    // Pre-allocate the ~20 global InstancedMeshes with capacity for MAX_CHUNKS
+    this.createGlobalInstancedMeshes();
   }
 
-  buildGlobalInstancedMeshes() {
-    // Clear any previous meshes
+  createGlobalInstancedMeshes() {
     this.instancedMeshes.forEach(im => {
       this.worldGroup.remove(im);
       if (im.dispose) im.dispose();
     });
     this.instancedMeshes = [];
 
-    const chunkM = new THREE.Matrix4();
-    const tempM = new THREE.Matrix4();
-    const totalChunks = this.chunks.size; // 25
-
-    let totalHouseInst = 0;
-    let totalTreeInst = 0;
-    let totalCliffInst = 0;
-    let totalGroundInst = 0;
-    let totalWorldTris = 0;
-
     for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
       const def = this.meshDefinitions[defIdx];
-      const baseCount = def.baseMatrices ? def.baseMatrices.length : 0;
-      if (baseCount === 0) continue;
+      const maxInstances = def.baseCount * this.maxLoadedChunks;
 
-      const totalInstances = baseCount * totalChunks;
-      const instMesh = new THREE.InstancedMesh(def.geometry, def.material, totalInstances);
+      const instMesh = new THREE.InstancedMesh(def.geometry, def.material, maxInstances);
       instMesh.name = 'Global_' + (def.name || 'Mesh');
       instMesh.castShadow = def.castShadow;
       instMesh.receiveShadow = def.receiveShadow;
-      instMesh.frustumCulled = false; // Guarantees 0 culling dropouts / empty scene bugs
+      instMesh.frustumCulled = false; // Bounding sphere encompasses loaded area
+
+      // Start with 0 active instances until chunks are generated
+      instMesh.count = 0;
+      instMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 
       instMesh.userData = {
+        defIndex: defIdx,
         defName: def.name,
         category: def.category,
-        isHouse: def.isHouse,
-        instanceCount: totalInstances
+        baseCount: def.baseCount
       };
-
-      let instIdx = 0;
-      for (const [key, chunkData] of this.chunks.entries()) {
-        const { cx, cz } = chunkData;
-        const wx = cx * this.chunkSize;
-        const wz = cz * this.chunkSize;
-        chunkM.identity();
-        chunkM.setPosition(wx, 0, wz);
-
-        for (let b = 0; b < baseCount; b++) {
-          tempM.multiplyMatrices(chunkM, def.baseMatrices[b]);
-          instMesh.setMatrixAt(instIdx, tempM);
-          instIdx++;
-        }
-
-        // Store reference in chunk meshes list for compatibility with mobileOptimizer audits
-        chunkData.meshes.push(instMesh);
-      }
-
-      instMesh.instanceMatrix.needsUpdate = true;
-      instMesh.computeBoundingBox();
-      instMesh.computeBoundingSphere();
 
       this.worldGroup.add(instMesh);
       this.instancedMeshes.push(instMesh);
-
-      // Accumulate stats
-      const triPerInst = def.geometry.index ? def.geometry.index.count / 3 : def.geometry.attributes.position.count / 3;
-      totalWorldTris += Math.round(triPerInst * totalInstances);
-
-      if (def.category === 'house') totalHouseInst += totalInstances;
-      else if (def.category === 'foliage') totalTreeInst += totalInstances;
-      else if (def.category === 'cliff') totalCliffInst += totalInstances;
-      else totalGroundInst += totalInstances;
     }
-
-    this.stats.houses = totalHouseInst;
-    this.stats.trees = totalTreeInst;
-    this.stats.cliffs = totalCliffInst;
-    this.stats.ground = totalGroundInst;
-    this.stats.totalTriangles = totalWorldTris;
-
-    console.log(`[BatchedChunkSystem] Initialized ${this.instancedMeshes.length} global InstancedMeshes across 25 chunks:`);
-    console.log(`  * Houses:   ${totalHouseInst.toLocaleString()} instances (4 types)`);
-    console.log(`  * Trees:    ${totalTreeInst.toLocaleString()} instances (10 types)`);
-    console.log(`  * Cliffs:   ${totalCliffInst.toLocaleString()} instances (3 types)`);
-    console.log(`  * Ground:   ${totalGroundInst.toLocaleString()} instances (terrain, rocks, lake)`);
-    console.log(`  * Total Triangles: ${totalWorldTris.toLocaleString()}`);
   }
 
+  /**
+   * Acquire a chunk record from pool or create new
+   */
+  _acquireChunkRecord(cx, cz) {
+    let chunk = this.chunkPool.pop();
+    if (!chunk) {
+      chunk = {
+        key: '',
+        cx: 0,
+        cz: 0,
+        slotIndex: -1,
+        biome: null,
+        houseColliders: [],
+        meshes: this.instancedMeshes, // Kept for optimizer compatibility
+        unneededSince: 0
+      };
+    }
+    chunk.key = cx + ',' + cz;
+    chunk.cx = cx;
+    chunk.cz = cz;
+    chunk.slotIndex = -1;
+    chunk.biome = this.getChunkBiome(cx, cz);
+    chunk.unneededSince = 0;
+    chunk.meshes = this.instancedMeshes;
+
+    // Instantiate house colliders offset to world space
+    const wx = cx * this.chunkSize;
+    const wz = cz * this.chunkSize;
+    chunk.houseColliders.length = 0;
+    for (let i = 0; i < this.templateHouseColliders.length; i++) {
+      const srcBox = this.templateHouseColliders[i];
+      const b = srcBox.clone();
+      b.min.x += wx;
+      b.min.z += wz;
+      b.max.x += wx;
+      b.max.z += wz;
+      chunk.houseColliders.push(b);
+    }
+
+    return chunk;
+  }
+
+  _releaseChunkRecord(chunk) {
+    chunk.houseColliders.length = 0;
+    chunk.unneededSince = 0;
+    this.chunkPool.push(chunk);
+  }
+
+  /**
+   * Generate chunk at (cx, cz): allocates a slot, copies template matrices with world offset,
+   * registers gameplay objects, and marks buffer updates.
+   */
+  generateChunk(cx, cz) {
+    const key = cx + ',' + cz;
+    if (this.chunks.has(key)) return;
+
+    if (this.activeChunkCount >= this.maxLoadedChunks) {
+      console.warn(`[BatchedChunkSystem] Max chunk capacity reached (${this.maxLoadedChunks}). Cannot generate ${key}`);
+      return;
+    }
+
+    const slot = this.activeChunkCount;
+    this.activeChunkCount++;
+
+    const chunk = this._acquireChunkRecord(cx, cz);
+    chunk.slotIndex = slot;
+    this.chunks.set(key, chunk);
+    this.slots[slot] = chunk;
+
+    const wx = cx * this.chunkSize;
+    const wz = cz * this.chunkSize;
+
+    // Copy cached tile matrices into the shared instance buffers at the allocated slot
+    for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
+      const def = this.meshDefinitions[defIdx];
+      const instMesh = this.instancedMeshes[defIdx];
+      const baseCount = def.baseCount;
+      const src = def.rawMatrixData;
+      const dst = instMesh.instanceMatrix.array;
+      const targetOffset = slot * baseCount * 16;
+
+      // Direct memory copy of base matrix batch
+      dst.set(src, targetOffset);
+
+      // Offset the translation column (elements 12, 13, 14 of each 4x4 matrix)
+      for (let i = 0; i < baseCount; i++) {
+        const matOffset = targetOffset + i * 16;
+        dst[matOffset + 12] += wx;
+        dst[matOffset + 14] += wz;
+      }
+
+      instMesh.count = this.activeChunkCount * baseCount;
+      instMesh.instanceMatrix.needsUpdate = true;
+    }
+
+    // Register with DeliverySystem
+    if (window.deliverySystem && window.deliverySystem.syncChunkTargets) {
+      window.deliverySystem.syncChunkTargets(key, cx, cz);
+    }
+
+    this._updateBoundsAndStats();
+    this._logChunkChange(key, 'GENERATED');
+  }
+
+  /**
+   * Destroy chunk: swaps last active slot into freed slot to keep buffers compact,
+   * unregisters colliders & delivery targets, and returns record to pool.
+   */
+  destroyChunk(key) {
+    const chunk = this.chunks.get(key);
+    if (!chunk) return;
+
+    const freedSlot = chunk.slotIndex;
+    const lastSlot = this.activeChunkCount - 1;
+
+    // If freed slot is not the last slot, swap-remove with the last slot
+    if (freedSlot < lastSlot) {
+      const movingChunk = this.slots[lastSlot];
+
+      for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
+        const def = this.meshDefinitions[defIdx];
+        const instMesh = this.instancedMeshes[defIdx];
+        const baseCount = def.baseCount;
+        const buf = instMesh.instanceMatrix.array;
+
+        const srcOffset = lastSlot * baseCount * 16;
+        const dstOffset = freedSlot * baseCount * 16;
+        const elementsToCopy = baseCount * 16;
+
+        // Copy last chunk's instance data into the freed slot
+        buf.copyWithin(dstOffset, srcOffset, srcOffset + elementsToCopy);
+      }
+
+      movingChunk.slotIndex = freedSlot;
+      this.slots[freedSlot] = movingChunk;
+    }
+
+    this.slots[lastSlot] = null;
+    this.activeChunkCount--;
+    this.chunks.delete(key);
+
+    // Update instanceMesh counts and mark needsUpdate
+    for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
+      const def = this.meshDefinitions[defIdx];
+      const instMesh = this.instancedMeshes[defIdx];
+      instMesh.count = this.activeChunkCount * def.baseCount;
+      instMesh.instanceMatrix.needsUpdate = true;
+    }
+
+    // Unload targets from DeliverySystem
+    if (window.deliverySystem && window.deliverySystem.unloadChunkTargets) {
+      window.deliverySystem.unloadChunkTargets(key);
+    }
+
+    this._updateBoundsAndStats();
+    this._logChunkChange(key, 'DESTROYED');
+
+    this._releaseChunkRecord(chunk);
+  }
+
+  _updateBoundsAndStats() {
+    let totalHouse = 0;
+    let totalTree = 0;
+    let totalCliff = 0;
+    let totalGround = 0;
+    let totalTris = 0;
+
+    for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
+      const def = this.meshDefinitions[defIdx];
+      const instMesh = this.instancedMeshes[defIdx];
+      const count = instMesh.count;
+
+      if (def.category === 'house') totalHouse += count;
+      else if (def.category === 'foliage') totalTree += count;
+      else if (def.category === 'cliff') totalCliff += count;
+      else totalGround += count;
+
+      const triPerInst = def.geometry.index ? def.geometry.index.count / 3 : def.geometry.attributes.position.count / 3;
+      totalTris += Math.round(triPerInst * count);
+
+      // Recompute bounding sphere for instanced mesh
+      instMesh.computeBoundingSphere();
+    }
+
+    this.stats.houses = totalHouse;
+    this.stats.trees = totalTree;
+    this.stats.cliffs = totalCliff;
+    this.stats.ground = totalGround;
+    this.stats.totalTriangles = totalTris;
+  }
+
+  _logChunkChange(key, action) {
+    const renderer = window.game?.renderer;
+    const calls = renderer?.info?.render?.calls ?? 0;
+    const geo = renderer?.info?.memory?.geometries ?? 0;
+    const tex = renderer?.info?.memory?.textures ?? 0;
+
+    console.log(`[Chunk] ${key} | ${action} | Loaded: ${this.activeChunkCount} | Instances: H:${this.stats.houses} T:${this.stats.trees} C:${this.stats.cliffs} G:${this.stats.ground} | Calls: ${calls} | Memory: Geo:${geo} Tex:${tex}`);
+  }
+
+  /**
+   * Dynamic streaming update called every frame
+   */
   update(streamFocus, camera) {
     if (!camera) return;
+
     this._camPos.copy(camera.position);
-    if (streamFocus) {
-      this._sleighPos.copy(streamFocus);
-    } else {
-      this._sleighPos.copy(camera.position);
+    camera.getWorldDirection(this._camDir);
+
+    const focusPos = streamFocus || camera.position;
+    this._sleighPos.copy(focusPos);
+
+    const now = performance.now();
+    const half = this.chunkSize * 0.5;
+    const curFocusChunkX = Math.floor((focusPos.x + half) / this.chunkSize);
+    const curFocusChunkZ = Math.floor((focusPos.z + half) / this.chunkSize);
+
+    // Fast check: entered new chunk or rotated > ~15 deg (angle > 0.26 rad)
+    const chunkChanged = (curFocusChunkX !== this.lastFocusChunkX || curFocusChunkZ !== this.lastFocusChunkZ);
+    const angleDelta = 2 * Math.acos(Math.min(1.0, Math.max(-1.0, Math.abs(camera.quaternion.dot(this.lastStreamCamQuat)))));
+    const rotatedSignificantly = angleDelta > 0.26;
+    const timeElapsed = (now - this.lastStreamCheckTime) > 200;
+
+    if (chunkChanged || rotatedSignificantly || timeElapsed || this.activeChunkCount === 0) {
+      this.lastStreamCheckTime = now;
+      this.lastStreamCamPos.copy(camera.position);
+      this.lastStreamCamQuat.copy(camera.quaternion);
+      this.lastFocusChunkX = curFocusChunkX;
+      this.lastFocusChunkZ = curFocusChunkZ;
+
+      this._recomputeNeededChunks(camera, curFocusChunkX, curFocusChunkZ, now);
+    }
+
+    // Process at most 1 chunk generation per frame to maintain silky 60 FPS
+    if (this.generationQueue.length > 0) {
+      const nextCoords = this.generationQueue.shift();
+      this.generateChunk(nextCoords.cx, nextCoords.cz);
+    }
+
+    // Check unneeded chunks for destruction (hysteresis: unneeded for > 2.0s and > 1 chunk outside needed set)
+    this._pruneUnneededChunks(now, curFocusChunkX, curFocusChunkZ);
+  }
+
+  _recomputeNeededChunks(camera, centerCx, centerCz, now) {
+    // Build camera frustum
+    this._projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    this._frustum.setFromProjectionMatrix(this._projScreenMatrix);
+
+    const neededSet = new Set();
+    const candidateChunks = [];
+    const maxRadius = 3; // Check up to 3 chunks away (~60-70m), covering frustum
+
+    const half = this.chunkSize * 0.5;
+
+    for (let dx = -maxRadius; dx <= maxRadius; dx++) {
+      for (let dz = -maxRadius; dz <= maxRadius; dz++) {
+        const cx = centerCx + dx;
+        const cz = centerCz + dz;
+        const key = cx + ',' + cz;
+
+        const isPlayerSurrounding = Math.abs(dx) <= 1 && Math.abs(dz) <= 1; // Chebyshev distance <= 1
+
+        let isNeeded = isPlayerSurrounding;
+
+        if (!isNeeded) {
+          // Test frustum intersection with chunk AABB
+          const wx = cx * this.chunkSize;
+          const wz = cz * this.chunkSize;
+          this._tempBox.min.set(wx - half, -2.0, wz - half);
+          this._tempBox.max.set(wx + half, 18.0, wz + half);
+
+          if (this._frustum.intersectsBox(this._tempBox)) {
+            // Distance limit to fog/visibility limit (~75m)
+            const dist = Math.hypot(wx - camera.position.x, wz - camera.position.z);
+            if (dist <= 75.0) {
+              isNeeded = true;
+            }
+          }
+        }
+
+        if (isNeeded) {
+          neededSet.add(key);
+
+          // If not currently loaded and not in generation queue, consider for queuing
+          if (!this.chunks.has(key)) {
+            const wx = cx * this.chunkSize;
+            const wz = cz * this.chunkSize;
+            const dist = Math.hypot(wx - camera.position.x, wz - camera.position.z);
+
+            this._tempVec.set(wx - camera.position.x, 0, wz - camera.position.z).normalize();
+            const viewDot = this._tempVec.dot(this._camDir);
+
+            candidateChunks.push({
+              cx,
+              cz,
+              key,
+              dist,
+              viewDot,
+              score: dist - viewDot * 25.0 // Nearest and best aligned with camera view vector
+            });
+          }
+        }
+      }
+    }
+
+    // Sort candidate missing chunks by priority (nearest and in front of camera)
+    candidateChunks.sort((a, b) => a.score - b.score);
+
+    // Update generation queue (prevent duplicates)
+    const existingQueueKeys = new Set(this.generationQueue.map(c => c.key));
+    for (let i = 0; i < candidateChunks.length; i++) {
+      const cand = candidateChunks[i];
+      if (!existingQueueKeys.has(cand.key)) {
+        this.generationQueue.push(cand);
+        existingQueueKeys.add(cand.key);
+      }
+    }
+
+    // Update unneeded timestamps for loaded chunks
+    for (const [key, chunk] of this.chunks.entries()) {
+      if (neededSet.has(key)) {
+        chunk.unneededSince = 0;
+      } else {
+        if (chunk.unneededSince === 0) {
+          chunk.unneededSince = now;
+        }
+      }
+    }
+  }
+
+  _pruneUnneededChunks(now, centerCx, centerCz) {
+    // Only destroy chunks if activeChunkCount > 0 and chunk has been unneeded for > 2000 ms
+    // and is > 1 chunk outside needed Chebyshev radius
+    for (const [key, chunk] of this.chunks.entries()) {
+      if (chunk.unneededSince > 0 && (now - chunk.unneededSince) > 2000) {
+        const dx = Math.abs(chunk.cx - centerCx);
+        const dz = Math.abs(chunk.cz - centerCz);
+        const outsideMargin = (dx > 2 || dz > 2);
+
+        if (outsideMargin) {
+          this.destroyChunk(key);
+          break; // Destroy at most 1 chunk per frame to avoid hitches
+        }
+      }
     }
   }
 
