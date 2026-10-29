@@ -12,6 +12,7 @@ import { KawaseBloomPass } from './postprocessing/KawaseBloomPass.js';
 import { PerformanceDebugger } from './debug/PerformanceDebugger.js';
 import { MobileOptimizer } from './mobile/MobileOptimizer.js';
 import { BatchedChunkSystem, USE_LEGACY } from './world/BatchedChunkSystem.js';
+import { MeshoptSimplifier } from 'meshoptimizer';
 
 // --- DOM Elements ---
 const container = document.getElementById('app');
@@ -2360,9 +2361,12 @@ gltfLoader.setDRACOLoader(dracoLoader);
 
 const modelUrl = '/assets/models/terrain.glb';
 
-gltfLoader.load(
-  modelUrl,
-  (gltf) => {
+Promise.all([
+  MeshoptSimplifier.ready.catch(() => {})
+]).then(() => {
+  gltfLoader.load(
+    modelUrl,
+    (gltf) => {
     const root = gltf.scene;
 
     // Compute bounding box to center terrain and frame camera
@@ -2868,6 +2872,7 @@ gltfLoader.load(
     }
   }
 );
+});
 
 // --- Window Resize Handling ---
 window.addEventListener('resize', () => {
@@ -3136,14 +3141,20 @@ function animate(currentTime) {
   if (currentTime >= lastTime + 1000) {
     fps = Math.round((frameCount * 1000) / (currentTime - lastTime));
     if (fpsElement) {
-      const visTri = window._visibleSceneTriangles || sceneTriangles;
       const cs = window.chunkSystem;
-      let chunkInfo = '';
       if (cs && cs.telemetry) {
         const t = cs.telemetry;
-        chunkInfo = ` | Chunks: ${t.loadedChunks} (Q:${t.queueLength}, Gen:${t.lastGenDurationMs.toFixed(1)}ms, Max5s:${t.worstFrameTime5s.toFixed(1)}ms, Rad:${Math.round(t.loadRadius)}m)`;
+        const c0 = t.countsPerLOD.LOD0;
+        const c1 = t.countsPerLOD.LOD1;
+        const c2 = t.countsPerLOD.LOD2;
+        fpsElement.innerHTML = `FPS: ${fps} | Calls: ${sceneCalls} | Polys: Total ${Math.round(t.totalTriangles/1000)}k (Main ${Math.round(t.mainTriangles/1000)}k, Shadow ${Math.round(t.shadowTriangles/1000)}k / Budget ${Math.round(t.budget/1000)}k)<br>` +
+          `Chunks: ${t.loadedChunks} (Q:${t.queueLength}, Gen:${t.lastGenDurationMs.toFixed(1)}ms, Max5s:${t.worstFrameTime5s.toFixed(1)}ms) | ` +
+          `Rad: ${Math.round(t.loadRadius)}m | LODs: [0: <${Math.round(t.lod0Radius)}m, 1: ${Math.round(t.lod0Radius)}-${Math.round(t.lod1Radius)}m, 2: >${Math.round(t.lod1Radius)}m] | ` +
+          `LOD0: ${c0.chunks}c (${Math.round(c0.tris/1000)}k) | LOD1: ${c1.chunks}c (${Math.round(c1.tris/1000)}k) | LOD2: ${c2.chunks}c (${Math.round(c2.tris/1000)}k)`;
+      } else {
+        const visTri = window._visibleSceneTriangles || sceneTriangles;
+        fpsElement.textContent = `FPS: ${fps} | Calls: ${sceneCalls} | Polys: ${visTri.toLocaleString()}`;
       }
-      fpsElement.textContent = `FPS: ${fps} | Calls: ${sceneCalls} | Polys: ${visTri.toLocaleString()}${chunkInfo}`;
     }
     frameCount = 0;
     lastTime = currentTime;

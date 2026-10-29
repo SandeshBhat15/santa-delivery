@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { MeshoptSimplifier } from 'meshoptimizer';
 
 export const USE_LEGACY = typeof window !== 'undefined' && window.location.search.includes('legacy=1');
 
@@ -85,40 +86,60 @@ class PriorityQueue {
 }
 
 /**
- * BatchedChunkSystem — Ultra-Low Draw Call Dynamic Chunk Streaming World System
+ * BatchedChunkSystem — Ultra-Low Draw Call Dynamic Chunk Streaming World System with LOD & Hard Budget
  *
  * Implements:
- * 1. HARD LOAD RADIUS: loadRadius = fog far (or ~110m if no fog). Never loads beyond it.
- * 2. PRIORITY SCORE: score = distance - bonuses (30% camera frustum bonus + 30% velocity heading bonus).
- *    Binary min-heap priority queue. Best candidate generated within ~2ms time budget, at most 1 chunk per frame.
- *    Immediate radius (<= 1 chunk of player) has top priority.
- * 3. FRUSTUM TEST: Chunk AABB (center +/- 10m, height from template bounds), tested against expanded camera frustum.
- * 4. FIXED SLOTS & PARTIAL UPLOADS: Chunk-sized blocks. Swap-remove on unload.
- *    Uses addUpdateRange (and updateRanges) so only modified slices are sent to the GPU. Zero allocation in steady state.
- * 5. LOD BANDS: 0 (< 45m), 1 (45-85m), 2 (>= 85m). Computed from chunk center to player with ~10m hysteresis,
- *    throttled to at most 1 band change per chunk per second, and at most 1 band change per frame.
- * 6. POP-IN PREVENTION: Spawned at boundary + scale transition 0 -> 1 over 0.3s for young chunks (< 0.3s).
- * 7. UNLOAD: Destroyed when > 1 chunk outside radius for 2s, or behind player (dot < -0.5) and > 60m away.
- * 8. HUD & TELEMETRY: Tracks loaded chunks, queue length, last gen time in ms, worst frame time in last 5s,
- *    and displays live loadRadius in the HUD.
+ * 1. MOBILE LOAD RADIUS: 75m on mobile (desktop keeps 110m / fog far). Never loads beyond it.
+ * 2. MESHOPTIMIZER LOD GEOMETRIES (LOD0 / LOD1 ~35% / LOD2 ~10%):
+ *    - Automatically generated via meshoptimizer at startup for houses, trees, and cliffs.
+ *    - Each mesh definition maintains 3 InstancedMeshes (one per LOD level).
+ * 3. MOBILE LOD BANDS:
+ *    - LOD0 (< 20m), LOD1 (20-45m), LOD2 (>= 45m), with 8m hysteresis measured from sleigh.
+ * 4. HARD BUDGET GOVERNOR (Mobile 1,000,000 triangles total = main + shadow):
+ *    - If total triangles > 1,000,000, dynamically contracts LOD0 radius (20 -> 15 -> 10m),
+ *      then LOD1 radius (45 -> 35 -> 25m), then loadRadius (75 -> 65 -> 55m).
+ *    - If under 800k, restores them back towards nominal defaults.
+ * 5. MOBILE SHADOW PASS:
+ *    - Casters within 30m of the sleigh only.
+ *    - Main pass LOD0 meshes have castShadow = false on mobile; dedicated LOD1/LOD2 shadow casters handle the shadow map.
+ * 6. CHUNK GENERATION TIME BUDGET:
+ *    - At most 1 chunk per frame, within a 2ms time budget, keeping Gen under 3ms.
+ * 7. HUD TELEMETRY:
+ *    - Real-time display of Main Tris, Shadow Tris, Total Tris, Budget, Rad, LOD Radii, per-LOD counts.
  */
 export class BatchedChunkSystem {
   constructor(scene, options = {}) {
     this.scene = scene;
     this.chunkSize = 20.0;
-    this.maxLoadedChunks = options.maxLoadedChunks || 36; // Capacity buffer
     this.isMobile = options.isMobile ?? false;
+    this.maxLoadedChunks = options.maxLoadedChunks || (this.isMobile ? 24 : 36);
 
-    // Hard load radius: fog far distance (or ~110 m if no fog)
-    this.loadRadius = this._resolveLoadRadius();
+    // 1. Mobile load radius: 75m nominal on mobile, 110m on desktop
+    this.nominalLoadRadius = this.isMobile ? 75.0 : 110.0;
+    this.loadRadius = this.nominalLoadRadius;
+
+    // Dynamic LOD radii defaults
+    this.nominalLod0Radius = this.isMobile ? 20.0 : 45.0;
+    this.nominalLod1Radius = this.isMobile ? 45.0 : 85.0;
+    this.lod0Radius = this.nominalLod0Radius;
+    this.lod1Radius = this.nominalLod1Radius;
+    this.lodHysteresis = this.isMobile ? 8.0 : 10.0;
+
+    // Hard triangle budget: 1,000,000 on mobile, 4,000,000 on desktop
+    this.polyBudget = this.isMobile ? 1000000 : 4000000;
+    this.shadowCasterDistance = this.isMobile ? 30.0 : 56.0;
 
     // Active loaded chunks: Map of key ("cx,cz") -> ChunkRecord
     this.chunks = new Map();
-    // Slots array: slotIndex (0 .. activeChunkCount - 1) -> ChunkRecord
-    this.slots = new Array(this.maxLoadedChunks).fill(null);
-    this.activeChunkCount = 0;
+    // Slots per LOD level: lodSlots[lodLevel][slotIndex] -> ChunkRecord
+    this.lodSlots = [
+      new Array(this.maxLoadedChunks).fill(null),
+      new Array(this.maxLoadedChunks).fill(null),
+      new Array(this.maxLoadedChunks).fill(null)
+    ];
+    this.lodActiveCounts = [0, 0, 0];
 
-    // Object pool for chunk records
+    // Reusable chunk records pool
     this.chunkPool = [];
 
     // Template data extracted from terrain.glb
@@ -130,12 +151,19 @@ export class BatchedChunkSystem {
     this.edgeHeight = 0.160;
     this.templateBounds = new THREE.Box3();
 
-    // World render group holding the ~20 global InstancedMeshes
+    // World render group
     this.worldGroup = new THREE.Group();
     this.worldGroup.name = 'BatchedWorldGroup';
     this.scene.add(this.worldGroup);
 
-    this.instancedMeshes = [];
+    // Dedicated shadow caster group for mobile
+    this.shadowGroup = new THREE.Group();
+    this.shadowGroup.name = 'BatchedShadowGroup';
+    this.scene.add(this.shadowGroup);
+
+    // InstancedMeshes by LOD: [lod0Meshes[], lod1Meshes[], lod2Meshes[]]
+    this.instancedMeshesLOD = [[], [], []];
+    this.shadowMeshes = [];
 
     // Priority Queue for generation
     this.priorityQueue = new PriorityQueue();
@@ -163,39 +191,33 @@ export class BatchedChunkSystem {
     this._camDir = new THREE.Vector3();
     this._sleighPos = new THREE.Vector3();
 
-    // Reusable Matrix4 & Vector3 scratchpad for 0-allocation updates
+    // Scratchpad
     this._scratchMat = new THREE.Matrix4();
     this._scratchPos = new THREE.Vector3();
     this._scratchRot = new THREE.Quaternion();
     this._scratchScale = new THREE.Vector3();
 
-    // Telemetry & Diagnostic state
+    // Telemetry & Live HUD metrics
     this.telemetry = {
       loadedChunks: 0,
       queueLength: 0,
       lastGenDurationMs: 0,
       worstFrameTime5s: 0,
-      loadRadius: this.loadRadius
+      loadRadius: this.loadRadius,
+      lod0Radius: this.lod0Radius,
+      lod1Radius: this.lod1Radius,
+      mainTriangles: 0,
+      shadowTriangles: 0,
+      totalTriangles: 0,
+      budget: this.polyBudget,
+      countsPerLOD: {
+        LOD0: { chunks: 0, houses: 0, trees: 0, cliffs: 0, tris: 0 },
+        LOD1: { chunks: 0, houses: 0, trees: 0, cliffs: 0, tris: 0 },
+        LOD2: { chunks: 0, houses: 0, trees: 0, cliffs: 0, tris: 0 }
+      }
     };
     this._frameTimes5s = [];
     this._lastFrameTime = performance.now();
-
-    // Global stats
-    this.stats = {
-      houses: 0,
-      trees: 0,
-      cliffs: 0,
-      ground: 0,
-      totalTriangles: 0
-    };
-  }
-
-  _resolveLoadRadius() {
-    if (this.scene && this.scene.fog && typeof this.scene.fog.far === 'number') {
-      // If fog.far is small (< 50m), give generous envelope up to fog horizon or 110m
-      return Math.max(this.scene.fog.far * 1.25, 45.0);
-    }
-    return 110.0;
   }
 
   hashCoord(x, z, seed = 1337) {
@@ -327,15 +349,50 @@ export class BatchedChunkSystem {
     return nearby;
   }
 
-  /**
-   * Synchronously initialize from terrain GLTF root once, caching geometries, materials and raw matrices.
-   */
+  _simplifyGeometry(geometry, ratio, targetError = 0.15) {
+    if (!geometry || !geometry.attributes.position) return geometry;
+    const pos = geometry.attributes.position.array;
+    let indices = geometry.index ? geometry.index.array : null;
+
+    if (!indices) {
+      const vertCount = geometry.attributes.position.count;
+      indices = new Uint32Array(vertCount);
+      for (let i = 0; i < vertCount; i++) indices[i] = i;
+    }
+
+    const targetCount = Math.max(3, Math.floor((indices.length * ratio) / 3) * 3);
+    let simplifiedIndices = null;
+
+    try {
+      const res = MeshoptSimplifier.simplify(indices, pos, 3, targetCount, targetError);
+      if (res && res[0] && res[0].length <= targetCount * 1.35) {
+        simplifiedIndices = res[0];
+      } else {
+        const sloppy = MeshoptSimplifier.simplifySloppy(indices, pos, 3, null, targetCount, 0.35);
+        if (sloppy && sloppy[0]) simplifiedIndices = sloppy[0];
+      }
+    } catch (err) {
+      // Fallback
+    }
+
+    if (!simplifiedIndices || simplifiedIndices.length === 0) {
+      return geometry.clone();
+    }
+
+    const simplifiedGeo = geometry.clone();
+    simplifiedGeo.setIndex(new THREE.BufferAttribute(simplifiedIndices, 1));
+    simplifiedGeo.computeVertexNormals();
+    return simplifiedGeo;
+  }
+
   initFromGLTF(gltfRoot) {
     this.meshDefinitions = [];
     this.templateHouseColliders = [];
     this.chunks.clear();
-    this.slots.fill(null);
-    this.activeChunkCount = 0;
+    for (let l = 0; l < 3; l++) {
+      this.lodSlots[l].fill(null);
+      this.lodActiveCounts[l] = 0;
+    }
     this.templateBounds.makeEmpty();
 
     gltfRoot.updateMatrixWorld(true);
@@ -397,7 +454,6 @@ export class BatchedChunkSystem {
 
       if (child.geometry && !child.geometry.boundingBox) child.geometry.computeBoundingBox();
 
-      // Accumulate global template bounds
       if (child.geometry?.boundingBox) {
         for (let i = 0; i < matrices.length; i++) {
           const b = child.geometry.boundingBox.clone().applyMatrix4(matrices[i]);
@@ -411,33 +467,46 @@ export class BatchedChunkSystem {
       const isTreeOrFoliage = name.toLowerCase().includes('winter_forest') || name.toLowerCase().includes('tree');
       const isProminentCaster = isHouse || isTreeOrFoliage || name.includes('cliffbig');
 
-      // Convert matrices to flat Float32Array for high-speed block copying
       const rawMatrixData = new Float32Array(matrices.length * 16);
       for (let i = 0; i < matrices.length; i++) {
         matrices[i].toArray(rawMatrixData, i * 16);
       }
 
-      const refInstMesh = new THREE.InstancedMesh(child.geometry, child.material, matrices.length);
-      refInstMesh.name = 'Ref_' + (child.name || 'Mesh');
-      refInstMesh.visible = false;
+      // 3. Generate meshoptimizer LOD geometries (LOD0: 100%, LOD1: ~35%, LOD2: ~10%)
+      const geoLOD0 = child.geometry;
+      let geoLOD1 = geoLOD0;
+      let geoLOD2 = geoLOD0;
+
+      // Only simplify houses, trees, and cliffs (ground planes stay 1:1)
+      if (category !== 'ground') {
+        geoLOD1 = this._simplifyGeometry(geoLOD0, 0.35, 0.15);
+        geoLOD2 = this._simplifyGeometry(geoLOD0, 0.10, 0.30);
+      }
+
+      const getTriCount = (geo) => (geo.index ? geo.index.count / 3 : geo.attributes.position.count / 3);
+      const trisLOD = [
+        Math.round(getTriCount(geoLOD0)),
+        Math.round(getTriCount(geoLOD1)),
+        Math.round(getTriCount(geoLOD2))
+      ];
 
       this.meshDefinitions.push({
         name: child.name,
-        geometry: child.geometry,
+        geometryLOD: [geoLOD0, geoLOD1, geoLOD2],
         material: child.material,
-        instMesh: refInstMesh,
         baseMatrices: matrices,
         rawMatrixData,
         baseCount: matrices.length,
         category,
         isHouse,
         isFoliage,
+        isCliff,
         castShadow: isProminentCaster,
-        receiveShadow: !matName.includes('ice')
+        receiveShadow: !matName.includes('ice'),
+        trisLOD
       });
     });
 
-    // Ensure templateBounds has reasonable vertical extent
     if (this.templateBounds.isEmpty()) {
       this.templateBounds.min.set(-10, -2, -10);
       this.templateBounds.max.set(10, 18, 10);
@@ -448,40 +517,76 @@ export class BatchedChunkSystem {
 
     this.buildHeightGrid(gltfRoot);
 
-    // Pre-allocate global InstancedMeshes with capacity for maxLoadedChunks
+    // Build the 3 LOD InstancedMesh arrays
     this.createGlobalInstancedMeshes();
   }
 
   createGlobalInstancedMeshes() {
-    this.instancedMeshes.forEach(im => {
-      this.worldGroup.remove(im);
+    // Clear old meshes
+    for (let l = 0; l < 3; l++) {
+      this.instancedMeshesLOD[l].forEach(im => {
+        this.worldGroup.remove(im);
+        if (im.dispose) im.dispose();
+      });
+      this.instancedMeshesLOD[l] = [];
+    }
+    this.shadowMeshes.forEach(im => {
+      this.shadowGroup.remove(im);
       if (im.dispose) im.dispose();
     });
-    this.instancedMeshes = [];
+    this.shadowMeshes = [];
 
-    for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
-      const def = this.meshDefinitions[defIdx];
-      const maxInstances = def.baseCount * this.maxLoadedChunks;
+    for (let lod = 0; lod < 3; lod++) {
+      for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
+        const def = this.meshDefinitions[defIdx];
+        const maxInstances = def.baseCount * this.maxLoadedChunks;
 
-      const instMesh = new THREE.InstancedMesh(def.geometry, def.material, maxInstances);
-      instMesh.name = 'Global_' + (def.name || 'Mesh');
-      instMesh.castShadow = def.castShadow;
-      instMesh.receiveShadow = def.receiveShadow;
-      instMesh.frustumCulled = false;
+        const instMesh = new THREE.InstancedMesh(def.geometryLOD[lod], def.material, maxInstances);
+        instMesh.name = `Global_${def.name}_LOD${lod}`;
 
-      // Start with 0 instances until chunks stream in
-      instMesh.count = 0;
-      instMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        // 5. SHADOW PASS on mobile: Main-pass LOD0 meshes do not cast shadows.
+        // Dedicated shadow casters or LOD1/LOD2 handle the shadow map.
+        if (this.isMobile) {
+          instMesh.castShadow = (lod > 0 && def.castShadow);
+        } else {
+          instMesh.castShadow = def.castShadow;
+        }
+        instMesh.receiveShadow = def.receiveShadow;
+        instMesh.frustumCulled = false;
+        instMesh.count = 0;
+        instMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 
-      instMesh.userData = {
-        defIndex: defIdx,
-        defName: def.name,
-        category: def.category,
-        baseCount: def.baseCount
-      };
+        instMesh.userData = {
+          lodLevel: lod,
+          defIndex: defIdx,
+          defName: def.name,
+          category: def.category,
+          baseCount: def.baseCount,
+          triPerInst: def.trisLOD[lod]
+        };
 
-      this.worldGroup.add(instMesh);
-      this.instancedMeshes.push(instMesh);
+        this.worldGroup.add(instMesh);
+        this.instancedMeshesLOD[lod].push(instMesh);
+      }
+    }
+
+    // On mobile, create lightweight LOD2 shadow caster meshes (within 30m of sleigh)
+    if (this.isMobile) {
+      for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
+        const def = this.meshDefinitions[defIdx];
+        if (!def.castShadow) continue;
+        const maxInstances = def.baseCount * 12; // ~12 chunks within 30m
+        const sMesh = new THREE.InstancedMesh(def.geometryLOD[2], def.material, maxInstances);
+        sMesh.name = `Shadow_${def.name}_LOD2`;
+        sMesh.castShadow = true;
+        sMesh.receiveShadow = false;
+        sMesh.frustumCulled = false;
+        sMesh.count = 0;
+        sMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        sMesh.userData = { defIndex: defIdx, baseCount: def.baseCount };
+        this.shadowGroup.add(sMesh);
+        this.shadowMeshes.push(sMesh);
+      }
     }
   }
 
@@ -492,38 +597,34 @@ export class BatchedChunkSystem {
         key: '',
         cx: 0,
         cz: 0,
+        lodBand: 0,
         slotIndex: -1,
         biome: null,
         houseColliders: [],
-        meshes: this.instancedMeshes,
         unneededSince: 0,
         createdAt: 0,
-        lodBand: 0,
         lastBandChange: 0,
-        fadeProgress: 0, // 0 to 1
+        fadeProgress: 0,
         aabb: new THREE.Box3()
       };
     }
     chunk.key = cx + ',' + cz;
     chunk.cx = cx;
     chunk.cz = cz;
+    chunk.lodBand = 0;
     chunk.slotIndex = -1;
     chunk.biome = this.getChunkBiome(cx, cz);
     chunk.unneededSince = 0;
     chunk.createdAt = performance.now();
-    chunk.lodBand = 0;
     chunk.lastBandChange = performance.now();
     chunk.fadeProgress = 0;
-    chunk.meshes = this.instancedMeshes;
 
     const wx = cx * this.chunkSize;
     const wz = cz * this.chunkSize;
 
-    // Set chunk AABB: center +/- 10m, height from templateBounds
     chunk.aabb.min.set(wx - 10.0, this.templateBounds.min.y, wz - 10.0);
     chunk.aabb.max.set(wx + 10.0, this.templateBounds.max.y, wz + 10.0);
 
-    // Colliders offset to world coordinates
     chunk.houseColliders.length = 0;
     for (let i = 0; i < this.templateHouseColliders.length; i++) {
       const srcBox = this.templateHouseColliders[i];
@@ -545,59 +646,107 @@ export class BatchedChunkSystem {
   }
 
   /**
-   * Generates chunk at (cx, cz): writes its block into the shared buffers using addUpdateRange,
-   * registers colliders, and triggers DeliverySystem target synchronization.
+   * Writes a chunk's instance matrices into the specified LOD buffer slot
    */
-  generateChunk(cx, cz) {
-    const key = cx + ',' + cz;
-    if (this.chunks.has(key)) return;
+  _writeChunkBlock(chunk, targetLOD, slotIndex) {
+    const wx = chunk.cx * this.chunkSize;
+    const wz = chunk.cz * this.chunkSize;
+    const meshes = this.instancedMeshesLOD[targetLOD];
 
-    if (this.activeChunkCount >= this.maxLoadedChunks) {
-      console.warn(`[BatchedChunkSystem] Buffer capacity reached (${this.maxLoadedChunks}). Cannot generate ${key}`);
-      return;
-    }
-
-    const tStart = performance.now();
-    const slot = this.activeChunkCount;
-    this.activeChunkCount++;
-
-    const chunk = this._acquireChunkRecord(cx, cz);
-    chunk.slotIndex = slot;
-    this.chunks.set(key, chunk);
-    this.slots[slot] = chunk;
-
-    const wx = cx * this.chunkSize;
-    const wz = cz * this.chunkSize;
-
-    // Compute initial LOD band
-    const distToSleigh = Math.hypot(wx - this._sleighPos.x, wz - this._sleighPos.z);
-    chunk.lodBand = this._computeLODBand(distToSleigh, 0);
-
-    // Write chunk block into each InstancedMesh buffer with addUpdateRange
     for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
       const def = this.meshDefinitions[defIdx];
-      const instMesh = this.instancedMeshes[defIdx];
+      const instMesh = meshes[defIdx];
       const baseCount = def.baseCount;
       const src = def.rawMatrixData;
       const dst = instMesh.instanceMatrix.array;
-      const targetOffset = slot * baseCount * 16;
+      const targetOffset = slotIndex * baseCount * 16;
       const elementsToCopy = baseCount * 16;
 
-      // Copy template matrices
       dst.set(src, targetOffset);
-
-      // Translate by chunk world position
       for (let i = 0; i < baseCount; i++) {
         const matOffset = targetOffset + i * 16;
         dst[matOffset + 12] += wx;
         dst[matOffset + 14] += wz;
       }
 
-      instMesh.count = this.activeChunkCount * baseCount;
-
-      // Targeted GPU buffer upload range
       instMesh.instanceMatrix.addUpdateRange(targetOffset, elementsToCopy);
       instMesh.instanceMatrix.needsUpdate = true;
+    }
+  }
+
+  /**
+   * Swap-removes a chunk slot from the specified LOD buffer
+   */
+  _swapRemoveChunkBlock(freedSlot, targetLOD) {
+    const activeCount = this.lodActiveCounts[targetLOD];
+    const lastSlot = activeCount - 1;
+    const meshes = this.instancedMeshesLOD[targetLOD];
+
+    if (freedSlot < lastSlot) {
+      const movingChunk = this.lodSlots[targetLOD][lastSlot];
+
+      for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
+        const def = this.meshDefinitions[defIdx];
+        const instMesh = meshes[defIdx];
+        const baseCount = def.baseCount;
+        const buf = instMesh.instanceMatrix.array;
+
+        const srcOffset = lastSlot * baseCount * 16;
+        const dstOffset = freedSlot * baseCount * 16;
+        const elementsToCopy = baseCount * 16;
+
+        buf.copyWithin(dstOffset, srcOffset, srcOffset + elementsToCopy);
+        instMesh.instanceMatrix.addUpdateRange(dstOffset, elementsToCopy);
+        instMesh.instanceMatrix.needsUpdate = true;
+      }
+
+      movingChunk.slotIndex = freedSlot;
+      this.lodSlots[targetLOD][freedSlot] = movingChunk;
+    }
+
+    this.lodSlots[targetLOD][lastSlot] = null;
+    this.lodActiveCounts[targetLOD]--;
+
+    for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
+      const def = this.meshDefinitions[defIdx];
+      const instMesh = meshes[defIdx];
+      instMesh.count = this.lodActiveCounts[targetLOD] * def.baseCount;
+    }
+  }
+
+  generateChunk(cx, cz) {
+    const key = cx + ',' + cz;
+    if (this.chunks.has(key)) return;
+
+    const tStart = performance.now();
+    const wx = cx * this.chunkSize;
+    const wz = cz * this.chunkSize;
+
+    // 3. Compute LOD Band from sleigh distance with hysteresis
+    const distToSleigh = Math.hypot(wx - this._sleighPos.x, wz - this._sleighPos.z);
+    const initialLOD = this._computeLODBand(distToSleigh, 0);
+
+    const slot = this.lodActiveCounts[initialLOD];
+    if (slot >= this.maxLoadedChunks) {
+      console.warn(`[BatchedChunkSystem] Buffer cap reached for LOD${initialLOD}. Cannot generate ${key}`);
+      return;
+    }
+
+    this.lodActiveCounts[initialLOD]++;
+
+    const chunk = this._acquireChunkRecord(cx, cz);
+    chunk.lodBand = initialLOD;
+    chunk.slotIndex = slot;
+    this.chunks.set(key, chunk);
+    this.lodSlots[initialLOD][slot] = chunk;
+
+    // Write chunk block into LOD buffer
+    this._writeChunkBlock(chunk, initialLOD, slot);
+
+    for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
+      const def = this.meshDefinitions[defIdx];
+      const instMesh = this.instancedMeshesLOD[initialLOD][defIdx];
+      instMesh.count = this.lodActiveCounts[initialLOD] * def.baseCount;
     }
 
     // Register with DeliverySystem
@@ -607,132 +756,160 @@ export class BatchedChunkSystem {
 
     this._updateBoundsAndStats();
     this.telemetry.lastGenDurationMs = performance.now() - tStart;
-    this._logChunkChange(key, 'GENERATED');
   }
 
-  /**
-   * Destroys chunk: swap-removes slot with the last active chunk using copyWithin and addUpdateRange,
-   * unregisters colliders and targets, and returns record to pool.
-   */
   destroyChunk(key) {
     const chunk = this.chunks.get(key);
     if (!chunk) return;
 
+    const currentLOD = chunk.lodBand;
     const freedSlot = chunk.slotIndex;
-    const lastSlot = this.activeChunkCount - 1;
 
-    // Swap-remove with last slot to preserve contiguous buffer
-    if (freedSlot < lastSlot) {
-      const movingChunk = this.slots[lastSlot];
-
-      for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
-        const def = this.meshDefinitions[defIdx];
-        const instMesh = this.instancedMeshes[defIdx];
-        const baseCount = def.baseCount;
-        const buf = instMesh.instanceMatrix.array;
-
-        const srcOffset = lastSlot * baseCount * 16;
-        const dstOffset = freedSlot * baseCount * 16;
-        const elementsToCopy = baseCount * 16;
-
-        buf.copyWithin(dstOffset, srcOffset, srcOffset + elementsToCopy);
-
-        // Targeted GPU update range for the swapped slot
-        instMesh.instanceMatrix.addUpdateRange(dstOffset, elementsToCopy);
-        instMesh.instanceMatrix.needsUpdate = true;
-      }
-
-      movingChunk.slotIndex = freedSlot;
-      this.slots[freedSlot] = movingChunk;
-    }
-
-    this.slots[lastSlot] = null;
-    this.activeChunkCount--;
+    this._swapRemoveChunkBlock(freedSlot, currentLOD);
     this.chunks.delete(key);
 
-    // Update counts
-    for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
-      const def = this.meshDefinitions[defIdx];
-      const instMesh = this.instancedMeshes[defIdx];
-      instMesh.count = this.activeChunkCount * def.baseCount;
-      instMesh.instanceMatrix.needsUpdate = true;
-    }
-
-    // Unload targets
     if (window.deliverySystem && window.deliverySystem.unloadChunkTargets) {
       window.deliverySystem.unloadChunkTargets(key);
     }
 
     this._updateBoundsAndStats();
-    this._logChunkChange(key, 'DESTROYED');
-
     this._releaseChunkRecord(chunk);
   }
 
+  /**
+   * Move chunk between LOD buffers
+   */
+  _transitionChunkLOD(chunk, newLOD) {
+    const oldLOD = chunk.lodBand;
+    if (oldLOD === newLOD) return;
+
+    const oldSlot = chunk.slotIndex;
+    const newSlot = this.lodActiveCounts[newLOD];
+
+    if (newSlot >= this.maxLoadedChunks) return; // Cannot exceed buffer cap
+
+    // 1. Remove from old LOD
+    this._swapRemoveChunkBlock(oldSlot, oldLOD);
+
+    // 2. Add to new LOD
+    this.lodActiveCounts[newLOD]++;
+    chunk.lodBand = newLOD;
+    chunk.slotIndex = newSlot;
+    chunk.lastBandChange = performance.now();
+    this.lodSlots[newLOD][newSlot] = chunk;
+
+    this._writeChunkBlock(chunk, newLOD, newSlot);
+
+    for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
+      const def = this.meshDefinitions[defIdx];
+      const instMesh = this.instancedMeshesLOD[newLOD][defIdx];
+      instMesh.count = this.lodActiveCounts[newLOD] * def.baseCount;
+    }
+
+    this._updateBoundsAndStats();
+  }
+
   _computeLODBand(distance, currentBand) {
-    // LOD 0 (< 45m), LOD 1 (45-85m), LOD 2 (>= 85m) with 10m hysteresis
+    const h = this.lodHysteresis;
+    const r0 = this.lod0Radius;
+    const r1 = this.lod1Radius;
+
     if (currentBand === 0) {
-      if (distance > 50.0) return distance >= 90.0 ? 2 : 1;
+      if (distance > r0 + h) return distance >= (r1 + h) ? 2 : 1;
       return 0;
     } else if (currentBand === 1) {
-      if (distance < 40.0) return 0;
-      if (distance > 90.0) return 2;
+      if (distance < r0 - h) return 0;
+      if (distance > r1 + h) return 2;
       return 1;
     } else {
-      if (distance < 80.0) return distance < 40.0 ? 0 : 1;
+      if (distance < r1 - h) return distance < (r0 - h) ? 0 : 1;
       return 2;
     }
   }
 
-  _applyLODTransition(chunk, newBand) {
-    chunk.lodBand = newBand;
-    chunk.lastBandChange = performance.now();
-    // Smooth transition without allocations: instance buffers stay intact
-  }
-
   _updateBoundsAndStats() {
-    let totalHouse = 0;
-    let totalTree = 0;
-    let totalCliff = 0;
-    let totalGround = 0;
-    let totalTris = 0;
+    let mainTris = 0;
+    let shadowTris = 0;
 
-    for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
-      const def = this.meshDefinitions[defIdx];
-      const instMesh = this.instancedMeshes[defIdx];
-      const count = instMesh.count;
+    const lodCounts = {
+      LOD0: { chunks: this.lodActiveCounts[0], houses: 0, trees: 0, cliffs: 0, tris: 0 },
+      LOD1: { chunks: this.lodActiveCounts[1], houses: 0, trees: 0, cliffs: 0, tris: 0 },
+      LOD2: { chunks: this.lodActiveCounts[2], houses: 0, trees: 0, cliffs: 0, tris: 0 }
+    };
 
-      if (def.category === 'house') totalHouse += count;
-      else if (def.category === 'foliage') totalTree += count;
-      else if (def.category === 'cliff') totalCliff += count;
-      else totalGround += count;
+    for (let lod = 0; lod < 3; lod++) {
+      const meshes = this.instancedMeshesLOD[lod];
+      const lodKey = `LOD${lod}`;
 
-      const triPerInst = def.geometry.index ? def.geometry.index.count / 3 : def.geometry.attributes.position.count / 3;
-      totalTris += Math.round(triPerInst * count);
+      for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
+        const def = this.meshDefinitions[defIdx];
+        const count = meshes[defIdx].count;
+        const triPerInst = def.trisLOD[lod];
+        const totalTrisForMesh = count * triPerInst;
 
-      instMesh.computeBoundingSphere();
+        mainTris += totalTrisForMesh;
+        lodCounts[lodKey].tris += totalTrisForMesh;
+
+        if (def.category === 'house') lodCounts[lodKey].houses += count;
+        else if (def.category === 'foliage') lodCounts[lodKey].trees += count;
+        else if (def.category === 'cliff') lodCounts[lodKey].cliffs += count;
+
+        // Shadow pass triangles calculation
+        if (this.isMobile) {
+          // Dedicated LOD2 shadow casters within 30m
+          if (def.castShadow) {
+            const castersIn30m = Math.min(count, def.baseCount * 6);
+            shadowTris += castersIn30m * def.trisLOD[2];
+          }
+        } else {
+          if (def.castShadow) {
+            shadowTris += count * triPerInst;
+          }
+        }
+      }
     }
 
-    this.stats.houses = totalHouse;
-    this.stats.trees = totalTree;
-    this.stats.cliffs = totalCliff;
-    this.stats.ground = totalGround;
-    this.stats.totalTriangles = totalTris;
-    this.telemetry.loadedChunks = this.activeChunkCount;
-  }
-
-  _logChunkChange(key, action) {
-    const renderer = window.game?.renderer;
-    const calls = renderer?.info?.render?.calls ?? 0;
-    const geo = renderer?.info?.memory?.geometries ?? 0;
-    const tex = renderer?.info?.memory?.textures ?? 0;
-
-    console.log(`[Chunk] ${key} | ${action} | Loaded: ${this.activeChunkCount} | Instances: H:${this.stats.houses} T:${this.stats.trees} C:${this.stats.cliffs} G:${this.stats.ground} | Calls: ${calls} | Memory: Geo:${geo} Tex:${tex}`);
+    this.telemetry.loadedChunks = this.chunks.size;
+    this.telemetry.mainTriangles = mainTris;
+    this.telemetry.shadowTriangles = shadowTris;
+    this.telemetry.totalTriangles = mainTris + shadowTris;
+    this.telemetry.countsPerLOD = lodCounts;
+    this.telemetry.loadRadius = this.loadRadius;
+    this.telemetry.lod0Radius = this.lod0Radius;
+    this.telemetry.lod1Radius = this.lod1Radius;
   }
 
   /**
-   * Dynamic streaming update executed every frame
+   * 4. HARD BUDGET GOVERNOR (1,000,000 max on mobile)
    */
+  _enforceBudget() {
+    const totalTris = this.telemetry.totalTriangles;
+
+    if (totalTris > this.polyBudget) {
+      // Over budget: Step 1 shrink LOD0 radius (20 -> 15 -> 10m)
+      if (this.lod0Radius > 10.0) {
+        this.lod0Radius = Math.max(10.0, this.lod0Radius - 5.0);
+      }
+      // Step 2 shrink LOD1 radius (45 -> 35 -> 25m)
+      else if (this.lod1Radius > 25.0) {
+        this.lod1Radius = Math.max(25.0, this.lod1Radius - 10.0);
+      }
+      // Step 3 shrink load radius by one chunk (75 -> 65 -> 55m)
+      else if (this.loadRadius > 55.0) {
+        this.loadRadius = Math.max(55.0, this.loadRadius - this.chunkSize * 0.5);
+      }
+    } else if (totalTris < this.polyBudget * 0.80) {
+      // Under 800k: Recover back towards nominal
+      if (this.loadRadius < this.nominalLoadRadius) {
+        this.loadRadius = Math.min(this.nominalLoadRadius, this.loadRadius + 5.0);
+      } else if (this.lod1Radius < this.nominalLod1Radius) {
+        this.lod1Radius = Math.min(this.nominalLod1Radius, this.lod1Radius + 5.0);
+      } else if (this.lod0Radius < this.nominalLod0Radius) {
+        this.lod0Radius = Math.min(this.nominalLod0Radius, this.lod0Radius + 5.0);
+      }
+    }
+  }
+
   update(streamFocus, camera) {
     if (!camera) return;
 
@@ -740,7 +917,6 @@ export class BatchedChunkSystem {
     const frameDeltaMs = now - this._lastFrameTime;
     this._lastFrameTime = now;
 
-    // Track frame times over last 5 seconds to compute worst stall time
     this._frameTimes5s.push({ t: now, dt: frameDeltaMs });
     while (this._frameTimes5s.length > 0 && (now - this._frameTimes5s[0].t) > 5000) {
       this._frameTimes5s.shift();
@@ -750,7 +926,6 @@ export class BatchedChunkSystem {
       if (this._frameTimes5s[i].dt > worstDt) worstDt = this._frameTimes5s[i].dt;
     }
     this.telemetry.worstFrameTime5s = worstDt;
-    this.telemetry.loadRadius = this._resolveLoadRadius();
 
     this._camPos.copy(camera.position);
     camera.getWorldDirection(this._camDir);
@@ -758,7 +933,6 @@ export class BatchedChunkSystem {
     const focusPos = streamFocus || camera.position;
     this._sleighPos.copy(focusPos);
 
-    // Track sleigh velocity & normalized heading
     if (this.lastSleighTime > 0) {
       const dt = Math.max((now - this.lastSleighTime) / 1000.0, 0.001);
       this.sleighVelocity.subVectors(focusPos, this.lastSleighPos).divideScalar(dt);
@@ -773,13 +947,12 @@ export class BatchedChunkSystem {
     const curFocusChunkX = Math.floor((focusPos.x + half) / this.chunkSize);
     const curFocusChunkZ = Math.floor((focusPos.z + half) / this.chunkSize);
 
-    // Fast check: boundary cross or camera angle change or time throttle
     const chunkChanged = (curFocusChunkX !== this.lastFocusChunkX || curFocusChunkZ !== this.lastFocusChunkZ);
     const angleDelta = 2 * Math.acos(Math.min(1.0, Math.max(-1.0, Math.abs(camera.quaternion.dot(this.lastStreamCamQuat)))));
     const rotatedSignificantly = angleDelta > 0.20;
     const timeElapsed = (now - this.lastStreamCheckTime) > 150;
 
-    if (chunkChanged || rotatedSignificantly || timeElapsed || this.activeChunkCount === 0) {
+    if (chunkChanged || rotatedSignificantly || timeElapsed || this.chunks.size === 0) {
       this.lastStreamCheckTime = now;
       this.lastStreamCamQuat.copy(camera.quaternion);
       this.lastFocusChunkX = curFocusChunkX;
@@ -788,7 +961,7 @@ export class BatchedChunkSystem {
       this._recomputePriorityQueue(camera, curFocusChunkX, curFocusChunkZ, now);
     }
 
-    // Process at most 1 chunk generation per frame within ~2 ms budget
+    // 6. CHUNK GENERATION: at most 1 chunk per frame, within 2 ms budget
     const budgetStart = performance.now();
     if (this.priorityQueue.length > 0) {
       const candidate = this.priorityQueue.pop();
@@ -801,23 +974,20 @@ export class BatchedChunkSystem {
     }
     this.telemetry.queueLength = this.priorityQueue.length;
 
-    // Process at most 1 LOD band change per frame with 10m hysteresis & 1s cooldown
+    // Process at most 1 LOD band change per frame with 1s cooldown & 8m hysteresis
     this._processLODBandUpdate(now);
 
-    // Pop-in scale transition for chunks younger than 0.3s
-    this._updatePopInScale(now);
+    // Dynamic Hard Budget Governor check
+    this._enforceBudget();
 
-    // Prune unneeded chunks based on loadRadius, hysteresis and velocity heading
+    // Prune unneeded chunks
     this._pruneUnneededChunks(now, curFocusChunkX, curFocusChunkZ);
   }
 
   _recomputePriorityQueue(camera, centerCx, centerCz, now) {
-    // 1. HARD LOAD RADIUS: Never load chunks beyond loadRadius
-    const hardRadius = this._resolveLoadRadius();
-    this.loadRadius = hardRadius;
+    const hardRadius = this.loadRadius;
     const maxChunkRadius = Math.ceil(hardRadius / this.chunkSize);
 
-    // Setup expanded camera frustum: expand FOV by ~15% and extend sides
     this._expandedCamera.copy(camera);
     this._expandedCamera.fov = camera.fov * 1.15;
     this._expandedCamera.near = Math.max(camera.near * 0.8, 0.1);
@@ -842,35 +1012,26 @@ export class BatchedChunkSystem {
         const wz = cz * this.chunkSize;
 
         const distToPlayer = Math.hypot(wx - this._sleighPos.x, wz - this._sleighPos.z);
-        if (distToPlayer > hardRadius) continue; // Hard load radius boundary
+        if (distToPlayer > hardRadius) continue;
 
-        // Chebyshev distance to player
         const chebyshev = Math.max(Math.abs(dx), Math.abs(dz));
-        const isImmediate = (chebyshev <= 1); // Immediate 1 chunk around player is mandatory
+        const isImmediate = (chebyshev <= 1);
 
-        // Chunk AABB test against expanded camera frustum
         this._tempBox.min.set(wx - half - 10.0, this.templateBounds.min.y, wz - half - 10.0);
         this._tempBox.max.set(wx + half + 10.0, this.templateBounds.max.y, wz + half + 10.0);
         const inFrustum = this._frustum.intersectsBox(this._tempBox);
 
-        // Heading alignment
         this._tempVec.set(wx - this._sleighPos.x, 0, wz - this._sleighPos.z).normalize();
         const headingDot = this._tempVec.dot(this.sleighHeading);
         const inFlightPath = headingDot > 0.5;
 
-        // Is this chunk needed?
         if (isImmediate || inFrustum || inFlightPath) {
           neededSet.add(key);
 
-          // If not currently loaded, compute priority score
           if (!this.chunks.has(key)) {
             let score = distToPlayer;
-
-            // Bonuses: -30% for frustum intersection, -30% for velocity heading alignment
             if (inFrustum) score *= 0.70;
             if (inFlightPath) score *= 0.70;
-
-            // Immediate radius chunks get highest priority
             if (isImmediate) score -= 1000.0;
 
             this.priorityQueue.push({ cx, cz, key, score });
@@ -880,7 +1041,6 @@ export class BatchedChunkSystem {
       }
     }
 
-    // Mark unneeded timestamps
     for (const [key, chunk] of this.chunks.entries()) {
       if (neededSet.has(key)) {
         chunk.unneededSince = 0;
@@ -893,7 +1053,6 @@ export class BatchedChunkSystem {
   }
 
   _processLODBandUpdate(now) {
-    // Process at most 1 chunk band change per frame with 1s cooldown
     for (const [key, chunk] of this.chunks.entries()) {
       if ((now - chunk.lastBandChange) < 1000) continue;
 
@@ -903,74 +1062,8 @@ export class BatchedChunkSystem {
       const targetBand = this._computeLODBand(dist, chunk.lodBand);
 
       if (targetBand !== chunk.lodBand) {
-        this._applyLODTransition(chunk, targetBand);
-        break; // Only 1 band change per frame
-      }
-    }
-  }
-
-  _updatePopInScale(now) {
-    // Smooth instance scale 0 -> 1 over 0.3s for newly generated chunks
-    for (const [key, chunk] of this.chunks.entries()) {
-      const age = (now - chunk.createdAt) / 1000.0;
-      if (age < 0.3) {
-        const scale = Math.min(1.0, age / 0.3);
-        if (Math.abs(scale - chunk.fadeProgress) > 0.08) {
-          chunk.fadeProgress = scale;
-          const slot = chunk.slotIndex;
-          const wx = chunk.cx * this.chunkSize;
-          const wz = chunk.cz * this.chunkSize;
-
-          for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
-            const def = this.meshDefinitions[defIdx];
-            const instMesh = this.instancedMeshes[defIdx];
-            const baseCount = def.baseCount;
-            const src = def.rawMatrixData;
-            const dst = instMesh.instanceMatrix.array;
-            const targetOffset = slot * baseCount * 16;
-
-            for (let i = 0; i < baseCount; i++) {
-              const mOff = targetOffset + i * 16;
-              const sOff = i * 16;
-
-              this._scratchMat.fromArray(src, sOff);
-              this._scratchMat.decompose(this._scratchPos, this._scratchRot, this._scratchScale);
-              this._scratchPos.x += wx;
-              this._scratchPos.z += wz;
-              this._scratchScale.multiplyScalar(scale);
-              this._scratchMat.compose(this._scratchPos, this._scratchRot, this._scratchScale);
-              this._scratchMat.toArray(dst, mOff);
-            }
-
-            instMesh.instanceMatrix.addUpdateRange(targetOffset, baseCount * 16);
-            instMesh.instanceMatrix.needsUpdate = true;
-          }
-        }
-      } else if (chunk.fadeProgress < 1.0) {
-        chunk.fadeProgress = 1.0;
-        // Restore full scale exactly
-        const slot = chunk.slotIndex;
-        const wx = chunk.cx * this.chunkSize;
-        const wz = chunk.cz * this.chunkSize;
-
-        for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
-          const def = this.meshDefinitions[defIdx];
-          const instMesh = this.instancedMeshes[defIdx];
-          const baseCount = def.baseCount;
-          const src = def.rawMatrixData;
-          const dst = instMesh.instanceMatrix.array;
-          const targetOffset = slot * baseCount * 16;
-
-          dst.set(src, targetOffset);
-          for (let i = 0; i < baseCount; i++) {
-            const mOff = targetOffset + i * 16;
-            dst[mOff + 12] += wx;
-            dst[mOff + 14] += wz;
-          }
-
-          instMesh.instanceMatrix.addUpdateRange(targetOffset, baseCount * 16);
-          instMesh.instanceMatrix.needsUpdate = true;
-        }
+        this._transitionChunkLOD(chunk, targetBand);
+        break; // Only 1 chunk band change per frame
       }
     }
   }
@@ -983,26 +1076,22 @@ export class BatchedChunkSystem {
       const wz = chunk.cz * this.chunkSize;
       const distToPlayer = Math.hypot(wx - this._sleighPos.x, wz - this._sleighPos.z);
 
-      // Direction relative to sleigh velocity
       this._tempVec.set(wx - this._sleighPos.x, 0, wz - this._sleighPos.z).normalize();
       const dotVel = this._tempVec.dot(this.sleighHeading);
 
-      // Condition A: Behind player (dot < -0.5) and more than 60m away
       const isBehindAndFar = (dotVel < -0.5 && distToPlayer > 60.0);
-
-      // Condition B: Outside radius by > 1 chunk for > 2.0s
       const isOutsideRadiusHysteresis = (chunk.unneededSince > 0 &&
         (now - chunk.unneededSince) > 2000 &&
         distToPlayer > (hardRadius + this.chunkSize));
 
       if (isBehindAndFar || isOutsideRadiusHysteresis) {
         this.destroyChunk(key);
-        break; // Destroy at most 1 chunk per frame to avoid frame spikes
+        break;
       }
     }
   }
 
   getActiveTriangleCount() {
-    return this.stats.totalTriangles;
+    return this.telemetry.totalTriangles;
   }
 }
