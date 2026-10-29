@@ -3137,7 +3137,13 @@ function animate(currentTime) {
     fps = Math.round((frameCount * 1000) / (currentTime - lastTime));
     if (fpsElement) {
       const visTri = window._visibleSceneTriangles || sceneTriangles;
-      fpsElement.textContent = `FPS: ${fps} | Calls: ${sceneCalls} | Polys: ${visTri.toLocaleString()}`;
+      const cs = window.chunkSystem;
+      let chunkInfo = '';
+      if (cs && cs.telemetry) {
+        const t = cs.telemetry;
+        chunkInfo = ` | Chunks: ${t.loadedChunks} (Q:${t.queueLength}, Gen:${t.lastGenDurationMs.toFixed(1)}ms, Max5s:${t.worstFrameTime5s.toFixed(1)}ms, Rad:${Math.round(t.loadRadius)}m)`;
+      }
+      fpsElement.textContent = `FPS: ${fps} | Calls: ${sceneCalls} | Polys: ${visTri.toLocaleString()}${chunkInfo}`;
     }
     frameCount = 0;
     lastTime = currentTime;

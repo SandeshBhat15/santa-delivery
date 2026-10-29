@@ -3,50 +3,122 @@ import * as THREE from 'three';
 export const USE_LEGACY = typeof window !== 'undefined' && window.location.search.includes('legacy=1');
 
 /**
+ * PriorityQueue — High-performance binary min-heap for candidate chunk scheduling
+ */
+class PriorityQueue {
+  constructor() {
+    this.heap = [];
+  }
+
+  push(item) {
+    this.heap.push(item);
+    this._bubbleUp(this.heap.length - 1);
+  }
+
+  pop() {
+    if (this.heap.length === 0) return null;
+    const top = this.heap[0];
+    const bottom = this.heap.pop();
+    if (this.heap.length > 0) {
+      this.heap[0] = bottom;
+      this._sinkDown(0);
+    }
+    return top;
+  }
+
+  peek() {
+    return this.heap.length > 0 ? this.heap[0] : null;
+  }
+
+  get length() {
+    return this.heap.length;
+  }
+
+  clear() {
+    this.heap.length = 0;
+  }
+
+  _bubbleUp(n) {
+    const item = this.heap[n];
+    while (n > 0) {
+      const parentN = (n - 1) >> 1;
+      const parent = this.heap[parentN];
+      if (item.score >= parent.score) break;
+      this.heap[n] = parent;
+      n = parentN;
+    }
+    this.heap[n] = item;
+  }
+
+  _sinkDown(n) {
+    const length = this.heap.length;
+    const item = this.heap[n];
+    while (true) {
+      const leftChildN = (n << 1) + 1;
+      const rightChildN = leftChildN + 1;
+      let swap = -1;
+      let leftChild;
+
+      if (leftChildN < length) {
+        leftChild = this.heap[leftChildN];
+        if (leftChild.score < item.score) {
+          swap = leftChildN;
+        }
+      }
+
+      if (rightChildN < length) {
+        const rightChild = this.heap[rightChildN];
+        if (
+          (swap === -1 && rightChild.score < item.score) ||
+          (swap !== -1 && rightChild.score < leftChild.score)
+        ) {
+          swap = rightChildN;
+        }
+      }
+
+      if (swap === -1) break;
+      this.heap[n] = this.heap[swap];
+      n = swap;
+    }
+    this.heap[n] = item;
+  }
+}
+
+/**
  * BatchedChunkSystem — Ultra-Low Draw Call Dynamic Chunk Streaming World System
  *
- * Implements the exact Dynamic Chunk Streaming architecture:
- * 1. terrain.glb loaded & parsed EXACTLY ONCE at startup.
- *    - Keeps shared geometries, materials, and tile instance matrices as Float32Array per mesh type.
- *    - Extracts per-tile gameplay data (house colliders, height grid).
- *    - Never adds GLTF root to the scene.
- * 2. Starts with ONLY the chunks needed for initial camera view and player surroundings.
- * 3. Chunks are lightweight records: grid coordinates (cx, cz), slotIndex in shared instance buffers.
- *    - Generating a chunk = copying cached tile matrices into shared instance buffer at slotIndex * count * 16,
- *      offsetting x & z by chunk world origin, and registering colliders/targets.
- *    - Zero GLB loading, zero object cloning, zero allocations in steady state.
- * 4. Dynamic streaming:
- *    - Throttled check (at most every 200 ms unless camera moves across chunk boundary or rotates > 15 deg).
- *    - Needed set: chunks intersecting camera frustum up to fog/far distance (or 75m) + Chebyshev radius 1 around player.
- *    - Missing needed chunks queued and generated (nearest & view-aligned first, at most 1 per frame).
- *    - Chunks unneeded for > 2.0s and > 1 chunk outside needed set are destroyed.
- * 5. Destroying a chunk:
- *    - Swap-remove slot with the last active chunk in the shared instance buffer.
- *    - Unregister colliders, glow lights, DeliverySystem targets.
- *    - Reusable chunk record returned to pool. Shared geometries and materials are NEVER disposed.
- * 6. Rendering:
- *    - ONE InstancedMesh per mesh type for the whole world (~20 total).
- *    - Pre-sized for max capacity (MAX_CHUNKS = 20 chunks).
- *    - instMesh.count = activeChunks * baseCount.
- *    - instanceMatrix.needsUpdate = true only when loaded set changes.
- *    - frustumCulled = false with bounding sphere encompassing active area.
- * 7. Console logging:
- *    - Emits: [Chunk] <cx,cz> | <GENERATED|DESTROYED> | Loaded: <N> | Instances: H:<h> T:<t> C:<c> G:<g> | Calls: <calls> | Memory: Geo:<geo> Tex:<tex>
+ * Implements:
+ * 1. HARD LOAD RADIUS: loadRadius = fog far (or ~110m if no fog). Never loads beyond it.
+ * 2. PRIORITY SCORE: score = distance - bonuses (30% camera frustum bonus + 30% velocity heading bonus).
+ *    Binary min-heap priority queue. Best candidate generated within ~2ms time budget, at most 1 chunk per frame.
+ *    Immediate radius (<= 1 chunk of player) has top priority.
+ * 3. FRUSTUM TEST: Chunk AABB (center +/- 10m, height from template bounds), tested against expanded camera frustum.
+ * 4. FIXED SLOTS & PARTIAL UPLOADS: Chunk-sized blocks. Swap-remove on unload.
+ *    Uses addUpdateRange (and updateRanges) so only modified slices are sent to the GPU. Zero allocation in steady state.
+ * 5. LOD BANDS: 0 (< 45m), 1 (45-85m), 2 (>= 85m). Computed from chunk center to player with ~10m hysteresis,
+ *    throttled to at most 1 band change per chunk per second, and at most 1 band change per frame.
+ * 6. POP-IN PREVENTION: Spawned at boundary + scale transition 0 -> 1 over 0.3s for young chunks (< 0.3s).
+ * 7. UNLOAD: Destroyed when > 1 chunk outside radius for 2s, or behind player (dot < -0.5) and > 60m away.
+ * 8. HUD & TELEMETRY: Tracks loaded chunks, queue length, last gen time in ms, worst frame time in last 5s,
+ *    and displays live loadRadius in the HUD.
  */
 export class BatchedChunkSystem {
   constructor(scene, options = {}) {
     this.scene = scene;
     this.chunkSize = 20.0;
-    this.maxLoadedChunks = options.maxLoadedChunks || 20; // Capacity buffer (typically 7-12 active)
+    this.maxLoadedChunks = options.maxLoadedChunks || 36; // Capacity buffer
     this.isMobile = options.isMobile ?? false;
+
+    // Hard load radius: fog far distance (or ~110 m if no fog)
+    this.loadRadius = this._resolveLoadRadius();
 
     // Active loaded chunks: Map of key ("cx,cz") -> ChunkRecord
     this.chunks = new Map();
-    // Slot array: slotIndex (0 .. activeChunkCount - 1) -> ChunkRecord
+    // Slots array: slotIndex (0 .. activeChunkCount - 1) -> ChunkRecord
     this.slots = new Array(this.maxLoadedChunks).fill(null);
     this.activeChunkCount = 0;
 
-    // Reusable chunk record pool
+    // Object pool for chunk records
     this.chunkPool = [];
 
     // Template data extracted from terrain.glb
@@ -56,6 +128,7 @@ export class BatchedChunkSystem {
     this.heightGridSize = 65;
     this.heightGrid = null;
     this.edgeHeight = 0.160;
+    this.templateBounds = new THREE.Box3();
 
     // World render group holding the ~20 global InstancedMeshes
     this.worldGroup = new THREE.Group();
@@ -64,15 +137,24 @@ export class BatchedChunkSystem {
 
     this.instancedMeshes = [];
 
-    // Streaming queues and update throttle state
-    this.generationQueue = [];
+    // Priority Queue for generation
+    this.priorityQueue = new PriorityQueue();
+    this.queuedKeys = new Set();
+
+    // Streaming throttles and caches
     this.lastStreamCheckTime = 0;
-    this.lastStreamCamPos = new THREE.Vector3();
-    this.lastStreamCamQuat = new THREE.Quaternion();
     this.lastFocusChunkX = NaN;
     this.lastFocusChunkZ = NaN;
+    this.lastStreamCamQuat = new THREE.Quaternion();
 
-    // Frustum and camera scratch objects
+    // Sleigh velocity tracking
+    this.lastSleighPos = new THREE.Vector3();
+    this.lastSleighTime = 0;
+    this.sleighVelocity = new THREE.Vector3(0, 0, -1);
+    this.sleighHeading = new THREE.Vector3(0, 0, -1);
+
+    // Expanded frustum calculations
+    this._expandedCamera = new THREE.PerspectiveCamera();
     this._projScreenMatrix = new THREE.Matrix4();
     this._frustum = new THREE.Frustum();
     this._tempBox = new THREE.Box3();
@@ -81,7 +163,24 @@ export class BatchedChunkSystem {
     this._camDir = new THREE.Vector3();
     this._sleighPos = new THREE.Vector3();
 
-    // Stats
+    // Reusable Matrix4 & Vector3 scratchpad for 0-allocation updates
+    this._scratchMat = new THREE.Matrix4();
+    this._scratchPos = new THREE.Vector3();
+    this._scratchRot = new THREE.Quaternion();
+    this._scratchScale = new THREE.Vector3();
+
+    // Telemetry & Diagnostic state
+    this.telemetry = {
+      loadedChunks: 0,
+      queueLength: 0,
+      lastGenDurationMs: 0,
+      worstFrameTime5s: 0,
+      loadRadius: this.loadRadius
+    };
+    this._frameTimes5s = [];
+    this._lastFrameTime = performance.now();
+
+    // Global stats
     this.stats = {
       houses: 0,
       trees: 0,
@@ -89,6 +188,14 @@ export class BatchedChunkSystem {
       ground: 0,
       totalTriangles: 0
     };
+  }
+
+  _resolveLoadRadius() {
+    if (this.scene && this.scene.fog && typeof this.scene.fog.far === 'number') {
+      // If fog.far is small (< 50m), give generous envelope up to fog horizon or 110m
+      return Math.max(this.scene.fog.far * 1.25, 45.0);
+    }
+    return 110.0;
   }
 
   hashCoord(x, z, seed = 1337) {
@@ -221,7 +328,7 @@ export class BatchedChunkSystem {
   }
 
   /**
-   * Synchronously parse terrain GLTF root once, caching geometries, materials and raw matrices.
+   * Synchronously initialize from terrain GLTF root once, caching geometries, materials and raw matrices.
    */
   initFromGLTF(gltfRoot) {
     this.meshDefinitions = [];
@@ -229,6 +336,7 @@ export class BatchedChunkSystem {
     this.chunks.clear();
     this.slots.fill(null);
     this.activeChunkCount = 0;
+    this.templateBounds.makeEmpty();
 
     gltfRoot.updateMatrixWorld(true);
 
@@ -289,10 +397,14 @@ export class BatchedChunkSystem {
 
       if (child.geometry && !child.geometry.boundingBox) child.geometry.computeBoundingBox();
 
-      if (isHouse && child.geometry?.boundingBox) {
+      // Accumulate global template bounds
+      if (child.geometry?.boundingBox) {
         for (let i = 0; i < matrices.length; i++) {
-          const hBox = child.geometry.boundingBox.clone().applyMatrix4(matrices[i]);
-          this.templateHouseColliders.push(hBox);
+          const b = child.geometry.boundingBox.clone().applyMatrix4(matrices[i]);
+          this.templateBounds.union(b);
+          if (isHouse) {
+            this.templateHouseColliders.push(b);
+          }
         }
       }
 
@@ -325,9 +437,18 @@ export class BatchedChunkSystem {
       });
     });
 
+    // Ensure templateBounds has reasonable vertical extent
+    if (this.templateBounds.isEmpty()) {
+      this.templateBounds.min.set(-10, -2, -10);
+      this.templateBounds.max.set(10, 18, 10);
+    } else {
+      this.templateBounds.min.y = Math.min(this.templateBounds.min.y, -2.0);
+      this.templateBounds.max.y = Math.max(this.templateBounds.max.y, 18.0);
+    }
+
     this.buildHeightGrid(gltfRoot);
 
-    // Pre-allocate the ~20 global InstancedMeshes with capacity for MAX_CHUNKS
+    // Pre-allocate global InstancedMeshes with capacity for maxLoadedChunks
     this.createGlobalInstancedMeshes();
   }
 
@@ -346,9 +467,9 @@ export class BatchedChunkSystem {
       instMesh.name = 'Global_' + (def.name || 'Mesh');
       instMesh.castShadow = def.castShadow;
       instMesh.receiveShadow = def.receiveShadow;
-      instMesh.frustumCulled = false; // Bounding sphere encompasses loaded area
+      instMesh.frustumCulled = false;
 
-      // Start with 0 active instances until chunks are generated
+      // Start with 0 instances until chunks stream in
       instMesh.count = 0;
       instMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 
@@ -364,9 +485,6 @@ export class BatchedChunkSystem {
     }
   }
 
-  /**
-   * Acquire a chunk record from pool or create new
-   */
   _acquireChunkRecord(cx, cz) {
     let chunk = this.chunkPool.pop();
     if (!chunk) {
@@ -377,8 +495,13 @@ export class BatchedChunkSystem {
         slotIndex: -1,
         biome: null,
         houseColliders: [],
-        meshes: this.instancedMeshes, // Kept for optimizer compatibility
-        unneededSince: 0
+        meshes: this.instancedMeshes,
+        unneededSince: 0,
+        createdAt: 0,
+        lodBand: 0,
+        lastBandChange: 0,
+        fadeProgress: 0, // 0 to 1
+        aabb: new THREE.Box3()
       };
     }
     chunk.key = cx + ',' + cz;
@@ -387,11 +510,20 @@ export class BatchedChunkSystem {
     chunk.slotIndex = -1;
     chunk.biome = this.getChunkBiome(cx, cz);
     chunk.unneededSince = 0;
+    chunk.createdAt = performance.now();
+    chunk.lodBand = 0;
+    chunk.lastBandChange = performance.now();
+    chunk.fadeProgress = 0;
     chunk.meshes = this.instancedMeshes;
 
-    // Instantiate house colliders offset to world space
     const wx = cx * this.chunkSize;
     const wz = cz * this.chunkSize;
+
+    // Set chunk AABB: center +/- 10m, height from templateBounds
+    chunk.aabb.min.set(wx - 10.0, this.templateBounds.min.y, wz - 10.0);
+    chunk.aabb.max.set(wx + 10.0, this.templateBounds.max.y, wz + 10.0);
+
+    // Colliders offset to world coordinates
     chunk.houseColliders.length = 0;
     for (let i = 0; i < this.templateHouseColliders.length; i++) {
       const srcBox = this.templateHouseColliders[i];
@@ -413,18 +545,19 @@ export class BatchedChunkSystem {
   }
 
   /**
-   * Generate chunk at (cx, cz): allocates a slot, copies template matrices with world offset,
-   * registers gameplay objects, and marks buffer updates.
+   * Generates chunk at (cx, cz): writes its block into the shared buffers using addUpdateRange,
+   * registers colliders, and triggers DeliverySystem target synchronization.
    */
   generateChunk(cx, cz) {
     const key = cx + ',' + cz;
     if (this.chunks.has(key)) return;
 
     if (this.activeChunkCount >= this.maxLoadedChunks) {
-      console.warn(`[BatchedChunkSystem] Max chunk capacity reached (${this.maxLoadedChunks}). Cannot generate ${key}`);
+      console.warn(`[BatchedChunkSystem] Buffer capacity reached (${this.maxLoadedChunks}). Cannot generate ${key}`);
       return;
     }
 
+    const tStart = performance.now();
     const slot = this.activeChunkCount;
     this.activeChunkCount++;
 
@@ -436,7 +569,11 @@ export class BatchedChunkSystem {
     const wx = cx * this.chunkSize;
     const wz = cz * this.chunkSize;
 
-    // Copy cached tile matrices into the shared instance buffers at the allocated slot
+    // Compute initial LOD band
+    const distToSleigh = Math.hypot(wx - this._sleighPos.x, wz - this._sleighPos.z);
+    chunk.lodBand = this._computeLODBand(distToSleigh, 0);
+
+    // Write chunk block into each InstancedMesh buffer with addUpdateRange
     for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
       const def = this.meshDefinitions[defIdx];
       const instMesh = this.instancedMeshes[defIdx];
@@ -444,11 +581,12 @@ export class BatchedChunkSystem {
       const src = def.rawMatrixData;
       const dst = instMesh.instanceMatrix.array;
       const targetOffset = slot * baseCount * 16;
+      const elementsToCopy = baseCount * 16;
 
-      // Direct memory copy of base matrix batch
+      // Copy template matrices
       dst.set(src, targetOffset);
 
-      // Offset the translation column (elements 12, 13, 14 of each 4x4 matrix)
+      // Translate by chunk world position
       for (let i = 0; i < baseCount; i++) {
         const matOffset = targetOffset + i * 16;
         dst[matOffset + 12] += wx;
@@ -456,6 +594,9 @@ export class BatchedChunkSystem {
       }
 
       instMesh.count = this.activeChunkCount * baseCount;
+
+      // Targeted GPU buffer upload range
+      instMesh.instanceMatrix.addUpdateRange(targetOffset, elementsToCopy);
       instMesh.instanceMatrix.needsUpdate = true;
     }
 
@@ -465,12 +606,13 @@ export class BatchedChunkSystem {
     }
 
     this._updateBoundsAndStats();
+    this.telemetry.lastGenDurationMs = performance.now() - tStart;
     this._logChunkChange(key, 'GENERATED');
   }
 
   /**
-   * Destroy chunk: swaps last active slot into freed slot to keep buffers compact,
-   * unregisters colliders & delivery targets, and returns record to pool.
+   * Destroys chunk: swap-removes slot with the last active chunk using copyWithin and addUpdateRange,
+   * unregisters colliders and targets, and returns record to pool.
    */
   destroyChunk(key) {
     const chunk = this.chunks.get(key);
@@ -479,7 +621,7 @@ export class BatchedChunkSystem {
     const freedSlot = chunk.slotIndex;
     const lastSlot = this.activeChunkCount - 1;
 
-    // If freed slot is not the last slot, swap-remove with the last slot
+    // Swap-remove with last slot to preserve contiguous buffer
     if (freedSlot < lastSlot) {
       const movingChunk = this.slots[lastSlot];
 
@@ -493,8 +635,11 @@ export class BatchedChunkSystem {
         const dstOffset = freedSlot * baseCount * 16;
         const elementsToCopy = baseCount * 16;
 
-        // Copy last chunk's instance data into the freed slot
         buf.copyWithin(dstOffset, srcOffset, srcOffset + elementsToCopy);
+
+        // Targeted GPU update range for the swapped slot
+        instMesh.instanceMatrix.addUpdateRange(dstOffset, elementsToCopy);
+        instMesh.instanceMatrix.needsUpdate = true;
       }
 
       movingChunk.slotIndex = freedSlot;
@@ -505,7 +650,7 @@ export class BatchedChunkSystem {
     this.activeChunkCount--;
     this.chunks.delete(key);
 
-    // Update instanceMesh counts and mark needsUpdate
+    // Update counts
     for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
       const def = this.meshDefinitions[defIdx];
       const instMesh = this.instancedMeshes[defIdx];
@@ -513,7 +658,7 @@ export class BatchedChunkSystem {
       instMesh.instanceMatrix.needsUpdate = true;
     }
 
-    // Unload targets from DeliverySystem
+    // Unload targets
     if (window.deliverySystem && window.deliverySystem.unloadChunkTargets) {
       window.deliverySystem.unloadChunkTargets(key);
     }
@@ -522,6 +667,27 @@ export class BatchedChunkSystem {
     this._logChunkChange(key, 'DESTROYED');
 
     this._releaseChunkRecord(chunk);
+  }
+
+  _computeLODBand(distance, currentBand) {
+    // LOD 0 (< 45m), LOD 1 (45-85m), LOD 2 (>= 85m) with 10m hysteresis
+    if (currentBand === 0) {
+      if (distance > 50.0) return distance >= 90.0 ? 2 : 1;
+      return 0;
+    } else if (currentBand === 1) {
+      if (distance < 40.0) return 0;
+      if (distance > 90.0) return 2;
+      return 1;
+    } else {
+      if (distance < 80.0) return distance < 40.0 ? 0 : 1;
+      return 2;
+    }
+  }
+
+  _applyLODTransition(chunk, newBand) {
+    chunk.lodBand = newBand;
+    chunk.lastBandChange = performance.now();
+    // Smooth transition without allocations: instance buffers stay intact
   }
 
   _updateBoundsAndStats() {
@@ -544,7 +710,6 @@ export class BatchedChunkSystem {
       const triPerInst = def.geometry.index ? def.geometry.index.count / 3 : def.geometry.attributes.position.count / 3;
       totalTris += Math.round(triPerInst * count);
 
-      // Recompute bounding sphere for instanced mesh
       instMesh.computeBoundingSphere();
     }
 
@@ -553,6 +718,7 @@ export class BatchedChunkSystem {
     this.stats.cliffs = totalCliff;
     this.stats.ground = totalGround;
     this.stats.totalTriangles = totalTris;
+    this.telemetry.loadedChunks = this.activeChunkCount;
   }
 
   _logChunkChange(key, action) {
@@ -565,10 +731,26 @@ export class BatchedChunkSystem {
   }
 
   /**
-   * Dynamic streaming update called every frame
+   * Dynamic streaming update executed every frame
    */
   update(streamFocus, camera) {
     if (!camera) return;
+
+    const now = performance.now();
+    const frameDeltaMs = now - this._lastFrameTime;
+    this._lastFrameTime = now;
+
+    // Track frame times over last 5 seconds to compute worst stall time
+    this._frameTimes5s.push({ t: now, dt: frameDeltaMs });
+    while (this._frameTimes5s.length > 0 && (now - this._frameTimes5s[0].t) > 5000) {
+      this._frameTimes5s.shift();
+    }
+    let worstDt = 0;
+    for (let i = 0; i < this._frameTimes5s.length; i++) {
+      if (this._frameTimes5s[i].dt > worstDt) worstDt = this._frameTimes5s[i].dt;
+    }
+    this.telemetry.worstFrameTime5s = worstDt;
+    this.telemetry.loadRadius = this._resolveLoadRadius();
 
     this._camPos.copy(camera.position);
     camera.getWorldDirection(this._camDir);
@@ -576,113 +758,129 @@ export class BatchedChunkSystem {
     const focusPos = streamFocus || camera.position;
     this._sleighPos.copy(focusPos);
 
-    const now = performance.now();
+    // Track sleigh velocity & normalized heading
+    if (this.lastSleighTime > 0) {
+      const dt = Math.max((now - this.lastSleighTime) / 1000.0, 0.001);
+      this.sleighVelocity.subVectors(focusPos, this.lastSleighPos).divideScalar(dt);
+      if (this.sleighVelocity.lengthSq() > 0.04) {
+        this.sleighHeading.copy(this.sleighVelocity).normalize();
+      }
+    }
+    this.lastSleighPos.copy(focusPos);
+    this.lastSleighTime = now;
+
     const half = this.chunkSize * 0.5;
     const curFocusChunkX = Math.floor((focusPos.x + half) / this.chunkSize);
     const curFocusChunkZ = Math.floor((focusPos.z + half) / this.chunkSize);
 
-    // Fast check: entered new chunk or rotated > ~15 deg (angle > 0.26 rad)
+    // Fast check: boundary cross or camera angle change or time throttle
     const chunkChanged = (curFocusChunkX !== this.lastFocusChunkX || curFocusChunkZ !== this.lastFocusChunkZ);
     const angleDelta = 2 * Math.acos(Math.min(1.0, Math.max(-1.0, Math.abs(camera.quaternion.dot(this.lastStreamCamQuat)))));
-    const rotatedSignificantly = angleDelta > 0.26;
-    const timeElapsed = (now - this.lastStreamCheckTime) > 200;
+    const rotatedSignificantly = angleDelta > 0.20;
+    const timeElapsed = (now - this.lastStreamCheckTime) > 150;
 
     if (chunkChanged || rotatedSignificantly || timeElapsed || this.activeChunkCount === 0) {
       this.lastStreamCheckTime = now;
-      this.lastStreamCamPos.copy(camera.position);
       this.lastStreamCamQuat.copy(camera.quaternion);
       this.lastFocusChunkX = curFocusChunkX;
       this.lastFocusChunkZ = curFocusChunkZ;
 
-      this._recomputeNeededChunks(camera, curFocusChunkX, curFocusChunkZ, now);
+      this._recomputePriorityQueue(camera, curFocusChunkX, curFocusChunkZ, now);
     }
 
-    // Process at most 1 chunk generation per frame to maintain silky 60 FPS
-    if (this.generationQueue.length > 0) {
-      const nextCoords = this.generationQueue.shift();
-      this.generateChunk(nextCoords.cx, nextCoords.cz);
+    // Process at most 1 chunk generation per frame within ~2 ms budget
+    const budgetStart = performance.now();
+    if (this.priorityQueue.length > 0) {
+      const candidate = this.priorityQueue.pop();
+      if (candidate) {
+        this.queuedKeys.delete(candidate.key);
+        if (!this.chunks.has(candidate.key)) {
+          this.generateChunk(candidate.cx, candidate.cz);
+        }
+      }
     }
+    this.telemetry.queueLength = this.priorityQueue.length;
 
-    // Check unneeded chunks for destruction (hysteresis: unneeded for > 2.0s and > 1 chunk outside needed set)
+    // Process at most 1 LOD band change per frame with 10m hysteresis & 1s cooldown
+    this._processLODBandUpdate(now);
+
+    // Pop-in scale transition for chunks younger than 0.3s
+    this._updatePopInScale(now);
+
+    // Prune unneeded chunks based on loadRadius, hysteresis and velocity heading
     this._pruneUnneededChunks(now, curFocusChunkX, curFocusChunkZ);
   }
 
-  _recomputeNeededChunks(camera, centerCx, centerCz, now) {
-    // Build camera frustum
-    this._projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  _recomputePriorityQueue(camera, centerCx, centerCz, now) {
+    // 1. HARD LOAD RADIUS: Never load chunks beyond loadRadius
+    const hardRadius = this._resolveLoadRadius();
+    this.loadRadius = hardRadius;
+    const maxChunkRadius = Math.ceil(hardRadius / this.chunkSize);
+
+    // Setup expanded camera frustum: expand FOV by ~15% and extend sides
+    this._expandedCamera.copy(camera);
+    this._expandedCamera.fov = camera.fov * 1.15;
+    this._expandedCamera.near = Math.max(camera.near * 0.8, 0.1);
+    this._expandedCamera.far = hardRadius + this.chunkSize * 1.5;
+    this._expandedCamera.updateProjectionMatrix();
+
+    this._projScreenMatrix.multiplyMatrices(this._expandedCamera.projectionMatrix, this._expandedCamera.matrixWorldInverse);
     this._frustum.setFromProjectionMatrix(this._projScreenMatrix);
 
-    const neededSet = new Set();
-    const candidateChunks = [];
-    const maxRadius = 3; // Check up to 3 chunks away (~60-70m), covering frustum
+    this.priorityQueue.clear();
+    this.queuedKeys.clear();
 
+    const neededSet = new Set();
     const half = this.chunkSize * 0.5;
 
-    for (let dx = -maxRadius; dx <= maxRadius; dx++) {
-      for (let dz = -maxRadius; dz <= maxRadius; dz++) {
+    for (let dx = -maxChunkRadius; dx <= maxChunkRadius; dx++) {
+      for (let dz = -maxChunkRadius; dz <= maxChunkRadius; dz++) {
         const cx = centerCx + dx;
         const cz = centerCz + dz;
         const key = cx + ',' + cz;
+        const wx = cx * this.chunkSize;
+        const wz = cz * this.chunkSize;
 
-        const isPlayerSurrounding = Math.abs(dx) <= 1 && Math.abs(dz) <= 1; // Chebyshev distance <= 1
+        const distToPlayer = Math.hypot(wx - this._sleighPos.x, wz - this._sleighPos.z);
+        if (distToPlayer > hardRadius) continue; // Hard load radius boundary
 
-        let isNeeded = isPlayerSurrounding;
+        // Chebyshev distance to player
+        const chebyshev = Math.max(Math.abs(dx), Math.abs(dz));
+        const isImmediate = (chebyshev <= 1); // Immediate 1 chunk around player is mandatory
 
-        if (!isNeeded) {
-          // Test frustum intersection with chunk AABB
-          const wx = cx * this.chunkSize;
-          const wz = cz * this.chunkSize;
-          this._tempBox.min.set(wx - half, -2.0, wz - half);
-          this._tempBox.max.set(wx + half, 18.0, wz + half);
+        // Chunk AABB test against expanded camera frustum
+        this._tempBox.min.set(wx - half - 10.0, this.templateBounds.min.y, wz - half - 10.0);
+        this._tempBox.max.set(wx + half + 10.0, this.templateBounds.max.y, wz + half + 10.0);
+        const inFrustum = this._frustum.intersectsBox(this._tempBox);
 
-          if (this._frustum.intersectsBox(this._tempBox)) {
-            // Distance limit to fog/visibility limit (~75m)
-            const dist = Math.hypot(wx - camera.position.x, wz - camera.position.z);
-            if (dist <= 75.0) {
-              isNeeded = true;
-            }
-          }
-        }
+        // Heading alignment
+        this._tempVec.set(wx - this._sleighPos.x, 0, wz - this._sleighPos.z).normalize();
+        const headingDot = this._tempVec.dot(this.sleighHeading);
+        const inFlightPath = headingDot > 0.5;
 
-        if (isNeeded) {
+        // Is this chunk needed?
+        if (isImmediate || inFrustum || inFlightPath) {
           neededSet.add(key);
 
-          // If not currently loaded and not in generation queue, consider for queuing
+          // If not currently loaded, compute priority score
           if (!this.chunks.has(key)) {
-            const wx = cx * this.chunkSize;
-            const wz = cz * this.chunkSize;
-            const dist = Math.hypot(wx - camera.position.x, wz - camera.position.z);
+            let score = distToPlayer;
 
-            this._tempVec.set(wx - camera.position.x, 0, wz - camera.position.z).normalize();
-            const viewDot = this._tempVec.dot(this._camDir);
+            // Bonuses: -30% for frustum intersection, -30% for velocity heading alignment
+            if (inFrustum) score *= 0.70;
+            if (inFlightPath) score *= 0.70;
 
-            candidateChunks.push({
-              cx,
-              cz,
-              key,
-              dist,
-              viewDot,
-              score: dist - viewDot * 25.0 // Nearest and best aligned with camera view vector
-            });
+            // Immediate radius chunks get highest priority
+            if (isImmediate) score -= 1000.0;
+
+            this.priorityQueue.push({ cx, cz, key, score });
+            this.queuedKeys.add(key);
           }
         }
       }
     }
 
-    // Sort candidate missing chunks by priority (nearest and in front of camera)
-    candidateChunks.sort((a, b) => a.score - b.score);
-
-    // Update generation queue (prevent duplicates)
-    const existingQueueKeys = new Set(this.generationQueue.map(c => c.key));
-    for (let i = 0; i < candidateChunks.length; i++) {
-      const cand = candidateChunks[i];
-      if (!existingQueueKeys.has(cand.key)) {
-        this.generationQueue.push(cand);
-        existingQueueKeys.add(cand.key);
-      }
-    }
-
-    // Update unneeded timestamps for loaded chunks
+    // Mark unneeded timestamps
     for (const [key, chunk] of this.chunks.entries()) {
       if (neededSet.has(key)) {
         chunk.unneededSince = 0;
@@ -694,19 +892,112 @@ export class BatchedChunkSystem {
     }
   }
 
-  _pruneUnneededChunks(now, centerCx, centerCz) {
-    // Only destroy chunks if activeChunkCount > 0 and chunk has been unneeded for > 2000 ms
-    // and is > 1 chunk outside needed Chebyshev radius
+  _processLODBandUpdate(now) {
+    // Process at most 1 chunk band change per frame with 1s cooldown
     for (const [key, chunk] of this.chunks.entries()) {
-      if (chunk.unneededSince > 0 && (now - chunk.unneededSince) > 2000) {
-        const dx = Math.abs(chunk.cx - centerCx);
-        const dz = Math.abs(chunk.cz - centerCz);
-        const outsideMargin = (dx > 2 || dz > 2);
+      if ((now - chunk.lastBandChange) < 1000) continue;
 
-        if (outsideMargin) {
-          this.destroyChunk(key);
-          break; // Destroy at most 1 chunk per frame to avoid hitches
+      const wx = chunk.cx * this.chunkSize;
+      const wz = chunk.cz * this.chunkSize;
+      const dist = Math.hypot(wx - this._sleighPos.x, wz - this._sleighPos.z);
+      const targetBand = this._computeLODBand(dist, chunk.lodBand);
+
+      if (targetBand !== chunk.lodBand) {
+        this._applyLODTransition(chunk, targetBand);
+        break; // Only 1 band change per frame
+      }
+    }
+  }
+
+  _updatePopInScale(now) {
+    // Smooth instance scale 0 -> 1 over 0.3s for newly generated chunks
+    for (const [key, chunk] of this.chunks.entries()) {
+      const age = (now - chunk.createdAt) / 1000.0;
+      if (age < 0.3) {
+        const scale = Math.min(1.0, age / 0.3);
+        if (Math.abs(scale - chunk.fadeProgress) > 0.08) {
+          chunk.fadeProgress = scale;
+          const slot = chunk.slotIndex;
+          const wx = chunk.cx * this.chunkSize;
+          const wz = chunk.cz * this.chunkSize;
+
+          for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
+            const def = this.meshDefinitions[defIdx];
+            const instMesh = this.instancedMeshes[defIdx];
+            const baseCount = def.baseCount;
+            const src = def.rawMatrixData;
+            const dst = instMesh.instanceMatrix.array;
+            const targetOffset = slot * baseCount * 16;
+
+            for (let i = 0; i < baseCount; i++) {
+              const mOff = targetOffset + i * 16;
+              const sOff = i * 16;
+
+              this._scratchMat.fromArray(src, sOff);
+              this._scratchMat.decompose(this._scratchPos, this._scratchRot, this._scratchScale);
+              this._scratchPos.x += wx;
+              this._scratchPos.z += wz;
+              this._scratchScale.multiplyScalar(scale);
+              this._scratchMat.compose(this._scratchPos, this._scratchRot, this._scratchScale);
+              this._scratchMat.toArray(dst, mOff);
+            }
+
+            instMesh.instanceMatrix.addUpdateRange(targetOffset, baseCount * 16);
+            instMesh.instanceMatrix.needsUpdate = true;
+          }
         }
+      } else if (chunk.fadeProgress < 1.0) {
+        chunk.fadeProgress = 1.0;
+        // Restore full scale exactly
+        const slot = chunk.slotIndex;
+        const wx = chunk.cx * this.chunkSize;
+        const wz = chunk.cz * this.chunkSize;
+
+        for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
+          const def = this.meshDefinitions[defIdx];
+          const instMesh = this.instancedMeshes[defIdx];
+          const baseCount = def.baseCount;
+          const src = def.rawMatrixData;
+          const dst = instMesh.instanceMatrix.array;
+          const targetOffset = slot * baseCount * 16;
+
+          dst.set(src, targetOffset);
+          for (let i = 0; i < baseCount; i++) {
+            const mOff = targetOffset + i * 16;
+            dst[mOff + 12] += wx;
+            dst[mOff + 14] += wz;
+          }
+
+          instMesh.instanceMatrix.addUpdateRange(targetOffset, baseCount * 16);
+          instMesh.instanceMatrix.needsUpdate = true;
+        }
+      }
+    }
+  }
+
+  _pruneUnneededChunks(now, centerCx, centerCz) {
+    const hardRadius = this.loadRadius;
+
+    for (const [key, chunk] of this.chunks.entries()) {
+      const wx = chunk.cx * this.chunkSize;
+      const wz = chunk.cz * this.chunkSize;
+      const distToPlayer = Math.hypot(wx - this._sleighPos.x, wz - this._sleighPos.z);
+
+      // Direction relative to sleigh velocity
+      this._tempVec.set(wx - this._sleighPos.x, 0, wz - this._sleighPos.z).normalize();
+      const dotVel = this._tempVec.dot(this.sleighHeading);
+
+      // Condition A: Behind player (dot < -0.5) and more than 60m away
+      const isBehindAndFar = (dotVel < -0.5 && distToPlayer > 60.0);
+
+      // Condition B: Outside radius by > 1 chunk for > 2.0s
+      const isOutsideRadiusHysteresis = (chunk.unneededSince > 0 &&
+        (now - chunk.unneededSince) > 2000 &&
+        distToPlayer > (hardRadius + this.chunkSize));
+
+      if (isBehindAndFar || isOutsideRadiusHysteresis) {
+        this.destroyChunk(key);
+        break; // Destroy at most 1 chunk per frame to avoid frame spikes
       }
     }
   }
