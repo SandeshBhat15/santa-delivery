@@ -182,7 +182,7 @@ export class SleighController {
     loader.setDRACOLoader(dracoLoader);
 
     loader.load(
-      '/assets/models/santa&deer.glb',
+      '/assets/models/santa&deer.glb?v=2',
       (gltf) => {
         this._setupSantaAndDeerModel(gltf);
       },

@@ -9,6 +9,9 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { KawaseBloomPass } from './postprocessing/KawaseBloomPass.js';
+import { PerformanceDebugger } from './debug/PerformanceDebugger.js';
+import { MobileOptimizer } from './mobile/MobileOptimizer.js';
+import { BatchedChunkSystem, USE_LEGACY } from './world/BatchedChunkSystem.js';
 
 // --- DOM Elements ---
 const container = document.getElementById('app');
@@ -52,11 +55,12 @@ const renderer = new THREE.WebGLRenderer({
 });
 renderer.setSize(window.innerWidth, window.innerHeight);
 // High visual fidelity: 1.5x pixel ratio on mobile provides razor-sharp display on 1080p screens with smooth 60+ FPS
-renderer.setPixelRatio(IS_MOBILE ? Math.min(window.devicePixelRatio, 1.5) : Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2.5));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.95;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.info.autoReset = false;
 container.appendChild(renderer.domElement);
 
 // --- Orbit Controls ---
@@ -93,6 +97,45 @@ const outputPass = new OutputPass();
 composer.addPass(outputPass);
 
 window.game = { scene, camera, renderer, controls, composer, bloomPass };
+
+// Performance Debugger Suite (activated with ?debug=1)
+const perfDebugger = new PerformanceDebugger({
+  renderer,
+  scene,
+  camera,
+  composer,
+  bloomPass,
+  get sleighController() { return sleighController; },
+  get deliverySystem() { return deliverySystem; },
+  get chunkSystem() { return chunkSystem; },
+  get snowParticles() { return snowParticles; },
+  get largeSnowParticles() { return largeSnowParticles; },
+  get moonLight() { return moonLight; },
+  get auroraGroundLight() { return auroraGroundLight; },
+  get villageFacadeLight() { return villageFacadeLight; },
+  get starlightHemiLight() { return starlightHemiLight; },
+  get ambientWarm() { return ambientWarm; },
+  get skyGroup() { return skyGroup; }
+});
+window.perfDebugger = perfDebugger;
+
+// Mobile Performance Optimizer (only active on mobile devices, desktop unchanged)
+const mobileOptimizer = new MobileOptimizer({
+  renderer,
+  scene,
+  camera,
+  composer,
+  get chunkSystem() { return chunkSystem; },
+  get sleighController() { return sleighController; },
+  get deliverySystem() { return deliverySystem; },
+  get moonLight() { return moonLight; },
+  get starlightHemiLight() { return starlightHemiLight; },
+  get villageFacadeLight() { return villageFacadeLight; },
+  get ambientWarm() { return ambientWarm; },
+  get auroraGroundLight() { return auroraGroundLight; },
+  get skyGroup() { return skyGroup; },
+}, { isMobile: IS_MOBILE });
+window.mobileOptimizer = mobileOptimizer;
 
 // ============================================================================
 // UNIFIED WORLD-SPACE SKY, PROCEDURAL MILKY WAY & 3D VOLUMETRIC AURORA SYSTEM
@@ -941,7 +984,7 @@ THREE.ShaderChunk.fog_fragment = `
     // Subtle drifting atmospheric mist noise
     vec2 mistUv = fWorldPos.xz * 0.12;
     float t = uFogTime * 0.024;
-    #if ${IS_MOBILE ? '1' : '0'}
+    #if 0
     float patchDensity = smoothstep(-0.45, 0.40, sin(mistUv.x * 2.1 + t * 0.3) * cos(mistUv.y * 2.1 + t * 0.2));
     #else
     float n1 = snoiseFog(mistUv + vec2(t * 0.35, t * 0.15));
@@ -972,12 +1015,12 @@ const moonLight = new THREE.DirectionalLight(0x7ea4e8, 0.95);
 moonLight.position.set(28, 48, -22);
 moonLight.castShadow = true;
 // 2048 shadow map saves massive fillrate and depth bandwidth (75% less texels than 4096)
-const shadowMapDim = IS_MOBILE ? 1024 : 2048;
+const shadowMapDim = 2048;
 moonLight.shadow.mapSize.width = shadowMapDim;
 moonLight.shadow.mapSize.height = shadowMapDim;
 moonLight.shadow.camera.near = 12;
 moonLight.shadow.camera.far = 120;
-const d = IS_MOBILE ? 18 : 28;
+const d = 28;
 moonLight.shadow.camera.left = -d;
 moonLight.shadow.camera.right = d;
 moonLight.shadow.camera.top = d;
@@ -1082,7 +1125,7 @@ const snowFragmentShader = `
 const snowBounds = { x: 50, y: 22, z: 50 };
 
 // Layer 1: Ambient village snowfall (optimized count for silky 60-120+ FPS on mobile, high density on desktop)
-const snowCount = IS_MOBILE ? 850 : 3600;
+const snowCount = 3600;
 const snowGeo = new THREE.BufferGeometry();
 const snowPositions = new Float32Array(snowCount * 3);
 const snowSizes = new Float32Array(snowCount);
@@ -1133,7 +1176,7 @@ snowParticles.visible = true;
 scene.add(snowParticles);
 
 // Layer 2: Near-camera fluffy flakes & Bokeh Orbs
-const largeSnowCount = IS_MOBILE ? 120 : 420;
+const largeSnowCount = 420;
 const largeSnowGeo = new THREE.BufferGeometry();
 const largeSnowPositions = new Float32Array(largeSnowCount * 3);
 const largeSnowSizes = new Float32Array(largeSnowCount);
@@ -2026,36 +2069,31 @@ class InfiniteChunkSystem {
         }
       }
 
-      // Global InstancedMesh capacity sized for up to 25 active chunks
-      const maxMultiplier = 25;
-      const totalCapacity = Math.max(matrices.length * maxMultiplier, 32);
-      const globalInstMesh = new THREE.InstancedMesh(child.geometry, child.material, totalCapacity);
-      globalInstMesh.name = 'Global_' + (child.name || 'Mesh');
       const isFlatTerrain = name.includes('plane') || matName.includes('terrain') || matName.includes('ice');
       const isTreeOrFoliage = name.toLowerCase().includes('winter_forest') || name.toLowerCase().includes('tree');
       const isProminentCaster = isHouse || isTreeOrFoliage || name.includes('cliffbig');
-      globalInstMesh.castShadow = isProminentCaster;
-      globalInstMesh.receiveShadow = !matName.includes('ice');
-      globalInstMesh.frustumCulled = false;
-      globalInstMesh.count = 0;
 
-      this.worldGroup.add(globalInstMesh);
+      // Create a reference placeholder instMesh so deliverySystem and external references continue working
+      const refInstMesh = new THREE.InstancedMesh(child.geometry, child.material, matrices.length);
+      refInstMesh.name = 'Ref_' + (child.name || 'Mesh');
+      refInstMesh.visible = false; // Placeholder only
+
       this.meshDefinitions.push({
         name: child.name,
-        instMesh: globalInstMesh,
+        geometry: child.geometry,
+        material: child.material,
+        instMesh: refInstMesh,
         baseMatrices: matrices,
         category,
-        isHouse
+        isHouse,
+        castShadow: isProminentCaster,
+        receiveShadow: !matName.includes('ice')
       });
     });
 
-        // Continuous seamless snow bedrock underlayer beneath chunks
-    // Bedrock floor removed (not needed, prevents Z-fighting)
     this.buildHeightGrid(gltfRoot);
-
-    // Initial spawn around origin
     this.update(new THREE.Vector3(0, 0, 0));
-    console.log('[InfiniteChunkSystem] Global procedural open world initialized with ' + this.meshDefinitions.length + ' draw calls.');
+    console.log('[InfiniteChunkSystem] Per-chunk spatial open world initialized with ' + this.meshDefinitions.length + ' definitions.');
   }
 
   buildHeightGrid(group) {
@@ -2216,13 +2254,28 @@ class InfiniteChunkSystem {
       }
     }
 
-    // Update each of the 20 global InstancedMeshes with biome-aware placement
-    for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
-      const def = this.meshDefinitions[defIdx];
-      let instanceIdx = 0;
+    // Clean up meshes from unneeded chunks
+    for (const [key, chunkData] of this.chunks.entries()) {
+      if (!newSet.has(key)) {
+        if (chunkData.meshes) {
+          chunkData.meshes.forEach(m => {
+            this.worldGroup.remove(m);
+            if (m.dispose) m.dispose();
+          });
+        }
+      }
+    }
 
-      for (const chunk of neededChunks) {
-        const { cx, cz, biome } = chunk;
+    // Build or update meshes per chunk
+    const cullingEnabled = (window.mobileOptimizer && window.mobileOptimizer.toggles.chunkFrustumCulling === true);
+
+    for (const chunk of neededChunks) {
+      const { cx, cz, key } = chunk;
+      const chunkData = this.chunks.get(key);
+      if (!chunkData) continue;
+
+      if (!chunkData.meshes) {
+        chunkData.meshes = [];
         const wx = cx * this.chunkSize;
         const wz = cz * this.chunkSize;
         const rotIdx = this.getChunkRotationIndex(cx, cz);
@@ -2230,33 +2283,68 @@ class InfiniteChunkSystem {
         chunkM.makeRotationY(angle);
         chunkM.setPosition(wx, 0, wz);
 
-        // Determine which instances appear based on biome rules
-        const totalB = def.baseMatrices.length;
-        for (let b = 0; b < totalB; b++) {
-          let shouldSpawn = true;
+        for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
+          const def = this.meshDefinitions[defIdx];
+          const totalB = def.baseMatrices.length;
+          if (totalB === 0) continue;
 
-          // Every chunk is an exact complete 1-chunk batch instance of the terrain model
-          shouldSpawn = true;
+          // Each chunk has its OWN InstancedMesh per type with exact capacity
+          const chunkInstMesh = new THREE.InstancedMesh(def.geometry, def.material, totalB);
+          chunkInstMesh.name = `Chunk_${key}_${def.name}`;
+          chunkInstMesh.castShadow = def.castShadow;
+          chunkInstMesh.receiveShadow = def.receiveShadow;
+          chunkInstMesh.userData = {
+            chunkKey: key,
+            category: def.category,
+            isHouse: def.isHouse,
+            defName: def.name,
+            trianglesPerInst: def.geometry.index ? def.geometry.index.count / 3 : def.geometry.attributes.position.count / 3,
+            instanceCount: totalB
+          };
 
-          if (shouldSpawn && instanceIdx < def.instMesh.instanceMatrix.count) {
+          for (let b = 0; b < totalB; b++) {
             tempM.multiplyMatrices(chunkM, def.baseMatrices[b]);
-            // Perfect 20m x 20m grid alignment
-            def.instMesh.setMatrixAt(instanceIdx, tempM);
-            instanceIdx++;
+            chunkInstMesh.setMatrixAt(b, tempM);
           }
-        }
-      }
 
-      def.instMesh.count = instanceIdx;
-      def.instMesh.instanceMatrix.needsUpdate = true;
+          chunkInstMesh.instanceMatrix.needsUpdate = true;
+
+          // Compute accurate world-space bounding bounds including instance transforms and geometry radius
+          chunkInstMesh.computeBoundingBox();
+          chunkInstMesh.computeBoundingSphere();
+
+          // Add 15% safety margin
+          if (chunkInstMesh.boundingSphere) {
+            chunkInstMesh.boundingSphere.radius *= 1.15;
+          }
+
+          // Let Three.js perform camera & shadow frustum culling
+          chunkInstMesh.frustumCulled = cullingEnabled;
+
+          // Tag onBeforeRender to measure main pass vs shadow pass draws
+          chunkInstMesh.onBeforeRender = function(renderer, scene, camera, geometry, material, group) {
+            if (window._onChunkMeshRender) {
+              window._onChunkMeshRender(chunkInstMesh, camera, key, def.category);
+            }
+          };
+
+          this.worldGroup.add(chunkInstMesh);
+          chunkData.meshes.push(chunkInstMesh);
+        }
+      } else {
+        // Update frustumCulled flag if toggle changed
+        chunkData.meshes.forEach(m => {
+          m.frustumCulled = cullingEnabled;
+        });
+      }
     }
   }
 }
 
-const chunkSystem = new InfiniteChunkSystem(scene, {
-  loadRadius: 2,
-  unloadRadius: 2
-});
+const chunkSystem = USE_LEGACY
+  ? new InfiniteChunkSystem(scene, { loadRadius: 2, unloadRadius: 2 })
+  : new BatchedChunkSystem(scene, { loadRadius: 2, unloadRadius: 2, isMobile: IS_MOBILE });
+console.log(USE_LEGACY ? '[World] Running in LEGACY per-chunk mode (?legacy=1)' : '[World] Running in HIGH-PERFORMANCE BATCHED mode');
 window.chunkSystem = chunkSystem;
 window.game.chunkSystem = chunkSystem;
 
@@ -2659,7 +2747,7 @@ gltfLoader.load(
                 `
                 #include <normal_fragment_maps>
 
-                #if ${IS_MOBILE ? '1' : '0'}
+                #if 0
                 // Mobile: lightweight macro drift curvature avoids 4 multi-octave FBM evaluations per pixel
                 vec3 worldDriftN = normalize(vec3(-cos(sDriftUv.x * 1.5) * 0.12, 1.0, -sin(sDriftUv.y * 1.0) * 0.12));
                 vec3 viewDriftN = normalize((viewMatrix * vec4(worldDriftN, 0.0)).xyz);
@@ -2709,10 +2797,12 @@ gltfLoader.load(
     // Disable OrbitControls mouse drag overrides so camera smoothly tracks Santa's sleigh
     controls.enabled = false;
 
-    // R key for manual gift replenish / workshop refill
+    // Keyboard shortcuts: R for gift refill, C for Mobile Optimization Compare toggle
     window.addEventListener('keydown', (e) => {
       if (e.code === 'KeyR') {
         if (deliverySystem) deliverySystem.refillGifts();
+      } else if (e.code === 'KeyC') {
+        if (window.mobileOptimizer) window.mobileOptimizer.toggleCompare();
       }
     });
 
@@ -2722,17 +2812,45 @@ gltfLoader.load(
     // Shadow frustum tightened around the ground under Santa for maximum texel density and reduced shadow-pass polygon load.
     // Desktop: 56m across a 2048 map => ~2.7cm per texel (tree/house shadows stay razor sharp).
     // Mobile: 36m across a 1024 map => ~3.5cm per texel.
-    const shadowExtent = IS_MOBILE ? 15 : 20;
+    const shadowExtent = 20;
     moonLight.shadow.camera.left = -shadowExtent;
     moonLight.shadow.camera.right = shadowExtent;
     moonLight.shadow.camera.top = shadowExtent;
     moonLight.shadow.camera.bottom = -shadowExtent;
     moonLight.shadow.camera.updateProjectionMatrix();
 
-    // Fade out loader
-    if (loaderElement) {
-      loaderElement.classList.add('hidden');
-      setTimeout(() => loaderElement.remove(), 700);
+    // Apply mobile optimizations AFTER chunkSystem, lights, and materials are ready
+    if (mobileOptimizer && mobileOptimizer.enabled) {
+      mobileOptimizer.apply();
+    }
+
+    // Pre-warm GPU textures and precompile shader pipelines during load screen to eliminate runtime frame drops
+    if (renderer.initTexture) {
+      scene.traverse((obj) => {
+        if (obj.isMesh && obj.material) {
+          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+          mats.forEach((m) => {
+            if (m.map) renderer.initTexture(m.map);
+            if (m.emissiveMap) renderer.initTexture(m.emissiveMap);
+            if (m.normalMap) renderer.initTexture(m.normalMap);
+            if (m.roughnessMap) renderer.initTexture(m.roughnessMap);
+          });
+        }
+      });
+    }
+
+    if (renderer.compileAsync) {
+      renderer.compileAsync(scene, camera).catch(() => {}).finally(() => {
+        if (loaderElement) {
+          loaderElement.classList.add('hidden');
+          setTimeout(() => loaderElement.remove(), 700);
+        }
+      });
+    } else {
+      if (loaderElement) {
+        loaderElement.classList.add('hidden');
+        setTimeout(() => loaderElement.remove(), 700);
+      }
     }
   },
   (xhr) => {
@@ -2759,15 +2877,13 @@ window.addEventListener('resize', () => {
   camera.fov = (height > width) ? 65 : 50;
   camera.updateProjectionMatrix();
   renderer.setSize(width, height);
-  const pRatio = IS_MOBILE ? Math.min(window.devicePixelRatio, 1.5) : Math.min(window.devicePixelRatio, 2);
+  const pRatio = Math.min(window.devicePixelRatio || 1, 2.5);
   renderer.setPixelRatio(pRatio);
   composer.setSize(width, height);
   composer.setPixelRatio(pRatio);
 
   if (bloomPass) {
-    const bRes = IS_MOBILE
-      ? new THREE.Vector2(Math.floor(width * 0.5), Math.floor(height * 0.5))
-      : new THREE.Vector2(width, height);
+    const bRes = new THREE.Vector2(width, height);
     bloomPass.setSize(bRes.x, bRes.y);
   }
 });
@@ -2780,6 +2896,10 @@ const clock = new THREE.Clock();
 
 
 window._printScenePolys = function() {
+  if (chunkSystem && typeof chunkSystem.getActiveTriangleCount === 'function') {
+    window._visibleSceneTriangles = chunkSystem.getActiveTriangleCount();
+    return;
+  }
   let uniqueTriangles = 0;
   const seenGeometries = new Set();
   scene.traverse(o => {
@@ -2792,50 +2912,83 @@ window._printScenePolys = function() {
   window._visibleSceneTriangles = Math.round(uniqueTriangles);
 };
 setInterval(() => { if (window._printScenePolys) window._printScenePolys(); }, 1000);
+let _targetFpsCap = (typeof IS_MOBILE !== 'undefined' && IS_MOBILE) ? 30 : 60;
+window._targetFpsCap = _targetFpsCap;
+window.setFpsCap = function(cap) {
+  _targetFpsCap = cap;
+  window._targetFpsCap = cap;
+  console.log('[FrameRate] FPS cap set to:', cap);
+};
+
+let _lastRenderTimeMs = 0;
 function animate(currentTime) {
   requestAnimationFrame(animate);
 
+  if (_targetFpsCap && _targetFpsCap < 60) {
+    // Dynamic minimum interval: 30 FPS -> ~32.5ms, 45 FPS -> ~21.2ms
+    const minInterval = (1000 / _targetFpsCap) - 1.0;
+    if (currentTime - _lastRenderTimeMs < minInterval) {
+      return;
+    }
+  }
+  _lastRenderTimeMs = currentTime;
+
+  if (perfDebugger) {
+    perfDebugger.beginFrame();
+  } else {
+    renderer.info.reset();
+  }
+
+  const logicStart = performance.now();
   const delta = clock.getDelta();
   const elapsedTime = clock.getElapsedTime();
 
+  const pauseLogic = perfDebugger?.state?.pauseLogic;
+
   // Update Santa Sleigh Flight & Gift Delivery systems
-  if (sleighController) {
+  if (sleighController && !pauseLogic) {
     sleighController.update(delta, elapsedTime);
   }
-  if (deliverySystem) {
+  if (deliverySystem && !pauseLogic) {
     deliverySystem.update(delta, elapsedTime);
   }
 
   // Update dynamic procedural infinite chunk streaming based on sleigh position / exploration focus
-  if (window.chunkSystem) {
+  if (window.chunkSystem && !pauseLogic) {
     const streamFocus = sleighController ? sleighController.position : controls.target;
     window.chunkSystem.update(streamFocus, camera);
   }
 
+  // Mobile optimizer culling and telemetry (runs EVERY FRAME before render)
+  if (mobileOptimizer && mobileOptimizer.enabled) {
+    const focusPos = sleighController ? sleighController.position : (controls.target || camera.position);
+    mobileOptimizer.update(delta, focusPos, fps);
+  }
+
   // Update unified procedural winter night sky, 3D aurora & Milky Way
-  if (skyGroup) {
+  if (skyGroup && !pauseLogic) {
     skyGroup.position.copy(camera.position);
     skyUniforms.uTime.value = elapsedTime;
     skyUniforms.uCameraPos.value.copy(camera.position);
   }
 
   // Update procedural terrain snow shader time
-  if (terrainSnowUniforms) {
+  if (terrainSnowUniforms && !pauseLogic) {
     terrainSnowUniforms.uTime.value = elapsedTime;
   }
 
   // Update procedural low-lying winter mist time
-  if (fogTimeUniform) {
+  if (fogTimeUniform && !pauseLogic) {
     fogTimeUniform.value = elapsedTime;
   }
 
   // Update automatic adaptive village warm-lighting system
-  if (lightingSystem) {
+  if (lightingSystem && !pauseLogic) {
     lightingSystem.update(delta);
   }
 
   // Update dynamic procedural weather engine (cycles through Clear -> Flurries -> Blizzard -> Clearing)
-  if (weatherEngine) {
+  if (weatherEngine && !pauseLogic) {
     weatherEngine.update(elapsedTime, delta);
   }
 
@@ -2870,7 +3023,7 @@ function animate(currentTime) {
       shadowFocus.y = 0;
 
       // Anti-jitter: snap directional shadow camera in texel increments to completely stop sub-pixel shadow crawling
-      const currentExtent = IS_MOBILE ? 15 : 20;
+      const currentExtent = 20;
       const worldTexelSize = (currentExtent * 2.0) / shadowMapDim;
       const snappedFocusX = Math.floor(shadowFocus.x / worldTexelSize) * worldTexelSize;
       const snappedFocusZ = Math.floor(shadowFocus.z / worldTexelSize) * worldTexelSize;
@@ -2956,11 +3109,27 @@ function animate(currentTime) {
     largeSnowGeo.attributes.position.needsUpdate = true;
   }
 
-  // Render scene with cinematic bloom for ethereal aurora glow & warm house hearths
-  composer.render();
-  // renderer.render(scene, camera);
+  const logicEnd = performance.now();
+  if (perfDebugger) perfDebugger.recordLogicTime(logicEnd - logicStart);
+
+  // Render scene with cinematic bloom or direct render toggle
+  const renderStart = performance.now();
+  if (!perfDebugger?.state?.skipRender) {
+    const useBloom = (perfDebugger?.state?.postProcessing !== false)
+                  && !(mobileOptimizer?.enabled && mobileOptimizer._bloomDisabled);
+    if (useBloom) {
+      composer.render();
+    } else {
+      renderer.render(scene, camera);
+    }
+  }
+  const renderEnd = performance.now();
+  if (perfDebugger) perfDebugger.recordRenderTime(renderEnd - renderStart);
+
   const sceneCalls = renderer.info.render.calls;
   const sceneTriangles = renderer.info.render.triangles;
+
+  if (perfDebugger) perfDebugger.endFrame();
 
   // FPS & Draw Call Telemetry
   frameCount++;
