@@ -710,9 +710,22 @@ canvas {
 }
 
 .hud-banner.star {
-  background: linear-gradient(135deg, rgba(241, 196, 15, 0.96), rgba(230, 126, 34, 0.96));
-  color: #1e272e;
-  border: 1px solid #ffffff;
+  background: linear-gradient(135deg, rgba(255, 215, 0, 0.98), rgba(245, 158, 11, 0.98));
+  color: #1a1600;
+  border: 1.5px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 4px 22px rgba(245, 158, 11, 0.65), 0 0 12px rgba(255, 235, 59, 0.7);
+  font-weight: 700;
+  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.6);
+}
+
+.hud-star-pulse {
+  animation: hudStarPop 0.55s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+@keyframes hudStarPop {
+  0% { transform: scale(1); filter: drop-shadow(0 0 0px gold); }
+  35% { transform: scale(1.35); filter: drop-shadow(0 0 12px gold) brightness(1.25); color: #fff37a; }
+  100% { transform: scale(1); filter: drop-shadow(0 0 0px gold); }
 }
 
 .hud-banner {

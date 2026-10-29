@@ -31,14 +31,14 @@ export class SleighController {
 
     // Movement & Non-Linear Aerodynamics Parameters (Smooth, natural, magical flight)
     this.baseCruiseSpeed = 1.8;   // m/s: comfortable magical forward cruise
-    this.minSpeed        = 0.9;   // m/s: lowest speed during steep climbs / heavy maneuvers
-    this.maxSpeed        = 2.8;   // m/s: top natural speed during steep dives
-    this.accelRate       = 1.5;   // gradual exponential acceleration momentum
-    this.decelRate       = 1.2;   // gentle exponential coasting deceleration
+    this.minSpeed        = 1.05;  // m/s: lowest speed during steep climbs (heavy aerodynamic drag)
+    this.maxSpeed        = 3.4;   // m/s: top speed during steep dives (gravity swooping acceleration)
+    this.accelRate       = 3.2;   // fast, noticeable gravity acceleration surge on dive
+    this.decelRate       = 1.8;   // natural climb drag deceleration
     this.turnSpeed       = 1.55;  // smooth, predictable turning rate
     this.turnVelocity    = 0.0;   // smoothed rotational velocity for natural yaw inertia
     this.smoothTurnInput = 0.0;
-    this.bankMax         = 0.38;  // subtle, majestic sleigh banking (radians)
+    this.bankMax         = 0.42;  // stylish, majestic sleigh banking (radians)
     this.climbSpeed      = 3.2;
 
     // Controls input state (pure flight: no boost)
@@ -64,18 +64,21 @@ export class SleighController {
     this.verticalInput = 0.0;
 
     // Flight simulation dynamics: smooth, floaty, natural aerodynamic lift & descent
-    this.climbRate = 1.35;    // m/s: gentle, majestic climb rate
-    this.descendRate = 1.25;  // m/s: graceful, controlled descent rate
+    this.climbRate = 1.85;    // m/s: natural, graceful climb rate
+    this.descendRate = 1.85;  // m/s: graceful, controlled descent rate
     this.verticalSpeed = 0.0;
-    this.verticalAccel = 3.2; // organic, non-snappy vertical momentum
-    this.verticalDecel = 2.4; // soft floating leveling deceleration
-    this.pitchMax = 0.28;     // natural pitch angle (radians) during climb/dive
+    this.verticalAccel = 2.6; // gentle, non-jerky vertical glide acceleration
+    this.verticalDecel = 2.2; // silky leveling deceleration
+    this.pitchMax = 0.54;     // pronounced, heroic 3D pitch angle (~31 degrees) during climb/dive
 
     // Dynamic Terrain-Relative Altitude Limits (meters above local terrain)
     this.minAltitudeAboveTerrain = 0.01; // Skims ground level with runners directly in the snow
-    this.targetFlightAltitude = 0.58;    // Comfortable cruising height above terrain
-    this.maxAltitudeAboveTerrain = 1.15; // Soft natural ceiling: keeps village in beautiful view
-    this.altitudeSoftBuffer = 0.08;      // Distance from boundaries where vertical damping begins
+    this.targetFlightAltitude = 0.65;    // Comfortable cruising height above terrain
+    this.maxAltitudeAboveTerrain = 3.2;  // High, generous vertical ceiling: free 3D flight
+    this.altitudeSoftBuffer = 0.20;      // Distance from boundaries where vertical damping begins
+
+    // Dynamic camera banking roll
+    this.cameraRoll = 0.0;
 
     // Sleigh & Reindeer Collision Bounds (meters)
     // Sleigh body + reindeer team total footprint calibrated for the half-size rig
@@ -878,10 +881,8 @@ export class SleighController {
     const targetBank = (this.turnVelocity / this.turnSpeed) * this.bankMax;
     this.bank += (targetBank - this.bank) * (1.0 - Math.exp(-4.2 * delta));
 
-    // 2. Vertical Flight (Smooth Look-Ahead Terrain Following & Gliding)
+    // 2. Pure Manual Vertical Flight (No Auto Altitude Correction over Terrain)
     let localGroundH = 0.5;
-    let aheadGroundH = 0.5;
-    let farAheadGroundH = 0.5;
 
     const heading = this._headingVec.set(
       -Math.sin(this.rotationY),
@@ -891,28 +892,17 @@ export class SleighController {
 
     if (this.chunkSystem && this.chunkSystem.getHeight) {
       localGroundH = this.chunkSystem.getHeight(this.position.x, this.position.z);
-      // Predictive terrain look-ahead along forward vector (scaled for mini rig)
-      aheadGroundH = this.chunkSystem.getHeight(
-        this.position.x + heading.x * 0.7,
-        this.position.z + heading.z * 0.7
-      );
-      farAheadGroundH = this.chunkSystem.getHeight(
-        this.position.x + heading.x * 1.4,
-        this.position.z + heading.z * 1.4
-      );
     }
-
-    // Effective terrain envelope accounts for approaching hills ahead of time
-    const effectiveTerrainH = Math.max(localGroundH, aheadGroundH * 0.9 + localGroundH * 0.1, farAheadGroundH * 0.75);
 
     const currentAltitude = this.position.y - localGroundH;
     const minAlt = this.minAltitudeAboveTerrain;
-    const maxAlt = this.maxAltitudeAboveTerrain || 1.15;
+    const maxAlt = this.maxAltitudeAboveTerrain || 3.2;
     const buffer = this.altitudeSoftBuffer;
 
     let vertCommand = 0.0;
     if (this.inputs.up) vertCommand += 1.0;
     if (this.inputs.down) vertCommand -= 1.0;
+    if (this.verticalInput !== 0.0) vertCommand += this.verticalInput;
 
     // Joystick Y controls altitude: pushing forward/up (-joyY) climbs, pulling back (+joyY) descends
     if (Math.abs(joyY) > deadZone) {
@@ -921,7 +911,7 @@ export class SleighController {
     }
     vertCommand = Math.max(-1.0, Math.min(1.0, vertCommand));
 
-    // Smooth soft-damping near both terrain ground floor and upper ceiling
+    // Smooth soft-damping only near upper ceiling and ground limit
     let descendFactor = 1.0;
     if (currentAltitude < minAlt + buffer) {
       descendFactor = Math.max(0.0, (currentAltitude - minAlt) / buffer);
@@ -931,79 +921,61 @@ export class SleighController {
       climbFactor = Math.max(0.0, (maxAlt - currentAltitude) / buffer);
     }
 
+    // Pure manual target vertical velocity: no automatic hill pushing or contour pulling!
     let targetVertSpeed = 0.0;
-    if (vertCommand > 0) {
-      // Natural aerodynamic climb with soft ceiling cushion
+    if (vertCommand > 0.02) {
+      // Natural aerodynamic climb
       targetVertSpeed = this.climbRate * vertCommand * climbFactor;
-      this.targetFlightAltitude = Math.min(
-        maxAlt,
-        this.targetFlightAltitude + this.climbRate * vertCommand * climbFactor * delta * 0.85
-      );
-    } else if (vertCommand < 0) {
-      // Graceful aerodynamic descent toward snow floor
+    } else if (vertCommand < -0.02) {
+      // Natural aerodynamic descent
       targetVertSpeed = -this.descendRate * Math.abs(vertCommand) * descendFactor;
-      this.targetFlightAltitude = Math.max(
-        minAlt + 0.05,
-        this.targetFlightAltitude - this.descendRate * Math.abs(vertCommand) * delta * 0.85
-      );
     } else {
-      // Smoothly hold current cruising altitude with organic critically damped leveling
-      const altDelta = this.targetFlightAltitude - currentAltitude;
-      targetVertSpeed = THREE.MathUtils.clamp(altDelta * 2.0, -this.descendRate * 0.5, this.climbRate * 0.5);
+      // Neutral controls: glide naturally, coasting smoothly to level flight (0 vertical velocity)
+      targetVertSpeed = 0.0;
     }
 
-    // Predictive smooth contour lift: naturally glide up hills before hitting them
-    const terrainClimbDeficit = (effectiveTerrainH + minAlt) - this.position.y;
-    if (terrainClimbDeficit > 0) {
-      // Smooth proportional lift avoids sudden velocity shocks
-      const predictiveClimb = terrainClimbDeficit * 4.5;
-      targetVertSpeed = Math.max(targetVertSpeed, predictiveClimb);
-    }
-
-    // Smooth vertical acceleration / deceleration with critically damped spring
-    if (this.verticalSpeed < targetVertSpeed) {
-      this.verticalSpeed = Math.min(this.verticalSpeed + this.verticalAccel * delta, targetVertSpeed);
-    } else if (this.verticalSpeed > targetVertSpeed) {
-      this.verticalSpeed = Math.max(this.verticalSpeed - this.verticalDecel * delta, targetVertSpeed);
-    }
+    // Smooth, silky vertical glide acceleration and deceleration
+    const vertRate = Math.abs(targetVertSpeed) > Math.abs(this.verticalSpeed) ? this.verticalAccel : this.verticalDecel;
+    this.verticalSpeed += (targetVertSpeed - this.verticalSpeed) * (1.0 - Math.exp(-vertRate * delta));
 
     this.position.y += this.verticalSpeed * delta;
 
-    // Solid physical ground level floor (runners skim directly atop the snow)
+    // Physical ground safety floor: sleigh runners skim atop the snow, never clipping under terrain
     const absoluteFloor = localGroundH + minAlt;
     if (this.position.y < absoluteFloor) {
-      this.position.y += (absoluteFloor - this.position.y) * Math.min(delta * 16.0, 1.0);
+      this.position.y = absoluteFloor;
       if (this.verticalSpeed < 0) this.verticalSpeed = 0;
     }
 
-    // Natural pitch inclination while climbing or diving (smooth exponential ease)
+    // Natural pitch inclination while climbing or diving (responsive, heroic 3D pitch)
     const normVertRate = this.verticalSpeed / Math.max(this.climbRate, this.descendRate);
     const targetPitch = normVertRate * this.pitchMax;
-    this.pitch += (targetPitch - this.pitch) * (1.0 - Math.exp(-4.8 * delta));
+    this.pitch += (targetPitch - this.pitch) * (1.0 - Math.exp(-5.5 * delta));
 
     // 3. Dynamic Aerodynamic Flight Speed & Momentum
-    // Magical cruising momentum with gradual acceleration when swooping down and natural drag during climbs/turns
+    // Magical cruising momentum: noticeable gravity swooping acceleration when diving down,
+    // and distinct aerodynamic drag resistance when pulling up into climbs
     let targetSpeed = this.baseCruiseSpeed;
 
-    if (normVertRate < -0.05) {
-      // Gentle gravity swooping momentum when descending
-      const diveFactor = -normVertRate;
-      targetSpeed += (diveFactor * 0.55 + diveFactor * diveFactor * 0.35);
-    } else if (normVertRate > 0.05) {
-      // Natural aerodynamic resistance during climbs
+    if (normVertRate < -0.04) {
+      // Strong gravity swooping acceleration when descending (up to +1.6 m/s top speed)
+      const diveFactor = -normVertRate; // [0..1]
+      targetSpeed = this.baseCruiseSpeed + diveFactor * 1.6;
+    } else if (normVertRate > 0.04) {
+      // Natural aerodynamic drag during climbs (down to 1.05 m/s)
       const climbFactor = Math.min(normVertRate, 1.0);
-      targetSpeed -= climbFactor * 0.38;
+      targetSpeed = this.baseCruiseSpeed - climbFactor * 0.75;
     }
 
     // Induced drag during banked turns
-    const bankRatio = Math.abs(this.bank) / (this.bankMax || 0.38);
-    if (bankRatio > 0.1) {
-      targetSpeed -= Math.pow(bankRatio, 1.5) * 0.35;
+    const bankRatio = Math.abs(this.bank) / (this.bankMax || 0.42);
+    if (bankRatio > 0.15) {
+      targetSpeed -= Math.pow(bankRatio, 1.4) * 0.30;
     }
 
     targetSpeed = THREE.MathUtils.clamp(targetSpeed, this.minSpeed, this.maxSpeed);
 
-    // Gradual acceleration and gentle deceleration momentum
+    // Fast-acting acceleration when swooping down, graceful deceleration when climbing
     const speedRate = targetSpeed > this.speed ? this.accelRate : this.decelRate;
     this.speed += (targetSpeed - this.speed) * (1.0 - Math.exp(-speedRate * delta));
 
@@ -1057,8 +1029,8 @@ export class SleighController {
 
     // Update skeletal AnimationMixers for all reindeer instances
     if (this.mixers && this.mixers.length > 0) {
-      // Speed up deer galloping animation when flying faster, gentle trot when hovering
-      const animSpeed = 1.0 + Math.max(0, this.speed) * 0.18;
+      // Speed up deer galloping animation when flying faster (surging during steep dives)
+      const animSpeed = 0.85 + (this.speed / this.baseCruiseSpeed) * 0.45;
       for (let i = 0; i < this.mixers.length; i++) {
         this.mixers[i].update(delta * animSpeed);
       }
@@ -1067,29 +1039,32 @@ export class SleighController {
     // Fallback procedural galloping legs if fallback model used
     this.reindeerLegs.forEach((leg) => {
       const phase = leg.isFront ? 0.0 : Math.PI;
-      const angle = Math.sin(this.animTime * 4.0 + phase + leg.legIdx * 0.5) * 0.55;
+      const angle = Math.sin(this.animTime * (3.5 + this.speed * 0.8) + phase + leg.legIdx * 0.5) * 0.55;
       leg.pivot.rotation.x = angle;
     });
 
     // 9. Dynamic Reindeer Lead Steering, Climb Pitch & Dynamic Reins
     if (this.reindeers && this.reindeers.length > 0) {
       const normVert = THREE.MathUtils.clamp(this.verticalSpeed / Math.max(this.climbRate, this.descendRate), -1.0, 1.0);
-      const climbPitchLead = -normVert * 0.24; // Negative X rotation tilts +Z nose upward into climb
-      const turnYawLead = -(this.turnInput || 0.0) * 0.28; // Negative Y rotation heads into left turn
+      // Reindeer tilt into climb: negative X in model space raises nose toward sky
+      const climbPitchLead = -normVert * 0.52; 
+      const turnYawLead = -(this.turnInput || 0.0) * 0.30; // Negative Y rotation heads into left turn
 
       for (let i = 0; i < this.reindeers.length; i++) {
         const d = this.reindeers[i];
         if (!d.mesh) continue;
-        const leadFactor = d.isLead ? 1.0 : 0.65;
+        const leadFactor = d.isLead ? 1.0 : 0.75;
 
-        // Dynamic orientation: Lead yaw into turns, climb pitch upward into climbs, and gentle gallop sway
+        // Dynamic 3D orientation: Lead yaw into turns, bold climb/dive pitch, and vertical team arch
         const gallopBob = Math.sin(this.animTime * 3.5 + (d.timeOffset || 0) * 8.0) * 0.016;
         const gallopSway = Math.sin(this.animTime * 3.0 + i) * 0.02;
+        // Reindeer vertically arc into climbs (lead deer fly slightly higher on climb, lower on dive)
+        const teamClimbOffset = normVert * (d.isLead ? 0.045 : 0.018);
 
-        d.mesh.position.y = (d.baseY || 0) + gallopBob;
+        d.mesh.position.y = (d.baseY || 0) + gallopBob + teamClimbOffset;
         d.mesh.rotation.y = turnYawLead * leadFactor + gallopSway;
         d.mesh.rotation.x = climbPitchLead * leadFactor;
-        d.mesh.rotation.z = -(this.turnInput || 0.0) * 0.15 * leadFactor;
+        d.mesh.rotation.z = -(this.turnInput || 0.0) * 0.18 * leadFactor;
 
         // Dynamically update harness rein line in the batched InstancedMesh
         if (this.instancedReins && d.hitchPos && this._reinDummy) {
@@ -1168,18 +1143,22 @@ export class SleighController {
       Math.cos(this.rotationY)
     );
 
-    // Target camera position behind and above sleigh
+    // Target camera position behind and above sleigh with dynamic pitch framing
+    // When diving (pitch < 0), camera lifts slightly to give clear view over Santa toward the ground.
+    // When climbing (pitch > 0), camera lowers slightly and tilts up into the starry sky.
+    const pitchCamHeightOffset = -this.pitch * 0.14;
     this.camTargetPos.copy(this.position).addScaledVector(this._camBackVec, this.camDistance);
-    this.camTargetPos.y = this.position.y + this.camHeight;
+    this.camTargetPos.y = this.position.y + this.camHeight + pitchCamHeightOffset;
 
-    // Target look-at point ahead of sleigh for clear forward visibility
+    // Target look-at point ahead of sleigh with dynamic pitch angle
     this._camForwardVec.set(
       -Math.sin(this.rotationY),
       0,
       -Math.cos(this.rotationY)
     );
+    const pitchLookOffset = this.pitch * 0.22;
     this.camLookPos.copy(this.position).addScaledVector(this._camForwardVec, 0.65);
-    this.camLookPos.y = this.position.y + 0.12;
+    this.camLookPos.y = this.position.y + 0.12 + pitchLookOffset;
 
     // First frame initialization of look target
     if (!this._camLookInitialized) {
@@ -1191,6 +1170,11 @@ export class SleighController {
     // Natural exponential easing behind the sleigh (5.5 / s) eliminates camera hitching and prevents motion sickness
     const posEase = 1.0 - Math.exp(-5.5 * delta);
     this.camera.position.lerp(this.camTargetPos, posEase);
+
+    // Dynamic camera banking roll (camera subtly leans into banked turns)
+    const targetCamRoll = -this.bank * 0.35;
+    this.cameraRoll += (targetCamRoll - this.cameraRoll) * (1.0 - Math.exp(-6.0 * delta));
+    this.camera.up.set(Math.sin(this.cameraRoll), Math.cos(this.cameraRoll), 0);
 
     // Look-at point eases smoothly with slightly higher responsiveness (7.5 / s) to keep flight direction centered
     const lookEase = 1.0 - Math.exp(-7.5 * delta);

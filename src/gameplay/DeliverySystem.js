@@ -60,6 +60,8 @@ export class DeliverySystem {
     // Falling gifts & active delivery sparks
     this.activeGifts = [];
     this.activeSparkles = [];
+    this.activeShockwaves = [];
+    this.activeWorldPopups = [];
 
     // Next-target guidance: temporary golden particle flow arcing toward destination
     this.guidanceFlow = new TargetGuidanceFlow(this.scene, this.isMobile);
@@ -106,57 +108,41 @@ export class DeliverySystem {
     this._beamGeo = new THREE.CylinderGeometry(0.085, 0.055, this._beamHeight, 18, 1, true);
     this._beamGeo.translate(0, this._beamHeight * 0.5, 0);
 
-    // Classic 3D 5-point star shape with beveled diamond faceting
-    const starShape = new THREE.Shape();
-    for (let i = 0; i < 10; i++) {
-      const radius = i % 2 === 0 ? 0.135 : 0.055;
-      const angle = -Math.PI / 2 + (i * Math.PI) / 5;
-      const px = Math.cos(angle) * radius;
-      const py = Math.sin(angle) * radius;
-      if (i === 0) starShape.moveTo(px, py);
-      else starShape.lineTo(px, py);
-    }
-    starShape.closePath();
+    // 3D 10-pointed faceted celestial diamond star geometry (pyramidal diamond faceting)
+    this._starGeo = this._createFacetedStarGeometry(0.14, 0.058, 0.048);
 
-    this._starGeo = new THREE.ExtrudeGeometry(starShape, {
-      depth: 0.040,
-      bevelEnabled: true,
-      bevelSegments: 2,
-      steps: 1,
-      bevelSize: 0.018,
-      bevelThickness: 0.020
-    });
-    this._starGeo.center();
+    // Inner glowing core diamond octahedron
+    this._starCoreGeo = new THREE.OctahedronGeometry(0.052, 1);
 
-    // Inner glowing core diamond sphere
-    this._starCoreGeo = new THREE.OctahedronGeometry(0.048, 1);
-
-    // Warm golden star PBR material with radiant emissive luminance
+    // Radiant, self-illuminating golden star material (immune to dark night fog blackout)
     this._starMat = new THREE.MeshStandardMaterial({
-      color: 0xffd23f,
-      emissive: 0xf59e0b,
-      emissiveIntensity: 0.90,
-      metalness: 0.72,
-      roughness: 0.22,
-      toneMapped: true
+      color: 0xffe680,
+      emissive: 0xffa500,
+      emissiveIntensity: 1.85,
+      metalness: 0.85,
+      roughness: 0.15,
+      fog: false,
+      toneMapped: false
     });
 
-    // Brilliant diamond star core material
+    // Brilliant diamond star core material with warm core glow
     this._starCoreMat = new THREE.MeshBasicMaterial({
-      color: 0xfffae6,
-      wireframe: false
+      color: 0xffffff,
+      fog: false,
+      toneMapped: false
     });
 
-    // Soft localized golden halo glow
+    // Soft celestial golden halo flare texture (centered bloom + cross glint)
+    this._starHaloTexture = this._createStarHaloTexture();
     this._starHaloMat = new THREE.SpriteMaterial({
-      map: this._haloTexture,
-      color: 0xffca3d,
+      map: this._starHaloTexture,
+      color: 0xffcc33,
       blending: THREE.AdditiveBlending,
       transparent: true,
-      opacity: 0.45,
+      opacity: 0.70,
       depthWrite: false,
       fog: false,
-      toneMapped: true
+      toneMapped: false
     });
 
     this.deliveredMat = new THREE.MeshBasicMaterial({
@@ -389,6 +375,84 @@ export class DeliverySystem {
     ctx.fill();
 
     return new THREE.CanvasTexture(canvas);
+  }
+
+  // 3D Faceted Double-Pyramid Diamond Star Geometry (20 diamond triangular faces)
+  _createFacetedStarGeometry(outerR = 0.14, innerR = 0.058, depth = 0.048) {
+    const geo = new THREE.BufferGeometry();
+    const vertices = [];
+    const points = [];
+
+    // 10 perimeter points alternating outer and inner radius
+    for (let i = 0; i < 10; i++) {
+      const r = i % 2 === 0 ? outerR : innerR;
+      const angle = -Math.PI / 2 + (i * Math.PI) / 5;
+      points.push(new THREE.Vector2(Math.cos(angle) * r, Math.sin(angle) * r));
+    }
+
+    // Front center apex: (0, 0, +depth), Back center apex: (0, 0, -depth)
+    for (let i = 0; i < 10; i++) {
+      const p1 = points[i];
+      const p2 = points[(i + 1) % 10];
+
+      // Front diamond facet (apex to edge)
+      vertices.push(0, 0, depth);
+      vertices.push(p1.x, p1.y, 0);
+      vertices.push(p2.x, p2.y, 0);
+
+      // Back diamond facet (apex to edge)
+      vertices.push(0, 0, -depth);
+      vertices.push(p2.x, p2.y, 0);
+      vertices.push(p1.x, p1.y, 0);
+    }
+
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    geo.computeVertexNormals();
+    return geo;
+  }
+
+  // Soft luminous celestial halo texture with radial core bloom & diamond flare
+  _createStarHaloTexture() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    const cx = 64, cy = 64;
+
+    // 1. Soft radial bloom
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 60);
+    grad.addColorStop(0, 'rgba(255, 255, 240, 1.0)');
+    grad.addColorStop(0.20, 'rgba(255, 220, 110, 0.85)');
+    grad.addColorStop(0.45, 'rgba(255, 175, 40, 0.40)');
+    grad.addColorStop(0.75, 'rgba(245, 140, 10, 0.12)');
+    grad.addColorStop(1, 'rgba(245, 140, 10, 0.0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 128, 128);
+
+    // 2. Subtle 4-point celestial glint flare
+    ctx.fillStyle = 'rgba(255, 255, 245, 0.85)';
+    // Vertical diamond streak
+    ctx.beginPath();
+    ctx.moveTo(cx, 8);
+    ctx.lineTo(cx + 4, cy);
+    ctx.lineTo(cx, 120);
+    ctx.lineTo(cx - 4, cy);
+    ctx.closePath();
+    ctx.fill();
+
+    // Horizontal diamond streak
+    ctx.beginPath();
+    ctx.moveTo(8, cy);
+    ctx.lineTo(cx, cy + 4);
+    ctx.lineTo(120, cy);
+    ctx.lineTo(cx, cy - 4);
+    ctx.closePath();
+    ctx.fill();
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.generateMipmaps = false;
+    texture.minFilter = THREE.LinearFilter;
+    return texture;
   }
 
   // Celestial halo glow behind the floating icon
@@ -1228,6 +1292,57 @@ export class DeliverySystem {
         }
       }
     }
+
+    // 6. Update expanding shockwave rings
+    for (let i = this.activeShockwaves.length - 1; i >= 0; i--) {
+      const sw = this.activeShockwaves[i];
+      sw.age += delta;
+      if (sw.age >= sw.maxAge) {
+        this.scene.remove(sw.mesh);
+        if (sw.mesh.geometry) sw.mesh.geometry.dispose();
+        if (sw.mesh.material) sw.mesh.material.dispose();
+        this.activeShockwaves.splice(i, 1);
+      } else {
+        const progress = sw.age / sw.maxAge;
+        // Fast expansion with slight deceleration
+        const easeScale = 1.0 - Math.pow(1.0 - progress, 2.5);
+        const currentRadius = sw.startRadius + (sw.endRadius - sw.startRadius) * easeScale;
+        sw.mesh.scale.set(currentRadius, currentRadius, currentRadius);
+        // Smooth non-linear fade
+        const fade = Math.pow(1.0 - progress, 1.8);
+        sw.mesh.material.opacity = (sw.baseOpacity || 0.85) * fade;
+      }
+    }
+
+    // 7. Update floating world-space popups (+50 score)
+    for (let i = this.activeWorldPopups.length - 1; i >= 0; i--) {
+      const wp = this.activeWorldPopups[i];
+      wp.age += delta;
+      if (wp.age >= wp.maxAge) {
+        this.scene.remove(wp.sprite);
+        if (wp.sprite.material) {
+          if (wp.sprite.material.map) wp.sprite.material.map.dispose();
+          wp.sprite.material.dispose();
+        }
+        this.activeWorldPopups.splice(i, 1);
+      } else {
+        const progress = wp.age / wp.maxAge;
+        // Float upward
+        wp.sprite.position.y = wp.startY + progress * 0.75;
+        // Scale elastic bounce in first 20%, then gentle drift
+        let scale = wp.baseScale;
+        if (progress < 0.22) {
+          const popT = progress / 0.22;
+          scale = wp.baseScale * (0.4 + 0.8 * Math.sin(popT * Math.PI * 0.5));
+        } else {
+          scale = wp.baseScale * (1.2 - 0.2 * ((progress - 0.22) / 0.78));
+        }
+        wp.sprite.scale.set(scale, scale * 0.5, 1.0);
+        // Smooth fade out towards end
+        const alpha = progress < 0.7 ? 1.0 : 1.0 - ((progress - 0.7) / 0.3);
+        wp.sprite.material.opacity = alpha;
+      }
+    }
   }
 
   // Trailing golden 4-point diamond star particles emitted behind falling gifts (Panel 5)
@@ -1364,6 +1479,20 @@ export class DeliverySystem {
     this.activeGifts.length = 0;
     this.activeSparkles.forEach((sp) => this.scene.remove(sp.mesh));
     this.activeSparkles.length = 0;
+    this.activeShockwaves.forEach((sw) => {
+      this.scene.remove(sw.mesh);
+      if (sw.mesh.geometry) sw.mesh.geometry.dispose();
+      if (sw.mesh.material) sw.mesh.material.dispose();
+    });
+    this.activeShockwaves.length = 0;
+    this.activeWorldPopups.forEach((wp) => {
+      this.scene.remove(wp.sprite);
+      if (wp.sprite.material) {
+        if (wp.sprite.material.map) wp.sprite.material.map.dispose();
+        wp.sprite.material.dispose();
+      }
+    });
+    this.activeWorldPopups.length = 0;
     if (this.guidanceFlow) {
       this.guidanceFlow.clear();
     }
@@ -1790,7 +1919,7 @@ export class DeliverySystem {
         group.name = `RouteStar_${starId}`;
         group.position.set(posX, finalY, posZ);
 
-        // 1. Faceted golden outer star
+        // 1. Faceted 3D diamond star
         const starMesh = new THREE.Mesh(this._starGeo, this._starMat);
         starMesh.rotation.z = (starId * 0.65) % Math.PI;
         group.add(starMesh);
@@ -1799,10 +1928,35 @@ export class DeliverySystem {
         const coreMesh = new THREE.Mesh(this._starCoreGeo, this._starCoreMat);
         group.add(coreMesh);
 
-        // 3. Soft ambient golden aura
+        // 3. Radiant celestial golden halo flare
         const halo = new THREE.Sprite(this._starHaloMat);
-        halo.scale.set(0.38, 0.38, 0.38);
+        halo.scale.set(0.55, 0.55, 0.55);
         group.add(halo);
+
+        // 4. Subtle orbiting golden stardust sparkles (fairy dust)
+        const motesGeo = new THREE.BufferGeometry();
+        const moteCount = 4;
+        const motePositions = new Float32Array(moteCount * 3);
+        for (let m = 0; m < moteCount; m++) {
+          const mAngle = (m / moteCount) * Math.PI * 2;
+          const mR = 0.22;
+          motePositions[m * 3]     = Math.cos(mAngle) * mR;
+          motePositions[m * 3 + 1] = (Math.random() - 0.5) * 0.08;
+          motePositions[m * 3 + 2] = Math.sin(mAngle) * mR;
+        }
+        motesGeo.setAttribute('position', new THREE.BufferAttribute(motePositions, 3));
+        const motesMat = new THREE.PointsMaterial({
+          map: this._starGlintTexture,
+          color: 0xfffae0,
+          size: 0.12,
+          transparent: true,
+          opacity: 0.85,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          fog: false
+        });
+        const motesMesh = new THREE.Points(motesGeo, motesMat);
+        group.add(motesMesh);
 
         this.starsGroup.add(group);
         this.activeStars.push({
@@ -1810,6 +1964,8 @@ export class DeliverySystem {
           group,
           mesh: starMesh,
           core: coreMesh,
+          halo,
+          motes: motesMesh,
           baseY: finalY,
           phase: starId * 1.15,
           collected: false
@@ -1839,6 +1995,14 @@ export class DeliverySystem {
         star.core.rotation.y -= delta * 2.5;
         star.core.rotation.z += delta * 1.2;
       }
+      if (star.motes) {
+        star.motes.rotation.y += delta * 1.4;
+      }
+      if (star.halo) {
+        // Subtle gentle breathing pulse on the celestial flare
+        const haloPulse = 0.52 + Math.sin(elapsedTime * 3.0 + star.phase) * 0.08;
+        star.halo.scale.set(haloPulse, haloPulse, haloPulse);
+      }
 
       // Smooth floating hover bob
       const targetBaseY = star.baseY + Math.sin(elapsedTime * 2.2 + star.phase) * 0.045;
@@ -1867,6 +2031,14 @@ export class DeliverySystem {
     }
   }
 
+  _triggerHUDStarPulse() {
+    const el = document.getElementById('hud-stars');
+    if (!el) return;
+    el.classList.remove('hud-star-pulse');
+    void el.offsetWidth; // Force DOM reflow to restart CSS animation
+    el.classList.add('hud-star-pulse');
+  }
+
   _collectStar(star, index) {
     if (star.collected) return;
     star.collected = true; // Guard against duplicate pickup
@@ -1879,15 +2051,107 @@ export class DeliverySystem {
     this.starScore += 50;
     this.score = this.deliveryScore + this.starScore;
 
-    // Brief, localized star collection sparkle effect (non-blinding, mobile optimized)
+    // Spectacular, multi-layered celebratory collection effects:
+    // 1. Expanding golden planar shockwave ring
+    this._spawnShockwaveRing(worldPos);
+
+    // 2. Multi-tiered sparkling stardust & diamond ember burst
     this._spawnStarSparkleBurst(worldPos);
+
+    // 3. Floating 3D world-space "+50 🌟" score popup
+    this._spawnWorldScorePopup(worldPos, '+50 🌟');
+
+    // 4. Crystalline chime sound with shimmer overtones
     soundManager.playStar();
+
+    // 5. HUD banner notification and tactile counter pulse
     this.showBanner(`STAR COLLECTED! +50 • ${this.starsCollected}/${this.starsTotal}`, 'star');
     this._updateHUD();
+    this._triggerHUDStarPulse();
+  }
+
+  _spawnShockwaveRing(worldPos) {
+    // Ethereal horizontal planar shockwave ring expanding outward from collection center
+    const ringGeo = new THREE.RingGeometry(0.08, 0.22, 32);
+    // Orient horizontally (facing upwards)
+    ringGeo.rotateX(-Math.PI / 2);
+
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xffe066,
+      transparent: true,
+      opacity: 0.90,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+
+    const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+    ringMesh.position.copy(worldPos);
+    this.scene.add(ringMesh);
+
+    this.activeShockwaves.push({
+      mesh: ringMesh,
+      startRadius: 0.6,
+      endRadius: this.isMobile ? 2.2 : 2.8,
+      baseOpacity: 0.88,
+      age: 0.0,
+      maxAge: 0.38
+    });
+  }
+
+  _spawnWorldScorePopup(worldPos, text) {
+    // Dynamically render crisp billboard text to high-res offscreen canvas
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 52px system-ui, -apple-system, sans-serif';
+
+    // Golden halo glow & dark outline for maximum legibility against snow & sky
+    ctx.shadowColor = '#f59e0b';
+    ctx.shadowBlur = 18;
+    ctx.lineWidth = 8;
+    ctx.strokeStyle = 'rgba(20, 20, 25, 0.85)';
+    ctx.strokeText(text, 128, 64);
+
+    ctx.fillStyle = '#fff9d6';
+    ctx.fillText(text, 128, 64);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.generateMipmaps = false;
+    texture.minFilter = THREE.LinearFilter;
+
+    const spriteMat = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      opacity: 1.0,
+      depthWrite: false,
+      depthTest: false
+    });
+
+    const sprite = new THREE.Sprite(spriteMat);
+    // Slightly elevated above the star location
+    sprite.position.set(worldPos.x, worldPos.y + 0.15, worldPos.z);
+    const baseScale = this.isMobile ? 0.95 : 1.15;
+    sprite.scale.set(baseScale, baseScale * 0.5, 1.0);
+    this.scene.add(sprite);
+
+    this.activeWorldPopups.push({
+      sprite,
+      startY: worldPos.y + 0.15,
+      baseScale,
+      age: 0.0,
+      maxAge: 0.75
+    });
   }
 
   _spawnStarSparkleBurst(worldPos) {
-    const count = this.isMobile ? 24 : 45;
+    const count = this.isMobile ? 36 : 64;
     const geo = new THREE.BufferGeometry();
     const positions = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
@@ -1900,20 +2164,21 @@ export class DeliverySystem {
 
       // Radiant festive gold, warm champagne, and diamond starburst
       const colorTier = Math.random();
-      if (colorTier > 0.6) {
-        colors[i * 3] = 1.0; colors[i * 3 + 1] = 0.98; colors[i * 3 + 2] = 0.85; // Diamond
+      if (colorTier > 0.65) {
+        colors[i * 3] = 1.0; colors[i * 3 + 1] = 1.0; colors[i * 3 + 2] = 0.92; // Diamond White-Gold
       } else if (colorTier > 0.25) {
-        colors[i * 3] = 1.0; colors[i * 3 + 1] = 0.85; colors[i * 3 + 2] = 0.25; // Gold
+        colors[i * 3] = 1.0; colors[i * 3 + 1] = 0.86; colors[i * 3 + 2] = 0.22; // Pure Gold
       } else {
-        colors[i * 3] = 1.0; colors[i * 3 + 1] = 0.60; colors[i * 3 + 2] = 0.12; // Amber
+        colors[i * 3] = 1.0; colors[i * 3 + 1] = 0.58; colors[i * 3 + 2] = 0.10; // Warm Amber
       }
 
       const theta = Math.random() * Math.PI * 2;
       const phi = (Math.random() - 0.5) * Math.PI;
-      const speed = 1.8 + Math.random() * 3.2;
+      // High-energy initial explosion with slight upward buoyancy
+      const speed = 2.2 + Math.random() * 4.2;
       velocities.push({
         x: Math.cos(phi) * Math.cos(theta) * speed,
-        y: Math.sin(phi) * speed * 0.8 + 0.8,
+        y: Math.sin(phi) * speed * 0.85 + 1.2,
         z: Math.cos(phi) * Math.sin(theta) * speed
       });
     }
@@ -1922,7 +2187,8 @@ export class DeliverySystem {
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
     const mat = new THREE.PointsMaterial({
-      size: this.isMobile ? 0.25 : 0.34,
+      map: this._starGlintTexture || this._haloTexture,
+      size: this.isMobile ? 0.32 : 0.42,
       vertexColors: true,
       transparent: true,
       opacity: 1.0,
@@ -1937,7 +2203,7 @@ export class DeliverySystem {
       mesh: sparkleMesh,
       velocities: velocities,
       age: 0.0,
-      maxAge: 0.48
+      maxAge: 0.58
     });
   }
 

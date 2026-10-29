@@ -94,23 +94,34 @@ class SoundManager {
     if (!this.ctx || this.ctx.state !== 'running') return;
     try {
       const now = this.ctx.currentTime;
-      // Rich three-note festive sparkle chime (B6 -> D#7 -> F#7)
-      const notes = [1975.53, 2489.02, 2959.96];
+      // Rich 4-note ascending crystalline chime (E6 -> G#6 -> B6 -> E7)
+      const notes = [1318.51, 1661.22, 1975.53, 2637.02];
       notes.forEach((freq, idx) => {
         const osc = this.ctx.createOscillator();
+        const harmonic = this.ctx.createOscillator();
         const gain = this.ctx.createGain();
-        const startTime = now + idx * 0.055;
+        const startTime = now + idx * 0.048;
+        const dur = 0.42;
 
+        // Primary bell tone
         osc.type = 'triangle';
         osc.frequency.setValueAtTime(freq, startTime);
 
-        gain.gain.setValueAtTime(0.24, startTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.38);
+        // Subtle shimmering octave overtone for crystalline fairy dust sparkle
+        harmonic.type = 'sine';
+        harmonic.frequency.setValueAtTime(freq * 2.0, startTime);
+
+        gain.gain.setValueAtTime(0.20, startTime);
+        gain.gain.exponentialRampToValueAtTime(0.0008, startTime + dur);
 
         osc.connect(gain);
+        harmonic.connect(gain);
         gain.connect(this.ctx.destination);
+
         osc.start(startTime);
-        osc.stop(startTime + 0.38);
+        osc.stop(startTime + dur);
+        harmonic.start(startTime);
+        harmonic.stop(startTime + dur);
       });
     } catch (e) {}
   }
