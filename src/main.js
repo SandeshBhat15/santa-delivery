@@ -914,10 +914,14 @@ THREE.ShaderChunk.fog_vertex = `
     vFogDepth = - mvPosition.z;
     #ifdef USE_INSTANCING
       vFogWorldPos = (modelMatrix * (instanceMatrix * vec4(transformed, 1.0))).xyz;
-    #elif defined(USE_SPRITE)
+    #elif defined(USE_SPRITE) || defined(SPRITE)
       vFogWorldPos = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
     #else
-      vFogWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      #ifdef TRANSFORMED
+        vFogWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      #else
+        vFogWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+      #endif
     #endif
   #endif
 `;

@@ -112,7 +112,7 @@ export class BatchedChunkSystem {
     this.scene = scene;
     this.chunkSize = 20.0;
     this.isMobile = options.isMobile ?? false;
-    this.maxLoadedChunks = options.maxLoadedChunks || (this.isMobile ? 24 : 36);
+    this.maxLoadedChunks = options.maxLoadedChunks || (this.isMobile ? 32 : 54);
 
     // 1. Mobile load radius: 75m nominal on mobile, 110m on desktop
     this.nominalLoadRadius = this.isMobile ? 75.0 : 110.0;
@@ -490,8 +490,14 @@ export class BatchedChunkSystem {
         Math.round(getTriCount(geoLOD2))
       ];
 
+      const refInstMesh = new THREE.InstancedMesh(child.geometry, child.material, matrices.length);
+      refInstMesh.name = 'Ref_' + (child.name || 'Mesh');
+      refInstMesh.visible = false;
+
       this.meshDefinitions.push({
         name: child.name,
+        geometry: geoLOD0,
+        instMesh: refInstMesh,
         geometryLOD: [geoLOD0, geoLOD1, geoLOD2],
         material: child.material,
         baseMatrices: matrices,
