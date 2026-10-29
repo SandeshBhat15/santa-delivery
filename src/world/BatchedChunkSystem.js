@@ -477,8 +477,8 @@ export class BatchedChunkSystem {
       let geoLOD1 = geoLOD0;
       let geoLOD2 = geoLOD0;
 
-      // Only simplify houses, trees, and cliffs (ground planes stay 1:1)
-      if (category !== 'ground') {
+      // Simplify houses and foliage. Preserve cliffs and ground at full geometric fidelity to prevent UV texture distortion
+      if (category === 'house' || category === 'foliage') {
         geoLOD1 = this._simplifyGeometry(geoLOD0, 0.35, 0.15);
         geoLOD2 = this._simplifyGeometry(geoLOD0, 0.10, 0.30);
       }
