@@ -904,7 +904,7 @@ export class PerformanceDebugger {
       <div style="font-weight:bold; color:#ffd700; margin-bottom:2px;">🎮 TELEMETRY (FULL FRAME)</div>
       <div><strong>FPS:</strong> <span style="font-size:13px; font-weight:bold; color:${fpsColor}">${fps}</span> (${this.avgFrameTime.toFixed(1)} ms)</div>
       <div><strong>Draw Calls:</strong> ${this.lastCalls}</div>
-      <div><strong>Triangles:</strong> ${(this.lastTriangles || 0).toLocaleString()}</div>
+      <div><strong>Triangles:</strong> ${(this.lastTriangles || 0).toLocaleString()} (Shadow: ${(this.lastShadowTriangles || window._shadowPassTriangles || 0).toLocaleString()})</div>
       <div><strong>Geometries:</strong> ${this.lastGeometries} | <strong>Textures:</strong> ${this.lastTextures}</div>
       ${window.chunkScheduler ? `
         <div style="color:#38bdf8; font-size:10px; margin-top:2px; border-top:1px dashed #475569; padding-top:2px;">

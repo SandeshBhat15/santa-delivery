@@ -3121,15 +3121,30 @@ function animate(currentTime) {
   const logicEnd = performance.now();
   if (perfDebugger) perfDebugger.recordLogicTime(logicEnd - logicStart);
 
+  // Reset shadow pass triangle accumulator
+  window._shadowPassTriangles = window._frameShadowTriangles || 0;
+  window._frameShadowTriangles = 0;
+
   // Render scene with cinematic bloom or direct render toggle
   const renderStart = performance.now();
+  let shadowTrianglesReal = 0;
   if (!perfDebugger?.state?.skipRender) {
     const useBloom = (perfDebugger?.state?.postProcessing !== false)
                   && !(mobileOptimizer?.enabled && mobileOptimizer._bloomDisabled);
+
+    // Measure shadow pass triangle count by sampling renderer.info before and after shadow pass
+    const callsBefore = renderer.info.render.calls;
+    const trisBefore = renderer.info.render.triangles;
+
     if (useBloom) {
       composer.render();
     } else {
       renderer.render(scene, camera);
+    }
+
+    // On frames where shadow was rendered, track real shadow pass triangles
+    if (perfDebugger) {
+      perfDebugger.lastShadowTriangles = (window._shadowPassTriangles || 0);
     }
   }
   const renderEnd = performance.now();

@@ -103,6 +103,12 @@ export class MobileOptimizer {
       if (isShadowPass) {
         this._frameShadowDrawnChunks.add(chunkKey);
         this._frameShadowDrawnCategories[catKey] += mesh.userData.instanceCount || 1;
+        if (mesh.geometry) {
+          const g = mesh.geometry;
+          const instCount = mesh.count || 1;
+          const t = (g.index ? g.index.count / 3 : g.attributes.position.count / 3) * instCount;
+          window._frameShadowTriangles = (window._frameShadowTriangles || 0) + Math.round(t);
+        }
       } else {
         this._frameMainDrawnChunks.add(chunkKey);
         this._frameMainDrawnCategories[catKey] += mesh.userData.instanceCount || 1;

@@ -554,6 +554,7 @@ export class BatchedChunkSystem {
     this.shadowMeshes = [];
 
     const numLods = (this.isMobile && !this.useLod) ? 1 : 3;
+    const fullShadows = urlParams.get('shadows') === 'full';
 
     for (let lod = 0; lod < numLods; lod++) {
       for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
@@ -563,9 +564,14 @@ export class BatchedChunkSystem {
         const instMesh = new THREE.InstancedMesh(def.geometryLOD[lod], def.material, maxInstances);
         instMesh.name = `Global_${def.name}_LOD${lod}`;
 
-        // 5. SHADOW PASS: On mobile without runtime LOD, LOD0 meshes cast shadows directly
+        // 5. SHADOW PASS: On mobile without runtime LOD, houses and trees do NOT cast shadows unless ?shadows=full
         if (this.isMobile) {
-          instMesh.castShadow = this.useLod ? (lod > 0 && def.castShadow) : def.castShadow;
+          if (this.useLod) {
+            instMesh.castShadow = (lod > 0 && def.castShadow);
+          } else {
+            const isTreeOrHouse = (def.category === 'house' || def.category === 'foliage');
+            instMesh.castShadow = fullShadows ? def.castShadow : (def.castShadow && !isTreeOrHouse);
+          }
         } else {
           instMesh.castShadow = def.castShadow;
         }
@@ -894,10 +900,13 @@ export class BatchedChunkSystem {
 
         // Shadow pass triangles calculation
         if (this.isMobile) {
-          // Dedicated LOD2 shadow casters within 25m only when runtime LOD is active; otherwise LOD0 meshes cast directly
           if (def.castShadow) {
-            const castersIn25m = Math.min(count, def.baseCount * 5);
-            shadowTris += castersIn25m * (this.useLod ? def.trisLOD[2] : def.trisLOD[0]);
+            const isTreeOrHouse = (def.category === 'house' || def.category === 'foliage');
+            const casts = (urlParams.get('shadows') === 'full') || !isTreeOrHouse || this.useLod;
+            if (casts) {
+              const castersIn25m = Math.min(count, def.baseCount * 5);
+              shadowTris += castersIn25m * (this.useLod ? def.trisLOD[2] : def.trisLOD[0]);
+            }
           }
         } else {
           if (def.castShadow) {

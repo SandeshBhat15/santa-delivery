@@ -465,34 +465,48 @@ export class ChunkScheduler {
     const currentCz = Math.floor((this._lastSleighPos.z + half) / cs.chunkSize);
     const currentSleighKey = `${currentCx},${currentCz}`;
 
-    let evictionCandidate = null;
-    let lowestPriority = Infinity;
-
-    for (const [key, chunk] of cs.chunks.entries()) {
-      if (key === currentSleighKey) continue;
-      const ageMs = now - (chunk.createdAt || 0);
-      if (ageMs < 1500) continue;
-
-      const outsideFrustum = !this._isBoxInFrustum(chunk.cx, chunk.cz, 1.10);
-      let prio = 0;
-      if (outsideFrustum) prio -= 50000;
-
-      if (prio < lowestPriority) {
-        lowestPriority = prio;
-        evictionCandidate = key;
+    // Delivery target key
+    let targetKey = null;
+    if (window.deliverySystem && window.deliverySystem.activeTarget) {
+      const tp = window.deliverySystem.activeTarget.worldPos;
+      if (tp) {
+        targetKey = `${Math.floor((tp.x + half) / cs.chunkSize)},${Math.floor((tp.z + half) / cs.chunkSize)}`;
       }
     }
 
-    if (!evictionCandidate) {
-      for (const [key, chunk] of cs.chunks.entries()) {
-        if (key === currentSleighKey) continue;
-        const outsideFrustum = !this._isBoxInFrustum(chunk.cx, chunk.cz, 1.10);
-        let prio = 0;
-        if (outsideFrustum) prio -= 50000;
-        if (prio < lowestPriority) {
-          lowestPriority = prio;
-          evictionCandidate = key;
-        }
+    const fwd2D = new THREE.Vector2(this._sleighForward.x, this._sleighForward.z);
+    if (fwd2D.lengthSq() > 0.0001) fwd2D.normalize();
+
+    let evictionCandidate = null;
+    let highestScore = -Infinity;
+
+    for (const [key, chunk] of cs.chunks.entries()) {
+      if (key === currentSleighKey) continue; // Never evict sleigh chunk
+      const ageMs = now - (chunk.createdAt || 0);
+      if (ageMs < 1500) continue; // Strict 1.5s age guard (no fallback)
+
+      const wx = chunk.cx * cs.chunkSize;
+      const wz = chunk.cz * cs.chunkSize;
+      const distFromSleigh = Math.hypot(wx - this._lastSleighPos.x, wz - this._lastSleighPos.z);
+
+      // Vector from sleigh to chunk
+      const toChunk = new THREE.Vector2(wx - this._lastSleighPos.x, wz - this._lastSleighPos.z);
+      if (toChunk.lengthSq() > 0.0001) toChunk.normalize();
+      const dotHeading = toChunk.dot(fwd2D);
+
+      const isBehind = (dotHeading < -0.2);
+      const outsideFrustum = !this._isBoxInFrustum(chunk.cx, chunk.cz, 1.10);
+
+      // Score = distance from sleigh + 20 if behind + 30 if outside frustum - big penalty if in travel direction or target
+      let score = distFromSleigh;
+      if (isBehind) score += 20.0;
+      if (outsideFrustum) score += 30.0;
+      if (dotHeading > 0.5) score -= 100.0; // Penalty for travel direction
+      if (key === targetKey) score -= 500.0; // Big penalty for target chunk
+
+      if (score > highestScore) {
+        highestScore = score;
+        evictionCandidate = key;
       }
     }
 
