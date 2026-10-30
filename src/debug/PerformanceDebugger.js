@@ -52,6 +52,8 @@ export class PerformanceDebugger {
     this.avgLogicTime = 0;
     this.avgRenderTime = 0;
     this.avgFrameTime = 0;
+    this.maxFrameTime5s = 0;
+    this._recentFrameTimes = [];
 
     // Independent rAF FPS Counter
     this.rAfFps = 0;
@@ -115,6 +117,17 @@ export class PerformanceDebugger {
     const dt = now - (this.frameStartTime || now);
     this.frameTime = dt;
     this.avgFrameTime = this.avgFrameTime * 0.9 + dt * 0.1;
+
+    // Track real maximum frame time over last 5 seconds
+    this._recentFrameTimes.push({ t: now, dt });
+    while (this._recentFrameTimes.length > 0 && (now - this._recentFrameTimes[0].t) > 5000) {
+      this._recentFrameTimes.shift();
+    }
+    let maxDt = 0;
+    for (let i = 0; i < this._recentFrameTimes.length; i++) {
+      if (this._recentFrameTimes[i].dt > maxDt) maxDt = this._recentFrameTimes[i].dt;
+    }
+    this.maxFrameTime5s = maxDt;
 
     // Snapshot full frame metrics after all render and post-processing passes finished
     if (this.ctx.renderer) {
@@ -401,7 +414,7 @@ export class PerformanceDebugger {
       font-size: 11px;
       line-height: 1.4;
       color: #e0e6ed;
-      pointer-events: none;
+      pointer-events: auto;
       backdrop-filter: blur(6px);
       box-shadow: 0 4px 15px rgba(0,0,0,0.6);
       max-width: 280px;
@@ -896,9 +909,13 @@ export class PerformanceDebugger {
       ${window.chunkScheduler ? `
         <div style="color:#38bdf8; font-size:10px; margin-top:2px; border-top:1px dashed #475569; padding-top:2px;">
           • <strong>Chunks:</strong> ${window.chunkScheduler.telemetry.loadedChunksCount}/${window.chunkScheduler.telemetry.maxChunks} (Q:${window.chunkScheduler.telemetry.queueLength}, Delay:${window.chunkScheduler.telemetry.delayedRequestsCount})<br/>
-          • <strong>Fog [F]:</strong> ${window.mobileFog?.enabled ? `${window.mobileFog.fogNear.toFixed(1)}m / ${window.mobileFog.fogFar.toFixed(1)}m` : 'OFF'}<br/>
-          • <strong>Pops:</strong> ${window.chunkScheduler.telemetry.visiblePops} | <strong>Gen:</strong> ${window.chunkScheduler.telemetry.lastGenMs.toFixed(1)}ms | <strong>Max5s:</strong> ${this.avgFrameTime.toFixed(1)}ms<br/>
+          • <strong>LOD:</strong> ${window.chunkScheduler.useLod ? 'ON' : 'OFF'} | <strong>Fog [F]:</strong> ${window.mobileFog?.enabled ? `${window.mobileFog.fogNear.toFixed(1)}m / ${window.mobileFog.fogFar.toFixed(1)}m` : 'OFF'}<br/>
+          • <strong>Pops:</strong> ${window.chunkScheduler.telemetry.visiblePops} | <strong>Gen:</strong> ${window.chunkScheduler.telemetry.lastGenMs.toFixed(1)}ms | <strong>Max5s:</strong> ${this.maxFrameTime5s.toFixed(1)}ms<br/>
           • <strong>AABB [B]:</strong> ${window.chunkScheduler.showAABBs ? 'ON' : 'OFF'}
+          <div style="display:flex; gap:6px; margin-top:4px;">
+            <button id="btn-touch-fog" style="flex:1; background:#1e293b; border:1px solid #38bdf8; color:#38bdf8; border-radius:4px; font-size:10px; padding:3px 2px; cursor:pointer;">Toggle Fog</button>
+            <button id="btn-touch-aabb" style="flex:1; background:#1e293b; border:1px solid #4ade80; color:#4ade80; border-radius:4px; font-size:10px; padding:3px 2px; cursor:pointer;">Toggle Bounds</button>
+          </div>
         </div>
       ` : ''}
       <div style="color:#a5f3fc; font-size:10px;">• <strong>santa aseet:</strong> ${this._getSantaAseetInfo()}</div>
@@ -914,6 +931,22 @@ export class PerformanceDebugger {
         </div>
       ` : ''}
     `;
+
+    // Attach touch buttons for mobile HUD if present
+    const btnFog = this.hud.querySelector('#btn-touch-fog');
+    if (btnFog) {
+      btnFog.onclick = (e) => {
+        e.stopPropagation();
+        if (window.mobileFog) window.mobileFog.toggleFog();
+      };
+    }
+    const btnAABB = this.hud.querySelector('#btn-touch-aabb');
+    if (btnAABB) {
+      btnAABB.onclick = (e) => {
+        e.stopPropagation();
+        if (window.chunkScheduler) window.chunkScheduler.toggleAABBs();
+      };
+    }
 
     // Also update timing split box in panel if open
     const timeLogicEl = document.getElementById('time-logic');

@@ -69,8 +69,8 @@ export class MobileFog {
    * For the grid of loaded chunks, an edge is any perimeter boundary (x = minX or maxX, z = minZ or maxZ of the chunk)
    * that borders an unloaded chunk.
    */
-  _computeNearestUnloadedEdge(camera, loadedChunkKeys, chunkSize = 20.0) {
-    if (!loadedChunkKeys || loadedChunkKeys.size === 0) {
+  _computeNearestUnloadedEdge(camera, loadedChunks, chunkSize = 20.0) {
+    if (!loadedChunks || loadedChunks.size === 0) {
       return 26.0; // clamp min 22 + 4m margin
     }
 
@@ -83,8 +83,9 @@ export class MobileFog {
     let minEdgeDist = Infinity;
     const half = chunkSize * 0.5;
 
-    // Check every loaded chunk
-    for (const key of loadedChunkKeys) {
+    // Check every loaded chunk (loadedChunks can be a Map or Set)
+    const keys = loadedChunks.keys ? loadedChunks.keys() : loadedChunks;
+    for (const key of keys) {
       const parts = key.split(',');
       const cx = parseInt(parts[0], 10);
       const cz = parseInt(parts[1], 10);
@@ -109,7 +110,7 @@ export class MobileFog {
       for (let i = 0; i < 4; i++) {
         const nb = neighbors[i];
         const nbKey = `${nb.nx},${nb.nz}`;
-        if (!loadedChunkKeys.has(nbKey)) {
+        if (!loadedChunks.has(nbKey)) {
           // This boundary is an unloaded edge segment
           let closestPtX, closestPtZ;
           if (nb.edgeAxis === 'x') {
@@ -142,14 +143,14 @@ export class MobileFog {
     return minEdgeDist;
   }
 
-  update(delta, camera, loadedChunkKeys, chunkSize = 20.0) {
+  update(delta, camera, loadedChunks, chunkSize = 20.0) {
     if (!this.scene.fog || !camera) return;
 
     // Synchronize fog color with sky horizon
     this.scene.fog.color.copy(this.horizonColor);
 
     // Compute raw nearest unloaded edge distance ahead and to the sides
-    const rawEdgeDist = this._computeNearestUnloadedEdge(camera, loadedChunkKeys, chunkSize);
+    const rawEdgeDist = this._computeNearestUnloadedEdge(camera, loadedChunks, chunkSize);
     this.nearestEdgeDist = rawEdgeDist;
 
     // fogFar = distance from the CAMERA to the nearest unloaded edge ahead and to the sides, minus 4 m, clamped to [22, 55] m

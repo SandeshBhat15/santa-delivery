@@ -899,6 +899,11 @@ export class BatchedChunkSystem {
    * 4. HARD BUDGET GOVERNOR (1,000,000 max on mobile)
    */
   _enforceBudget() {
+    // If LOD is disabled on mobile (?lod=0), bypass governor modifications to radii and chunk loading
+    if (this.isMobile && (!this.scheduler || !this.scheduler.useLod)) {
+      return;
+    }
+
     const totalTris = this.telemetry.totalTriangles;
 
     if (totalTris > this.polyBudget) {
@@ -978,33 +983,32 @@ export class BatchedChunkSystem {
     }
 
     if (this.mobileFog) {
-      this.mobileFog.update(frameDeltaMs / 1000.0, camera, new Set(this.chunks.keys()), this.chunkSize);
+      this.mobileFog.update(frameDeltaMs / 1000.0, camera, this.chunks, this.chunkSize);
     }
-    if (this.scheduler && this.scheduler.update(this._sleighPos, camera, now, frameDeltaMs, this.mobileFog)) {
-      return;
-    }
+    const handledByScheduler = this.scheduler ? this.scheduler.update(this._sleighPos, camera, now, frameDeltaMs, this.mobileFog) : false;
 
-    // 6. CHUNK GENERATION: at most 1 chunk per frame, within 2 ms budget
-    const budgetStart = performance.now();
-    if (this.priorityQueue.length > 0) {
-      const candidate = this.priorityQueue.pop();
-      if (candidate) {
-        this.queuedKeys.delete(candidate.key);
-        if (!this.chunks.has(candidate.key)) {
-          this.generateChunk(candidate.cx, candidate.cz);
+    // 6. CHUNK GENERATION (skip old generator when scheduler handles streaming):
+    if (!handledByScheduler) {
+      if (this.priorityQueue.length > 0) {
+        const candidate = this.priorityQueue.pop();
+        if (candidate) {
+          this.queuedKeys.delete(candidate.key);
+          if (!this.chunks.has(candidate.key)) {
+            this.generateChunk(candidate.cx, candidate.cz);
+          }
         }
       }
+      this.telemetry.queueLength = this.priorityQueue.length;
+
+      // Process at most 1 LOD band change per frame with 1s cooldown & 8m hysteresis
+      this._processLODBandUpdate(now);
+
+      // Dynamic Hard Budget Governor check
+      this._enforceBudget();
+
+      // Prune unneeded chunks
+      this._pruneUnneededChunks(now, curFocusChunkX, curFocusChunkZ);
     }
-    this.telemetry.queueLength = this.priorityQueue.length;
-
-    // Process at most 1 LOD band change per frame with 1s cooldown & 8m hysteresis
-    this._processLODBandUpdate(now);
-
-    // Dynamic Hard Budget Governor check
-    this._enforceBudget();
-
-    // Prune unneeded chunks
-    this._pruneUnneededChunks(now, curFocusChunkX, curFocusChunkZ);
   }
 
   _recomputePriorityQueue(camera, centerCx, centerCz, now) {
