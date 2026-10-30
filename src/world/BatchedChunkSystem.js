@@ -883,10 +883,12 @@ export class BatchedChunkSystem {
 
     for (let lod = 0; lod < 3; lod++) {
       const meshes = this.instancedMeshesLOD[lod];
+      if (!meshes || meshes.length === 0) continue;
       const lodKey = `LOD${lod}`;
 
       for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
         const def = this.meshDefinitions[defIdx];
+        if (!meshes[defIdx]) continue;
         const count = meshes[defIdx].count;
         const triPerInst = def.trisLOD[lod];
         const totalTrisForMesh = count * triPerInst;
