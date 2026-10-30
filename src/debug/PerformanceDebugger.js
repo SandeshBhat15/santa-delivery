@@ -105,10 +105,6 @@ export class PerformanceDebugger {
   }
 
   beginFrame() {
-    // Reset info at frame start so shadow passes, bloom passes, and main passes accumulate
-    if (this.ctx.renderer) {
-      this.ctx.renderer.info.reset();
-    }
     this.frameStartTime = performance.now();
   }
 
@@ -908,10 +904,10 @@ export class PerformanceDebugger {
       <div><strong>Geometries:</strong> ${this.lastGeometries} | <strong>Textures:</strong> ${this.lastTextures}</div>
       ${window.chunkScheduler ? `
         <div style="color:#38bdf8; font-size:10px; margin-top:2px; border-top:1px dashed #475569; padding-top:2px;">
-          • <strong>Chunks:</strong> ${this.ctx.chunkSystem?.chunks?.size || window.chunkScheduler.telemetry.loadedChunksCount}/${window.chunkScheduler.telemetry.maxChunks} (Q:${window.chunkScheduler.telemetry.queueLength}, Delay:${window.chunkScheduler.telemetry.delayedRequestsCount})<br/>
+          • <strong>Chunks:</strong> ${this.ctx.chunkSystem?.chunks?.size || window.chunkScheduler.telemetry.loadedChunksCount}/${window.chunkScheduler.telemetry.maxChunks} (Q:${window.chunkScheduler.telemetry.queueLength}, Delay:${window.chunkScheduler.telemetry.delayedRequestsCount}) | Sleigh: ${window.chunkScheduler.telemetry.sleighChunkKey} ${window.chunkScheduler.telemetry.sleighChunkLoaded ? "LOADED" : "MISSING"}<br/>
           • <strong>LOD:</strong> ${this.ctx.chunkSystem?.useLod ? 'ON' : 'OFF'} [L0:${this.ctx.chunkSystem?.lodActiveCounts?.[0] || 0}, L1:${this.ctx.chunkSystem?.lodActiveCounts?.[1] || 0}, L2:${this.ctx.chunkSystem?.lodActiveCounts?.[2] || 0}] | <strong>Violations:</strong> ${this.ctx.chunkSystem?.capViolations || 0}<br/>
           • <strong>Fog [F]:</strong> ${window.mobileFog?.enabled ? `${window.mobileFog.fogNear.toFixed(1)}m / ${window.mobileFog.fogFar.toFixed(1)}m` : 'OFF'}<br/>
-          • <strong>Pops:</strong> ${window.chunkScheduler.telemetry.visiblePops} | <strong>Gen:</strong> ${window.chunkScheduler.telemetry.lastGenMs.toFixed(1)}ms | <strong>Max5s:</strong> ${this.maxFrameTime5s.toFixed(1)}ms<br/>
+          • <strong>Pops:</strong> ${window.chunkScheduler.telemetry.visiblePops} | <strong>Gen:</strong> ${window.chunkScheduler.telemetry.lastGenMs.toFixed(1)}ms | <strong>LastGen:</strong> ${window.chunkScheduler.telemetry.lastSuccessfulGenTime ? (performance.now() - window.chunkScheduler.telemetry.lastSuccessfulGenTime).toFixed(0) : "n/a"}ms ago | <strong>Max5s:</strong> ${this.maxFrameTime5s.toFixed(1)}ms<br/>
           • <strong>AABB [B]:</strong> ${window.chunkScheduler.showAABBs ? 'ON' : 'OFF'}
           <div style="display:flex; gap:6px; margin-top:4px;">
             <button id="btn-touch-fog" style="flex:1; background:#1e293b; border:1px solid #38bdf8; color:#38bdf8; border-radius:4px; font-size:10px; padding:3px 2px; cursor:pointer;">Toggle Fog</button>

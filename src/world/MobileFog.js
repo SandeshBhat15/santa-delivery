@@ -22,10 +22,11 @@ export class MobileFog {
     this.horizonColor = new THREE.Color(0x0e1b2f);
     
     // Target and smoothed values
-    this.fogNear = 7.7; // ~35% of 22
-    this.fogFar = 22.0;
-    this.targetFogFar = 22.0;
-    this.targetFogNear = 7.7;
+    this.fogNear = 12.25; // ~35% of 35
+    this.fogFar = 35.0;
+    this.targetFogFar = 35.0;
+    this.targetFogNear = 12.25;
+    this._warnedFog = false;
     
     // Smoothing half-life or time constant ~ 1.0s
     this.smoothingTimeConstant = 1.0;
@@ -154,8 +155,8 @@ export class MobileFog {
     this.nearestEdgeDist = rawEdgeDist;
 
     // fogFar = distance from the CAMERA to the nearest unloaded edge ahead and to the sides, minus 4 m, clamped to [22, 55] m
-    const targetFar = THREE.MathUtils.clamp(rawEdgeDist - 4.0, 22.0, 55.0);
-    const targetNear = targetFar * 0.35; // fogNear ~35% of fogFar
+    const targetFar = THREE.MathUtils.clamp(rawEdgeDist - 4.0, 35.0, 55.0);
+    const targetNear = Math.max(targetFar * 0.35, 12.0); // fogNear ~35% of fogFar, never below 12m
 
     // Smooth over ~1 s: exponential smoothing lerp factor alpha = 1.0 - Math.exp(-delta / 1.0)
     const dt = Math.min(delta, 0.1);
@@ -163,6 +164,11 @@ export class MobileFog {
 
     this.fogFar += (targetFar - this.fogFar) * lerpAlpha;
     this.fogNear += (targetNear - this.fogNear) * lerpAlpha;
+
+    if (this.fogFar < 35.0 && !this._warnedFog) {
+      console.warn('[MobileFog] fogFar below 35m:', this.fogFar);
+      this._warnedFog = true;
+    }
 
     if (this.enabled) {
       this.scene.fog.near = this.fogNear;

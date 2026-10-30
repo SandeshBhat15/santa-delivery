@@ -3125,6 +3125,9 @@ function animate(currentTime) {
   window._shadowPassTriangles = window._frameShadowTriangles || 0;
   window._frameShadowTriangles = 0;
 
+   // Reset renderer.info once per frame before the composer/render passes
+   if (renderer) renderer.info.reset();
+
   // Render scene with cinematic bloom or direct render toggle
   const renderStart = performance.now();
   let shadowTrianglesReal = 0;
@@ -3167,7 +3170,7 @@ function animate(currentTime) {
         const c1 = t.countsPerLOD.LOD1;
         const c2 = t.countsPerLOD.LOD2;
         fpsElement.innerHTML = `FPS: ${fps} | Calls: ${sceneCalls} | Polys: Total ${Math.round(t.totalTriangles/1000)}k (Main ${Math.round(t.mainTriangles/1000)}k, Shadow ${Math.round(t.shadowTriangles/1000)}k / Budget ${Math.round(t.budget/1000)}k)<br>` +
-          `Chunks: ${t.loadedChunks} (Q:${t.queueLength}, Gen:${t.lastGenDurationMs.toFixed(1)}ms, Max5s:${t.worstFrameTime5s.toFixed(1)}ms) | ` +
+          `Chunks: ${t.loadedChunks} (Q:${t.queueLength}, Gen:${t.lastGenDurationMs.toFixed(1)}ms, Max5s:${t.worstFrameTime5s.toFixed(1)}ms) | Sleigh: ${window.chunkScheduler?.telemetry?.sleighChunkKey || "?"} ${window.chunkScheduler?.telemetry?.sleighChunkLoaded ? "OK" : "MISSING"} | ` +
           `Rad: ${Math.round(t.loadRadius)}m | LODs: [0: <${Math.round(t.lod0Radius)}m, 1: ${Math.round(t.lod0Radius)}-${Math.round(t.lod1Radius)}m, 2: >${Math.round(t.lod1Radius)}m] | ` +
           `LOD0: ${c0.chunks}c (${Math.round(c0.tris/1000)}k) | LOD1: ${c1.chunks}c (${Math.round(c1.tris/1000)}k) | LOD2: ${c2.chunks}c (${Math.round(c2.tris/1000)}k)`;
       } else {

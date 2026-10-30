@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 /**
- * ChunkScheduler — Intelligent Smooth Chunk Streaming Governor for Mobile
+ * ChunkScheduler � Intelligent Smooth Chunk Streaming Governor for Mobile
  *
  * Implements Requirements 1, 3, 4, 5, 6:
  * - Cap: Max 5 loaded chunks on mobile, never exceeded.
@@ -52,7 +52,11 @@ export class ChunkScheduler {
 
     // Timing & Frame Guard
     this.lastFrameTimeMs = 0;
-    this.skipNextFrameDueToLongFrame = false;
+    this.longFrameStreak = 0;
+    this.skippedFrames = 0;
+    this._prevFrameDeltaMs = 0;
+    this.lastSuccessfulGenTime = 0;
+    this.sleighChunkMissingSince = null;
 
     // Prefetch timer: every 150ms
     this.lastPrefetchTime = 0;
@@ -60,6 +64,9 @@ export class ChunkScheduler {
 
     // Delayed requests map: key -> { requestTime, candidate, visibleSince }
     this.delayedRequests = new Map();
+
+    // Watchdog state for sleigh chunk
+    this.sleighChunkMissingSince = null;
 
     // Visible pops counter
     this.visiblePops = 0;
@@ -94,7 +101,10 @@ export class ChunkScheduler {
       lastGenMs: 0,
       maxFrameTime5s: 0,
       loadedChunksCount: 0,
-      maxChunks: this.maxChunks
+      maxChunks: this.maxChunks,
+      sleighChunkKey: '',
+      sleighChunkLoaded: false,
+      lastSuccessfulGenTime: 0
     };
 
     window.chunkScheduler = this;
@@ -196,9 +206,14 @@ export class ChunkScheduler {
     this._projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this._frustum.setFromProjectionMatrix(this._projScreenMatrix);
 
-    // Frame Guard: Skip chunk generation on any frame after a frame over 20 ms
-    const wasOver20ms = this.skipNextFrameDueToLongFrame;
-    this.skipNextFrameDueToLongFrame = (frameDeltaMs > 20.0);
+    // Frame Guard: skip at most 3 consecutive long frames, then must generate.
+    const prevFrameLong = (this._prevFrameDeltaMs || 0) > 20.0;
+    if (prevFrameLong) this.longFrameStreak++;
+    else this.longFrameStreak = 0;
+    const skipThisFrame = this.longFrameStreak > 0 && this.skippedFrames < 3;
+    if (skipThisFrame) this.skippedFrames++;
+    if (!prevFrameLong) this.skippedFrames = 0;
+    this._prevFrameDeltaMs = frameDeltaMs;
 
     // 1. Calculate sleigh velocity, forward heading & yaw rate for turning anticipation
     const dt = Math.max(0.001, (now - this._lastTime) / 1000.0);
@@ -323,21 +338,59 @@ export class ChunkScheduler {
     // Sort candidates by priority descending
     candidates.sort((a, b) => b.priority - a.priority);
 
-    // The top 5 candidates form our ideal desired set
-    const desiredChunks = candidates.slice(0, this.maxChunks);
+    const isMandatoryChunk = (c) => Math.max(Math.abs(c.cx - currentCx), Math.abs(c.cz - currentCz)) <= 1;
+
+    // MANDATORY: sleigh chunk + 1 ring first (up to cap), then fill by priority
+    const desiredChunks = [];
+    const desiredSet = new Set();
+    for (const c of candidates) {
+      if (desiredChunks.length >= this.maxChunks) break;
+      if (!isMandatoryChunk(c)) continue;
+      desiredChunks.push(c);
+      desiredSet.add(c.key);
+    }
+    for (const c of candidates) {
+      if (desiredChunks.length >= this.maxChunks) break;
+      if (desiredSet.has(c.key)) continue;
+      desiredChunks.push(c);
+      desiredSet.add(c.key);
+    }
     desiredChunks.forEach(c => neededKeySet.add(c.key));
 
     // Ensure sleigh chunk is ALWAYS included in desired chunks
     if (!neededKeySet.has(currentSleighKey)) {
       const sleighCand = candidates.find(c => c.key === currentSleighKey);
       if (sleighCand) {
-        desiredChunks[desiredChunks.length - 1] = sleighCand;
+        if (desiredChunks.length >= this.maxChunks && desiredChunks.length > 0) {
+          desiredChunks[desiredChunks.length - 1] = sleighCand;
+        } else {
+          desiredChunks.push(sleighCand);
+        }
         neededKeySet.add(currentSleighKey);
       }
     }
 
     const loadedKeys = new Set(cs.chunks.keys());
     const fogFar = mobileFog ? mobileFog.fogFar : 25.0;
+
+    // Watchdog: if sleigh chunk not loaded after 500 ms, force-generate it.
+    const sleighLoaded = loadedKeys.has(currentSleighKey);
+    if (!sleighLoaded) {
+      if (this.sleighChunkMissingSince == null) this.sleighChunkMissingSince = now;
+      if (now - this.sleighChunkMissingSince > 500) {
+        console.error(`[ChunkScheduler] Sleigh chunk ${currentSleighKey} not loaded after 500ms; force-generating.`);
+        if (cs.chunks.size >= this.maxChunks && !cs.chunks.has(currentSleighKey)) {
+          if (this.evictLowestPriority) this.evictLowestPriority(now);
+        }
+        if (!cs.chunks.has(currentSleighKey)) {
+          cs.generateChunk(currentCx, currentCz);
+          this.lastSuccessfulGenTime = performance.now();
+        }
+        this.sleighChunkMissingSince = now;
+      }
+    } else {
+      this.sleighChunkMissingSince = null;
+    }
 
     // 5. Eviction: If more than maxChunks or an unloaded slot is needed
     // Evict lowest priority chunk: never sleigh chunk, never younger than 1.5 s
@@ -378,27 +431,27 @@ export class ChunkScheduler {
 
     // 6. Smooth Generation Scheduling:
     // Generate at most 1 chunk per frame (~2 ms budget)
-    // Only if not skipped due to long frame (>20 ms)
-    if (!wasOver20ms && cs.chunks.size < this.maxChunks) {
+    const hasMandatoryUnloaded = desiredChunks.some(c => Math.max(Math.abs(c.cx - currentCx), Math.abs(c.cz - currentCz)) <= 1 && !loadedKeys.has(c.key));
+    const allowGen = cs.chunks.size < this.maxChunks && (!skipThisFrame || hasMandatoryUnloaded);
+    if (allowGen) {
       // Find highest priority desired chunk not yet loaded
       for (const candidate of desiredChunks) {
         if (loadedKeys.has(candidate.key)) continue;
 
-        const isSleighChunk = (candidate.key === currentSleighKey);
-        // Exemption: Sleigh's own chunk and its nearest neighbor are exempt from view delay
         const chebyshevToSleigh = Math.max(Math.abs(candidate.cx - currentCx), Math.abs(candidate.cz - currentCz));
-        const isExempt = isSleighChunk || (chebyshevToSleigh <= 1 && candidate.priority >= 8000);
+        const isMandatory = chebyshevToSleigh <= 1;
+        const isSleighChunk = (candidate.key === currentSleighKey);
 
         const inFrustum = this._isBoxInFrustum(candidate.cx, candidate.cz, 1.10);
 
         let canGenerate = false;
 
-        if (!inFrustum) {
-          // Rule 1: AABB is outside camera frustum -> Generate immediately!
+        if (isMandatory) {
+          // MANDATORY: no frustum/fog/delay gating
           canGenerate = true;
           this.delayedRequests.delete(candidate.key);
-        } else if (isExempt) {
-          // Exempt from waiting
+        } else if (!inFrustum) {
+          // Rule 1: AABB is outside camera frustum -> Generate immediately!
           canGenerate = true;
           this.delayedRequests.delete(candidate.key);
         } else {
@@ -419,12 +472,19 @@ export class ChunkScheduler {
           }
         }
 
+        // Progress: force-generate after 200ms since last successful generation
+        if (!canGenerate && (now - this.lastSuccessfulGenTime >= 200)) {
+          canGenerate = true;
+          this.delayedRequests.delete(candidate.key);
+        }
+
         if (canGenerate) {
           const tStart = performance.now();
           this._checkPop(candidate.cx, candidate.cz, camera, fogFar);
           cs.generateChunk(candidate.cx, candidate.cz);
           const genDuration = performance.now() - tStart;
           this.telemetry.lastGenMs = genDuration;
+          this.lastSuccessfulGenTime = performance.now();
           break; // At most 1 chunk per frame!
         }
       }
@@ -449,6 +509,9 @@ export class ChunkScheduler {
     this.telemetry.delayedRequestsCount = this.delayedRequests.size;
     this.telemetry.loadedChunksCount = cs.chunks.size;
     this.telemetry.maxChunks = this.maxChunks;
+    this.telemetry.sleighChunkKey = currentSleighKey;
+    this.telemetry.sleighChunkLoaded = cs.chunks.has(currentSleighKey);
+    this.telemetry.lastSuccessfulGenTime = this.lastSuccessfulGenTime;
 
     // Update debug wireframes if enabled
     if (this.showAABBs) {
