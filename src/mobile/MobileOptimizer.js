@@ -21,6 +21,11 @@ export class MobileOptimizer {
     this.ctx = gameContext;
     this.enabled = options.isMobile === true;
 
+    // Test flags from URL (mobile). Defaults preserve current behavior.
+    const params = (typeof window !== 'undefined') ? new URLSearchParams(window.location.search) : new URLSearchParams();
+    this._bloomDisabled = params.get('bloom') === '0';
+    this._fixedDpr = params.has('dpr') ? parseFloat(params.get('dpr')) : null;
+
     // Individual optimization toggles (ALL DEFAULT OFF except light toggles which start ON)
     this.toggles = {
       chunkFrustumCulling: false,
@@ -125,7 +130,9 @@ export class MobileOptimizer {
   }
 
   syncDesktopQuality() {
-    const targetDpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    const params = new URLSearchParams(window.location.search);
+    const fixedDpr = params.has('dpr') ? parseFloat(params.get('dpr')) : this._fixedDpr;
+    const targetDpr = Number.isFinite(fixedDpr) ? fixedDpr : Math.min(window.devicePixelRatio || 1, 2.5);
     this.ctx.renderer.setPixelRatio(targetDpr);
     if (this.ctx.composer) {
       this.ctx.composer.setPixelRatio(targetDpr);

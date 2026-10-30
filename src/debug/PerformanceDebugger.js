@@ -114,6 +114,15 @@ export class PerformanceDebugger {
     this.frameTime = dt;
     this.avgFrameTime = this.avgFrameTime * 0.9 + dt * 0.1;
 
+    // Ignore the first 10 seconds after loading (warmup) for Max5s.
+    const _loadingComplete = (typeof window !== 'undefined' && window._loadingCompleteTime) ? window._loadingCompleteTime : 0;
+    const _warmingUp = _loadingComplete > 0 && (now - _loadingComplete < 10000);
+    if (_warmingUp) {
+      this._recentFrameTimes.length = 0;
+      this.maxFrameTime5s = 0;
+      return;
+    }
+
     // Track real maximum frame time over last 5 seconds
     this._recentFrameTimes.push({ t: now, dt });
     while (this._recentFrameTimes.length > 0 && (now - this._recentFrameTimes[0].t) > 5000) {
@@ -907,7 +916,7 @@ export class PerformanceDebugger {
           • <strong>Chunks:</strong> ${this.ctx.chunkSystem?.chunks?.size || window.chunkScheduler.telemetry.loadedChunksCount}/${window.chunkScheduler.telemetry.maxChunks} (Q:${window.chunkScheduler.telemetry.queueLength}, Delay:${window.chunkScheduler.telemetry.delayedRequestsCount}) | Sleigh: ${window.chunkScheduler.telemetry.sleighChunkKey} ${window.chunkScheduler.telemetry.sleighChunkLoaded ? "LOADED" : "MISSING"}<br/>
           • <strong>LOD:</strong> ${this.ctx.chunkSystem?.useLod ? 'ON' : 'OFF'} [L0:${this.ctx.chunkSystem?.lodActiveCounts?.[0] || 0}, L1:${this.ctx.chunkSystem?.lodActiveCounts?.[1] || 0}, L2:${this.ctx.chunkSystem?.lodActiveCounts?.[2] || 0}] | <strong>Violations:</strong> ${this.ctx.chunkSystem?.capViolations || 0}<br/>
           • <strong>Fog [F]:</strong> ${window.mobileFog?.enabled ? `${window.mobileFog.fogNear.toFixed(1)}m / ${window.mobileFog.fogFar.toFixed(1)}m` : 'OFF'}<br/>
-          • <strong>Pops:</strong> ${window.chunkScheduler.telemetry.visiblePops} | <strong>Gen:</strong> ${window.chunkScheduler.telemetry.lastGenMs.toFixed(1)}ms | <strong>LastGen:</strong> ${window.chunkScheduler.telemetry.lastSuccessfulGenTime ? (performance.now() - window.chunkScheduler.telemetry.lastSuccessfulGenTime).toFixed(0) : "n/a"}ms ago | <strong>Max5s:</strong> ${this.maxFrameTime5s.toFixed(1)}ms<br/>
+          • <strong>Pops:</strong> ${window.chunkScheduler.telemetry.visiblePops} | <strong>Gen:</strong> ${window.chunkScheduler.telemetry.lastGenMs.toFixed(1)}ms | <strong>LastGen:</strong> ${window.chunkScheduler.telemetry.lastSuccessfulGenTime ? (performance.now() - window.chunkScheduler.telemetry.lastSuccessfulGenTime).toFixed(0) : "n/a"}ms ago | <strong>Max5s:</strong> ${(window._loadingCompleteTime && performance.now() - window._loadingCompleteTime < 10000) ? 'warmup' : this.maxFrameTime5s.toFixed(1) + 'ms'}<br/>
           • <strong>AABB [B]:</strong> ${window.chunkScheduler.showAABBs ? 'ON' : 'OFF'}
           <div style="display:flex; gap:6px; margin-top:4px;">
             <button id="btn-touch-fog" style="flex:1; background:#1e293b; border:1px solid #38bdf8; color:#38bdf8; border-radius:4px; font-size:10px; padding:3px 2px; cursor:pointer;">Toggle Fog</button>
@@ -916,8 +925,8 @@ export class PerformanceDebugger {
         </div>
       ` : ''}
       <div style="color:#a5f3fc; font-size:10px;">• <strong>santa aseet:</strong> ${this._getSantaAseetInfo()}</div>
-      <div><strong>DPR:</strong> ${dpr}x | <strong>ShadowMap:</strong> ${this.ctx.renderer.shadowMap.enabled ? (this.ctx.moonLight?.shadow?.mapSize?.width || 2048) + 'px' : 'OFF'}</div>
-      <div><strong>Lights:</strong> ${lights.totalLights} (Shadows: ${lights.shadowLights}) | <strong>Bloom:</strong> ${this.state.postProcessing ? 'ON' : 'OFF'}</div>
+      <div><strong>DPR:</strong> ${dpr}x | <strong>ShadowMap:</strong> ${this.ctx.renderer.shadowMap.enabled ? (this.ctx.moonLight?.shadow?.mapSize?.width || 2048) + 'px' : 'OFF'} | <strong>Model:</strong> ${window._mobileModelSet || 'desktop'} | <strong>Cap:</strong> ${window._targetFpsCap || 60} FPS</div>
+      <div><strong>Lights:</strong> ${lights.totalLights} (Shadows: ${lights.shadowLights}) | <strong>Bloom:</strong> ${this.state.postProcessing ? 'ON' : 'OFF'} | <strong>dpr flag:</strong> ${new URLSearchParams(window.location.search).get('dpr') || 'auto'}</div>
       ${window.mobileOptimizer ? `
         <div style="margin-top:2px; font-size:10px; border-top:1px dashed #475569; padding-top:2px;">
           <div style="color:#38bdf8; font-weight:600;">HouseOpaque: ${window.mobileOptimizer.toggles.houseOpaque ? 'ON' : 'OFF'} | FrontSide: ${window.mobileOptimizer.toggles.frontSideMaterials ? 'ON' : 'OFF'} [C]</div>

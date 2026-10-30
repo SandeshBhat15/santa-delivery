@@ -11,6 +11,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { KawaseBloomPass } from './postprocessing/KawaseBloomPass.js';
 import { PerformanceDebugger } from './debug/PerformanceDebugger.js';
 import { MobileOptimizer } from './mobile/MobileOptimizer.js';
+import { runMobileWarmup } from './mobile/MobileWarmup.js';
 import { BatchedChunkSystem, USE_LEGACY } from './world/BatchedChunkSystem.js';
 import { MeshoptSimplifier } from 'meshoptimizer';
 
@@ -56,10 +57,11 @@ const renderer = new THREE.WebGLRenderer({
 });
 renderer.setSize(window.innerWidth, window.innerHeight);
 // High visual fidelity: 1.5x pixel ratio on mobile provides razor-sharp display on 1080p screens with smooth 60+ FPS
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2.5));
+const _initialDprParam = IS_MOBILE ? parseFloat(new URLSearchParams(window.location.search).get('dpr')) : NaN;
+renderer.setPixelRatio(Number.isFinite(_initialDprParam) ? _initialDprParam : Math.min(window.devicePixelRatio || 1, 2.5));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.95;
-renderer.shadowMap.enabled = true;
+renderer.shadowMap.enabled = new URLSearchParams(window.location.search).get('shadows') !== '0';
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.info.autoReset = false;
 container.appendChild(renderer.domElement);
@@ -2352,6 +2354,7 @@ const chunkSystem = USE_LEGACY
 console.log(USE_LEGACY ? '[World] Running in LEGACY per-chunk mode (?legacy=1)' : '[World] Running in HIGH-PERFORMANCE BATCHED mode');
 window.chunkSystem = chunkSystem;
 window.game.chunkSystem = chunkSystem;
+window._mobileModelSet = IS_MOBILE ? ((new URLSearchParams(window.location.search).get('orig') === '1') ? 'orig' : 'mobile') : 'desktop';
 
 let sleighController = null;
 let deliverySystem = null;
@@ -2363,7 +2366,8 @@ dracoLoader.setDecoderPath('/libs/draco/gltf/');
 const gltfLoader = new GLTFLoader();
 gltfLoader.setDRACOLoader(dracoLoader);
 
-const modelUrl = '/assets/models/terrain.glb';
+const _origModelParam = IS_MOBILE && new URLSearchParams(window.location.search).get('orig') === '1';
+const modelUrl = (IS_MOBILE && !_origModelParam) ? '/assets/models/terrain-mobile.glb' : '/assets/models/terrain.glb';
 
 Promise.all([
   MeshoptSimplifier.ready.catch(() => {})
@@ -2832,34 +2836,8 @@ Promise.all([
       mobileOptimizer.apply();
     }
 
-    // Pre-warm GPU textures and precompile shader pipelines during load screen to eliminate runtime frame drops
-    if (renderer.initTexture) {
-      scene.traverse((obj) => {
-        if (obj.isMesh && obj.material) {
-          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-          mats.forEach((m) => {
-            if (m.map) renderer.initTexture(m.map);
-            if (m.emissiveMap) renderer.initTexture(m.emissiveMap);
-            if (m.normalMap) renderer.initTexture(m.normalMap);
-            if (m.roughnessMap) renderer.initTexture(m.roughnessMap);
-          });
-        }
-      });
-    }
-
-    if (renderer.compileAsync) {
-      renderer.compileAsync(scene, camera).catch(() => {}).finally(() => {
-        if (loaderElement) {
-          loaderElement.classList.add('hidden');
-          setTimeout(() => loaderElement.remove(), 700);
-        }
-      });
-    } else {
-      if (loaderElement) {
-        loaderElement.classList.add('hidden');
-        setTimeout(() => loaderElement.remove(), 700);
-      }
-    }
+    // Pre-warm GPU textures, shaders, and chunk slots during the loading screen.
+    runMobileWarmup({ renderer, scene, camera, chunkSystem, loaderElement });
   },
   (xhr) => {
     if (xhr.lengthComputable && xhr.total > 0) {
