@@ -908,8 +908,9 @@ export class PerformanceDebugger {
       <div><strong>Geometries:</strong> ${this.lastGeometries} | <strong>Textures:</strong> ${this.lastTextures}</div>
       ${window.chunkScheduler ? `
         <div style="color:#38bdf8; font-size:10px; margin-top:2px; border-top:1px dashed #475569; padding-top:2px;">
-          • <strong>Chunks:</strong> ${window.chunkScheduler.telemetry.loadedChunksCount}/${window.chunkScheduler.telemetry.maxChunks} (Q:${window.chunkScheduler.telemetry.queueLength}, Delay:${window.chunkScheduler.telemetry.delayedRequestsCount})<br/>
-          • <strong>LOD:</strong> ${window.chunkScheduler.useLod ? 'ON' : 'OFF'} | <strong>Fog [F]:</strong> ${window.mobileFog?.enabled ? `${window.mobileFog.fogNear.toFixed(1)}m / ${window.mobileFog.fogFar.toFixed(1)}m` : 'OFF'}<br/>
+          • <strong>Chunks:</strong> ${this.ctx.chunkSystem?.chunks?.size || window.chunkScheduler.telemetry.loadedChunksCount}/${window.chunkScheduler.telemetry.maxChunks} (Q:${window.chunkScheduler.telemetry.queueLength}, Delay:${window.chunkScheduler.telemetry.delayedRequestsCount})<br/>
+          • <strong>LOD:</strong> ${this.ctx.chunkSystem?.useLod ? 'ON' : 'OFF'} [L0:${this.ctx.chunkSystem?.lodActiveCounts?.[0] || 0}, L1:${this.ctx.chunkSystem?.lodActiveCounts?.[1] || 0}, L2:${this.ctx.chunkSystem?.lodActiveCounts?.[2] || 0}] | <strong>Violations:</strong> ${this.ctx.chunkSystem?.capViolations || 0}<br/>
+          • <strong>Fog [F]:</strong> ${window.mobileFog?.enabled ? `${window.mobileFog.fogNear.toFixed(1)}m / ${window.mobileFog.fogFar.toFixed(1)}m` : 'OFF'}<br/>
           • <strong>Pops:</strong> ${window.chunkScheduler.telemetry.visiblePops} | <strong>Gen:</strong> ${window.chunkScheduler.telemetry.lastGenMs.toFixed(1)}ms | <strong>Max5s:</strong> ${this.maxFrameTime5s.toFixed(1)}ms<br/>
           • <strong>AABB [B]:</strong> ${window.chunkScheduler.showAABBs ? 'ON' : 'OFF'}
           <div style="display:flex; gap:6px; margin-top:4px;">

@@ -5,6 +5,10 @@ import { MobileFog } from './MobileFog.js';
 
 export const USE_LEGACY = typeof window !== 'undefined' && window.location.search.includes('legacy=1');
 
+const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
+const chunkParam = parseInt(urlParams.get('chunks'), 10);
+export const MOBILE_MAX_CHUNKS = (!isNaN(chunkParam) && chunkParam > 0) ? Math.min(6, chunkParam) : 6;
+
 /**
  * PriorityQueue — High-performance binary min-heap for candidate chunk scheduling
  */
@@ -114,22 +118,20 @@ export class BatchedChunkSystem {
     this.scene = scene;
     this.chunkSize = 20.0;
     this.isMobile = options.isMobile ?? false;
-    this.maxLoadedChunks = options.maxLoadedChunks || (this.isMobile ? 32 : 54);
+    this.maxLoadedChunks = options.maxLoadedChunks || (this.isMobile ? MOBILE_MAX_CHUNKS : 54);
 
     this.mobileFog = this.isMobile ? new MobileFog(this.scene, { isMobile: true }) : null;
-    this.scheduler = this.isMobile ? new ChunkScheduler(this, { isMobile: true, maxChunks: 5 }) : null;
-    if (this.isMobile && (!this.scheduler || !this.scheduler.useLod)) {
-      this.nominalLod0Radius = 9999.0;
-      this.lod0Radius = 9999.0;
-    }
+    this.scheduler = this.isMobile ? new ChunkScheduler(this, { isMobile: true, maxChunks: MOBILE_MAX_CHUNKS }) : null;
+    this.useLod = !this.isMobile || (this.scheduler ? this.scheduler.useLod : false);
+    this.capViolations = 0;
 
-    // 1. Mobile load radius: 75m nominal on mobile, 110m on desktop
-    this.nominalLoadRadius = this.isMobile ? 75.0 : 110.0;
+    // 1. Load radius: matches scheduler region on mobile (~45m), 110m on desktop
+    this.nominalLoadRadius = this.isMobile ? 45.0 : 110.0;
     this.loadRadius = this.nominalLoadRadius;
 
-    // Dynamic LOD radii defaults
-    this.nominalLod0Radius = this.isMobile ? 20.0 : 45.0;
-    this.nominalLod1Radius = this.isMobile ? 45.0 : 85.0;
+    // Dynamic LOD radii defaults (only used on desktop or when useLod is true)
+    this.nominalLod0Radius = this.useLod ? (this.isMobile ? 20.0 : 45.0) : 99999.0;
+    this.nominalLod1Radius = this.useLod ? (this.isMobile ? 45.0 : 85.0) : 99999.0;
     this.lod0Radius = this.nominalLod0Radius;
     this.lod1Radius = this.nominalLod1Radius;
     this.lodHysteresis = this.isMobile ? 8.0 : 10.0;
@@ -551,7 +553,9 @@ export class BatchedChunkSystem {
     });
     this.shadowMeshes = [];
 
-    for (let lod = 0; lod < 3; lod++) {
+    const numLods = (this.isMobile && !this.useLod) ? 1 : 3;
+
+    for (let lod = 0; lod < numLods; lod++) {
       for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
         const def = this.meshDefinitions[defIdx];
         const maxInstances = def.baseCount * this.maxLoadedChunks;
@@ -559,10 +563,9 @@ export class BatchedChunkSystem {
         const instMesh = new THREE.InstancedMesh(def.geometryLOD[lod], def.material, maxInstances);
         instMesh.name = `Global_${def.name}_LOD${lod}`;
 
-        // 5. SHADOW PASS on mobile: Main-pass LOD0 meshes do not cast shadows.
-        // Dedicated shadow casters or LOD1/LOD2 handle the shadow map.
+        // 5. SHADOW PASS: On mobile without runtime LOD, LOD0 meshes cast shadows directly
         if (this.isMobile) {
-          instMesh.castShadow = (lod > 0 && def.castShadow);
+          instMesh.castShadow = this.useLod ? (lod > 0 && def.castShadow) : def.castShadow;
         } else {
           instMesh.castShadow = def.castShadow;
         }
@@ -585,8 +588,8 @@ export class BatchedChunkSystem {
       }
     }
 
-    // On mobile, create lightweight LOD2 shadow caster meshes (within 30m of sleigh)
-    if (this.isMobile) {
+    // On mobile with runtime LOD (?lod=1), create lightweight LOD2 shadow caster meshes
+    if (this.isMobile && this.useLod) {
       for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
         const def = this.meshDefinitions[defIdx];
         if (!def.castShadow) continue;
@@ -733,13 +736,25 @@ export class BatchedChunkSystem {
     const key = cx + ',' + cz;
     if (this.chunks.has(key)) return;
 
+    // 2. Enforce the cap at the SINGLE place where a chunk record is created
+    if (this.isMobile && this.chunks.size >= MOBILE_MAX_CHUNKS) {
+      if (this.scheduler && this.scheduler.evictLowestPriority) {
+        this.scheduler.evictLowestPriority();
+      }
+      if (this.chunks.size >= MOBILE_MAX_CHUNKS) {
+        this.capViolations++;
+        console.error(`[BatchedChunkSystem] Refusing to generate ${key}: Cap reached (${this.chunks.size}/${MOBILE_MAX_CHUNKS})`);
+        return;
+      }
+    }
+
     const tStart = performance.now();
     const wx = cx * this.chunkSize;
     const wz = cz * this.chunkSize;
 
-    // 3. Compute LOD Band from sleigh distance with hysteresis
+    // 3. Compute LOD Band: force band 0 on mobile without runtime LOD
     const distToSleigh = Math.hypot(wx - this._sleighPos.x, wz - this._sleighPos.z);
-    const initialLOD = this._computeLODBand(distToSleigh, 0);
+    const initialLOD = (this.isMobile && !this.useLod) ? 0 : this._computeLODBand(distToSleigh, 0);
 
     const slot = this.lodActiveCounts[initialLOD];
     if (slot >= this.maxLoadedChunks) {
@@ -755,6 +770,11 @@ export class BatchedChunkSystem {
     chunk.createdAt = performance.now();
     this.chunks.set(key, chunk);
     this.lodSlots[initialLOD][slot] = chunk;
+
+    if (this.isMobile && this.chunks.size > MOBILE_MAX_CHUNKS) {
+      this.capViolations++;
+      console.error(`[BatchedChunkSystem] Cap violated! chunks.size=${this.chunks.size} > ${MOBILE_MAX_CHUNKS}`);
+    }
 
     // Write chunk block into LOD buffer
     this._writeChunkBlock(chunk, initialLOD, slot);
@@ -796,6 +816,7 @@ export class BatchedChunkSystem {
    * Move chunk between LOD buffers
    */
   _transitionChunkLOD(chunk, newLOD) {
+    if (this.isMobile && !this.useLod) return; // Skip band moves on mobile without runtime LOD
     const oldLOD = chunk.lodBand;
     if (oldLOD === newLOD) return;
 
@@ -826,6 +847,7 @@ export class BatchedChunkSystem {
   }
 
   _computeLODBand(distance, currentBand) {
+    if (this.isMobile && !this.useLod) return 0; // Always band 0
     const h = this.lodHysteresis;
     const r0 = this.lod0Radius;
     const r1 = this.lod1Radius;
@@ -872,10 +894,10 @@ export class BatchedChunkSystem {
 
         // Shadow pass triangles calculation
         if (this.isMobile) {
-          // Dedicated LOD2 shadow casters within 25m
+          // Dedicated LOD2 shadow casters within 25m only when runtime LOD is active; otherwise LOD0 meshes cast directly
           if (def.castShadow) {
             const castersIn25m = Math.min(count, def.baseCount * 5);
-            shadowTris += castersIn25m * def.trisLOD[2];
+            shadowTris += castersIn25m * (this.useLod ? def.trisLOD[2] : def.trisLOD[0]);
           }
         } else {
           if (def.castShadow) {
@@ -973,42 +995,47 @@ export class BatchedChunkSystem {
     const rotatedSignificantly = angleDelta > 0.20;
     const timeElapsed = (now - this.lastStreamCheckTime) > 150;
 
-    if (chunkChanged || rotatedSignificantly || timeElapsed || this.chunks.size === 0) {
-      this.lastStreamCheckTime = now;
-      this.lastStreamCamQuat.copy(camera.quaternion);
-      this.lastFocusChunkX = curFocusChunkX;
-      this.lastFocusChunkZ = curFocusChunkZ;
+    if (!this.scheduler || this.scheduler.disabled) {
+      if (chunkChanged || rotatedSignificantly || timeElapsed || this.chunks.size === 0) {
+        this.lastStreamCheckTime = now;
+        this.lastStreamCamQuat.copy(camera.quaternion);
+        this.lastFocusChunkX = curFocusChunkX;
+        this.lastFocusChunkZ = curFocusChunkZ;
 
-      this._recomputePriorityQueue(camera, curFocusChunkX, curFocusChunkZ, now);
+        this._recomputePriorityQueue(camera, curFocusChunkX, curFocusChunkZ, now);
+      }
     }
 
     if (this.mobileFog) {
       this.mobileFog.update(frameDeltaMs / 1000.0, camera, this.chunks, this.chunkSize);
     }
-    const handledByScheduler = this.scheduler ? this.scheduler.update(this._sleighPos, camera, now, frameDeltaMs, this.mobileFog) : false;
+    
+    // 3. On mobile with the scheduler active, the old priority queue and old radius-based loading must NEVER run
+    if (this.scheduler && !this.scheduler.disabled) {
+      this.scheduler.update(this._sleighPos, camera, now, frameDeltaMs, this.mobileFog);
+      return; // Return unconditionally when scheduler is active!
+    }
 
-    // 6. CHUNK GENERATION (skip old generator when scheduler handles streaming):
-    if (!handledByScheduler) {
-      if (this.priorityQueue.length > 0) {
-        const candidate = this.priorityQueue.pop();
-        if (candidate) {
-          this.queuedKeys.delete(candidate.key);
-          if (!this.chunks.has(candidate.key)) {
-            this.generateChunk(candidate.cx, candidate.cz);
-          }
+    // 6. CHUNK GENERATION (only runs when scheduler is disabled or on desktop):
+    if (this.priorityQueue.length > 0) {
+      const candidate = this.priorityQueue.pop();
+      if (candidate) {
+        this.queuedKeys.delete(candidate.key);
+        if (!this.chunks.has(candidate.key)) {
+          this.generateChunk(candidate.cx, candidate.cz);
         }
       }
-      this.telemetry.queueLength = this.priorityQueue.length;
-
-      // Process at most 1 LOD band change per frame with 1s cooldown & 8m hysteresis
-      this._processLODBandUpdate(now);
-
-      // Dynamic Hard Budget Governor check
-      this._enforceBudget();
-
-      // Prune unneeded chunks
-      this._pruneUnneededChunks(now, curFocusChunkX, curFocusChunkZ);
     }
+    this.telemetry.queueLength = this.priorityQueue.length;
+
+    // Process at most 1 LOD band change per frame with 1s cooldown & 8m hysteresis
+    this._processLODBandUpdate(now);
+
+    // Dynamic Hard Budget Governor check
+    this._enforceBudget();
+
+    // Prune unneeded chunks
+    this._pruneUnneededChunks(now, curFocusChunkX, curFocusChunkZ);
   }
 
   _recomputePriorityQueue(camera, centerCx, centerCz, now) {
@@ -1080,6 +1107,7 @@ export class BatchedChunkSystem {
   }
 
   _processLODBandUpdate(now) {
+    if (this.isMobile && !this.useLod) return; // Skip LOD band updates on mobile without runtime LOD
     for (const [key, chunk] of this.chunks.entries()) {
       if ((now - chunk.lastBandChange) < 1000) continue;
 

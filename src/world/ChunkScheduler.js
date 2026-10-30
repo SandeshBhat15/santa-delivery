@@ -41,6 +41,11 @@ export class ChunkScheduler {
     this.useLod = this.lodFlag === '1' || (!this.isMobile && this.lodFlag !== '0'); // default 0 on mobile, 1 on desktop
     this.debug = params.get('debug') === '1';
 
+    const chunkParam = parseInt(params.get('chunks'), 10);
+    if (!isNaN(chunkParam) && chunkParam > 0) {
+      this.maxChunks = Math.min(6, chunkParam);
+    }
+
     // State tracking
     this.disabled = !this.smoothEnabled; // If ?smooth=0, disabled
     this.hasWarnedFallback = false;
@@ -453,6 +458,50 @@ export class ChunkScheduler {
     return true; // Successfully managed by ChunkScheduler
   }
 
+  evictLowestPriority(now = performance.now()) {
+    const cs = this.chunkSystem;
+    const half = cs.chunkSize * 0.5;
+    const currentCx = Math.floor((this._lastSleighPos.x + half) / cs.chunkSize);
+    const currentCz = Math.floor((this._lastSleighPos.z + half) / cs.chunkSize);
+    const currentSleighKey = `${currentCx},${currentCz}`;
+
+    let evictionCandidate = null;
+    let lowestPriority = Infinity;
+
+    for (const [key, chunk] of cs.chunks.entries()) {
+      if (key === currentSleighKey) continue;
+      const ageMs = now - (chunk.createdAt || 0);
+      if (ageMs < 1500) continue;
+
+      const outsideFrustum = !this._isBoxInFrustum(chunk.cx, chunk.cz, 1.10);
+      let prio = 0;
+      if (outsideFrustum) prio -= 50000;
+
+      if (prio < lowestPriority) {
+        lowestPriority = prio;
+        evictionCandidate = key;
+      }
+    }
+
+    if (!evictionCandidate) {
+      for (const [key, chunk] of cs.chunks.entries()) {
+        if (key === currentSleighKey) continue;
+        const outsideFrustum = !this._isBoxInFrustum(chunk.cx, chunk.cz, 1.10);
+        let prio = 0;
+        if (outsideFrustum) prio -= 50000;
+        if (prio < lowestPriority) {
+          lowestPriority = prio;
+          evictionCandidate = key;
+        }
+      }
+    }
+
+    if (evictionCandidate) {
+      cs.destroyChunk(evictionCandidate);
+      return true;
+    }
+    return false;
+  }
   _updateDebugAABBs(cs) {
     const activeKeys = new Set(cs.chunks.keys());
 
