@@ -2921,7 +2921,9 @@ window._printScenePolys = function() {
   window._visibleSceneTriangles = Math.round(uniqueTriangles);
 };
 setInterval(() => { if (window._printScenePolys) window._printScenePolys(); }, 1000);
-let _targetFpsCap = (typeof IS_MOBILE !== 'undefined' && IS_MOBILE) ? 30 : 60;
+// 60 FPS is the default on every device. 30/45/60 remain selectable through the
+// debug panel (window.setFpsCap), but nothing silently lowers the target to 30.
+let _targetFpsCap = 60;
 window._targetFpsCap = _targetFpsCap;
 window.setFpsCap = function(cap) {
   _targetFpsCap = cap;
@@ -2929,18 +2931,26 @@ window.setFpsCap = function(cap) {
   console.log('[FrameRate] FPS cap set to:', cap);
 };
 
+// Frame limiter with jitter tolerance. A frame is allowed to render once the
+// accumulated time reaches the cap interval minus a small tolerance, and the
+// unused remainder is carried forward so timing drift cannot accumulate.
 let _lastRenderTimeMs = 0;
+const FRAME_CAP_TOLERANCE_MS = 1.667; // ~1 frame at 60 Hz of slack for rAF jitter
 function animate(currentTime) {
   requestAnimationFrame(animate);
 
-  if (_targetFpsCap && _targetFpsCap < 60) {
-    // Dynamic minimum interval: 30 FPS -> ~32.5ms, 45 FPS -> ~21.2ms
-    const minInterval = (1000 / _targetFpsCap) - 1.0;
-    if (currentTime - _lastRenderTimeMs < minInterval) {
-      return;
-    }
+  const requestedCap = Math.min(Number(window._targetFpsCap) || 60, 60);
+  const frameInterval = 1000 / requestedCap;
+  if (!_lastRenderTimeMs) {
+    _lastRenderTimeMs = currentTime;
+    return;
   }
-  _lastRenderTimeMs = currentTime;
+  const elapsed = currentTime - _lastRenderTimeMs;
+  if (elapsed < frameInterval - FRAME_CAP_TOLERANCE_MS) {
+    return;
+  }
+  // Carry the leftover time forward instead of discarding it.
+  _lastRenderTimeMs = currentTime - (elapsed % frameInterval);
 
   if (perfDebugger) {
     perfDebugger.beginFrame();

@@ -700,7 +700,7 @@ export class PerformanceDebugger {
     // 30 / 45 / 60 FPS Cap Cycler
     const fpsCapBtn = this.panel.querySelector('#btn-fps-cap');
     if (fpsCapBtn) {
-      const currentCap = window._targetFpsCap || 30;
+      const currentCap = window._targetFpsCap || 60;
       fpsCapBtn.textContent = `⚡ Cap: ${currentCap} FPS`;
       fpsCapBtn.onclick = () => {
         let nextCap = 30;
@@ -882,7 +882,7 @@ export class PerformanceDebugger {
         • <strong>Main Pass Chunks:</strong> ${stats.main.chunksDrawn}/${stats.main.chunksTotal} (Houses: ${stats.main.houses.drawn}/${stats.main.houses.total}, Trees: ${stats.main.trees.drawn}/${stats.main.trees.total})<br/>
         • <strong>Shadow Pass Chunks:</strong> ${stats.shadow.chunksDrawn}/${stats.shadow.chunksTotal} (Houses: ${stats.shadow.houses.drawn}/${stats.shadow.houses.total})<br/>
       ` : ''}
-      • <strong>Target Cap:</strong> ${window._targetFpsCap || 30} FPS
+      • <strong>Target Cap:</strong> ${window._targetFpsCap || 60} FPS
     `;
   }
 
@@ -1060,7 +1060,7 @@ export class PerformanceDebugger {
     const smType = this.ctx.renderer.shadowMap.type === THREE.PCFSoftShadowMap ? 'PCFSoft' : 'Basic';
     const cullingOn = window.mobileOptimizer ? (window.mobileOptimizer.toggles.chunkFrustumCulling === true) : false;
     const shadow2ndOn = window.mobileOptimizer ? (window.mobileOptimizer.toggles.shadowEvery2ndFrame === true) : false;
-    const fpsCap = window._targetFpsCap || 30;
+    const fpsCap = window._targetFpsCap || 60;
     const lights = this._countLights();
 
     const activeLightNames = [];
