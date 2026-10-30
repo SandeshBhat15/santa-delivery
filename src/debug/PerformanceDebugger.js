@@ -605,6 +605,15 @@ export class PerformanceDebugger {
     });
 
     this._attachEventListeners();
+
+    // Hotkeys: F for fog toggle, B for chunk bounding AABBs toggle
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'KeyF' && window.mobileFog) {
+        window.mobileFog.toggleFog();
+      } else if (e.code === 'KeyB' && window.chunkScheduler) {
+        window.chunkScheduler.toggleAABBs();
+      }
+    });
   }
 
   _attachEventListeners() {
@@ -884,6 +893,14 @@ export class PerformanceDebugger {
       <div><strong>Draw Calls:</strong> ${this.lastCalls}</div>
       <div><strong>Triangles:</strong> ${(this.lastTriangles || 0).toLocaleString()}</div>
       <div><strong>Geometries:</strong> ${this.lastGeometries} | <strong>Textures:</strong> ${this.lastTextures}</div>
+      ${window.chunkScheduler ? `
+        <div style="color:#38bdf8; font-size:10px; margin-top:2px; border-top:1px dashed #475569; padding-top:2px;">
+          • <strong>Chunks:</strong> ${window.chunkScheduler.telemetry.loadedChunksCount}/${window.chunkScheduler.telemetry.maxChunks} (Q:${window.chunkScheduler.telemetry.queueLength}, Delay:${window.chunkScheduler.telemetry.delayedRequestsCount})<br/>
+          • <strong>Fog [F]:</strong> ${window.mobileFog?.enabled ? `${window.mobileFog.fogNear.toFixed(1)}m / ${window.mobileFog.fogFar.toFixed(1)}m` : 'OFF'}<br/>
+          • <strong>Pops:</strong> ${window.chunkScheduler.telemetry.visiblePops} | <strong>Gen:</strong> ${window.chunkScheduler.telemetry.lastGenMs.toFixed(1)}ms | <strong>Max5s:</strong> ${this.avgFrameTime.toFixed(1)}ms<br/>
+          • <strong>AABB [B]:</strong> ${window.chunkScheduler.showAABBs ? 'ON' : 'OFF'}
+        </div>
+      ` : ''}
       <div style="color:#a5f3fc; font-size:10px;">• <strong>santa aseet:</strong> ${this._getSantaAseetInfo()}</div>
       <div><strong>DPR:</strong> ${dpr}x | <strong>ShadowMap:</strong> ${this.ctx.renderer.shadowMap.enabled ? (this.ctx.moonLight?.shadow?.mapSize?.width || 2048) + 'px' : 'OFF'}</div>
       <div><strong>Lights:</strong> ${lights.totalLights} (Shadows: ${lights.shadowLights}) | <strong>Bloom:</strong> ${this.state.postProcessing ? 'ON' : 'OFF'}</div>

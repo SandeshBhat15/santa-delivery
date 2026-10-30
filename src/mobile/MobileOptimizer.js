@@ -145,7 +145,10 @@ export class MobileOptimizer {
       this.ctx.camera.far = 3500;
       this.ctx.camera.updateProjectionMatrix();
     }
-    this.ctx.scene.fog = null;
+    // Mobile fog is managed by MobileFog when active
+    if (!window.mobileFog && this.ctx.scene) {
+      this.ctx.scene.fog = null;
+    }
 
     if (window.perfDebugger) {
       window.perfDebugger.state.postProcessing = true;

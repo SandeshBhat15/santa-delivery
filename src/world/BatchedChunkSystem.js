@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { MeshoptSimplifier } from 'meshoptimizer';
+import { ChunkScheduler } from './ChunkScheduler.js';
+import { MobileFog } from './MobileFog.js';
 
 export const USE_LEGACY = typeof window !== 'undefined' && window.location.search.includes('legacy=1');
 
@@ -114,6 +116,13 @@ export class BatchedChunkSystem {
     this.isMobile = options.isMobile ?? false;
     this.maxLoadedChunks = options.maxLoadedChunks || (this.isMobile ? 32 : 54);
 
+    this.mobileFog = this.isMobile ? new MobileFog(this.scene, { isMobile: true }) : null;
+    this.scheduler = this.isMobile ? new ChunkScheduler(this, { isMobile: true, maxChunks: 5 }) : null;
+    if (this.isMobile && (!this.scheduler || !this.scheduler.useLod)) {
+      this.nominalLod0Radius = 9999.0;
+      this.lod0Radius = 9999.0;
+    }
+
     // 1. Mobile load radius: 75m nominal on mobile, 110m on desktop
     this.nominalLoadRadius = this.isMobile ? 75.0 : 110.0;
     this.loadRadius = this.nominalLoadRadius;
@@ -127,7 +136,7 @@ export class BatchedChunkSystem {
 
     // Hard triangle budget: 1,000,000 on mobile, 4,000,000 on desktop
     this.polyBudget = this.isMobile ? 1000000 : 4000000;
-    this.shadowCasterDistance = this.isMobile ? 30.0 : 56.0;
+    this.shadowCasterDistance = this.isMobile ? 25.0 : 56.0;
 
     // Active loaded chunks: Map of key ("cx,cz") -> ChunkRecord
     this.chunks = new Map();
@@ -743,6 +752,7 @@ export class BatchedChunkSystem {
     const chunk = this._acquireChunkRecord(cx, cz);
     chunk.lodBand = initialLOD;
     chunk.slotIndex = slot;
+    chunk.createdAt = performance.now();
     this.chunks.set(key, chunk);
     this.lodSlots[initialLOD][slot] = chunk;
 
@@ -862,10 +872,10 @@ export class BatchedChunkSystem {
 
         // Shadow pass triangles calculation
         if (this.isMobile) {
-          // Dedicated LOD2 shadow casters within 30m
+          // Dedicated LOD2 shadow casters within 25m
           if (def.castShadow) {
-            const castersIn30m = Math.min(count, def.baseCount * 6);
-            shadowTris += castersIn30m * def.trisLOD[2];
+            const castersIn25m = Math.min(count, def.baseCount * 5);
+            shadowTris += castersIn25m * def.trisLOD[2];
           }
         } else {
           if (def.castShadow) {
@@ -965,6 +975,13 @@ export class BatchedChunkSystem {
       this.lastFocusChunkZ = curFocusChunkZ;
 
       this._recomputePriorityQueue(camera, curFocusChunkX, curFocusChunkZ, now);
+    }
+
+    if (this.mobileFog) {
+      this.mobileFog.update(frameDeltaMs / 1000.0, camera, new Set(this.chunks.keys()), this.chunkSize);
+    }
+    if (this.scheduler && this.scheduler.update(this._sleighPos, camera, now, frameDeltaMs, this.mobileFog)) {
+      return;
     }
 
     // 6. CHUNK GENERATION: at most 1 chunk per frame, within 2 ms budget
