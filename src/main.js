@@ -46,7 +46,8 @@ const camera = new THREE.PerspectiveCamera(
 camera.position.set(-6.5, 2.0, -1.5);
 
 // --- Device Capability Detection ---
-const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+const IS_MOBILE = (new URLSearchParams(window.location.search).get('mobile') === '1') ||
+                  /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
                   (window.innerWidth <= 840) ||
                   ('ontouchstart' in window && window.innerWidth <= 1024);
 

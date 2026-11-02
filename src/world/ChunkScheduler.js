@@ -275,6 +275,9 @@ export class ChunkScheduler {
       }
     }
 
+    const loadedKeys = new Set(cs.chunks.keys());
+    const fogFar = mobileFog ? mobileFog.fogFar : (this.isMobile ? 20.0 : 45.0);
+
     // 4. Score Candidate Chunks Around Sleigh (max radius 2 chunks)
     // Run full scheduling decision at most every 100 ms or immediately when sleigh chunk changes
     const sleighChunkChanged = (currentSleighKey !== this.lastScheduleSleighKey);
@@ -402,9 +405,6 @@ export class ChunkScheduler {
     const neededKeySet = this._desiredKeySet;
     const candidates = this._cachedCandidates;
 
-    const loadedKeys = new Set(cs.chunks.keys());
-    const fogFar = mobileFog ? mobileFog.fogFar : (this.isMobile ? 20.0 : 45.0);
-
     // Watchdog: on mobile with strict camera view, only force-generate sleigh chunk if it is in view
     const sleighInView = this._isBoxInFrustum(currentCx, currentCz, 1.15);
     const sleighLoaded = loadedKeys.has(currentSleighKey);
@@ -433,10 +433,10 @@ export class ChunkScheduler {
       let lowestPriority = Infinity;
 
       for (const [key, chunk] of cs.chunks.entries()) {
-        if (key === currentSleighKey) continue; // Never evict sleigh chunk
+        if (!this.isMobile && key === currentSleighKey) continue; // Never evict sleigh chunk on desktop
         if (neededKeySet.has(key)) continue; // Never evict a chunk we want!
         const ageMs = now - (chunk.createdAt || 0);
-        if (ageMs < 1500) continue; // Never younger than 1.5s
+        if (!this.isMobile && ageMs < 1500) continue; // Age guard on desktop; mobile prioritizes strict camera view
 
         // Determine if chunk is outside frustum
         const outsideFrustum = !this._isBoxInFrustum(chunk.cx, chunk.cz, 1.10);
@@ -547,8 +547,8 @@ export class ChunkScheduler {
       }
     }
 
-    // Safety fallback: if loaded set becomes empty while sleigh is moving
-    if (cs.chunks.size === 0) {
+    // Safety fallback: if loaded set becomes empty while sleigh is moving (only trigger after initial loading has occurred)
+    if (cs.chunks.size === 0 && cs.meshDefinitions.length > 0 && cs.activeChunkCount > 0) {
       this._triggerFallback('Loaded chunk set became empty');
       cs.generateChunk(currentCx, currentCz);
       return false;
@@ -598,11 +598,11 @@ export class ChunkScheduler {
     let highestScore = -Infinity;
 
     for (const [key, chunk] of cs.chunks.entries()) {
-      if (key === currentSleighKey) continue; // Never evict sleigh chunk
+      if (!this.isMobile && key === currentSleighKey) continue; // Never evict sleigh chunk on desktop
       // Skip desired chunk unless this is watchdog case
       if (!isWatchdog && this._desiredKeySet && this._desiredKeySet.has(key)) continue;
       const ageMs = now - (chunk.createdAt || 0);
-      if (ageMs < 1500) continue; // Strict 1.5s age guard (no fallback)
+      if (!this.isMobile && ageMs < 1500) continue; // Age guard on desktop; mobile prioritizes strict camera view
 
       const wx = chunk.cx * cs.chunkSize;
       const wz = chunk.cz * cs.chunkSize;
