@@ -2840,7 +2840,18 @@ Promise.all([
     }
 
     // Pre-warm GPU textures, shaders, and chunk slots during the loading screen.
-    runMobileWarmup({ renderer, scene, camera, chunkSystem, loaderElement });
+    runMobileWarmup({
+      renderer,
+      scene,
+      camera,
+      chunkSystem,
+      composer,
+      loaderElement,
+      sleighController,
+      deliverySystem,
+      snowParticles,
+      largeSnowParticles
+    });
   },
   (xhr) => {
     if (xhr.lengthComputable && xhr.total > 0) {
