@@ -219,14 +219,14 @@ export class RobustCinematicBloomPass extends Pass {
     for (let i = 0; i < this.nMips; i++) {
       this.fsQuad.material = this.separableBlurMaterials[i];
       this.separableBlurMaterials[i].uniforms['colorTexture'].value = inputRenderTarget.texture;
-      this.separableBlurMaterials[i].uniforms['direction'].value = new THREE.Vector2(1.0, 0.0);
+      this.separableBlurMaterials[i].uniforms['direction'].value.set(1.0, 0.0);
 
       renderer.setRenderTarget(this.renderTargetsHorizontal[i]);
       renderer.clear();
       this.fsQuad.render(renderer);
 
       this.separableBlurMaterials[i].uniforms['colorTexture'].value = this.renderTargetsHorizontal[i].texture;
-      this.separableBlurMaterials[i].uniforms['direction'].value = new THREE.Vector2(0.0, 1.0);
+      this.separableBlurMaterials[i].uniforms['direction'].value.set(0.0, 1.0);
 
       renderer.setRenderTarget(this.renderTargetsVertical[i]);
       renderer.clear();

@@ -217,6 +217,7 @@ export class KawaseBloomPass extends Pass {
     });
 
     this.fsQuad = new FullScreenQuad();
+    this._tempClearColor = new THREE.Color();
   }
 
   initRenderTargets() {
@@ -258,7 +259,7 @@ export class KawaseBloomPass extends Pass {
   }
 
   render(renderer, writeBuffer, readBuffer) {
-    const originalClearColor = renderer.getClearColor(new THREE.Color());
+    const originalClearColor = renderer.getClearColor(this._tempClearColor);
     const originalClearAlpha = renderer.getClearAlpha();
     const originalAutoClear = renderer.autoClear;
     renderer.autoClear = false;
