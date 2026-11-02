@@ -34,6 +34,17 @@ export class MobileFog {
     // Nearest edge distance metric
     this.nearestEdgeDist = 26.0;
 
+    // Item 4: Edge calculation throttle & preallocated resources
+    this._lastEdgeCheckTime = 0;
+    this._cachedMinEdgeDist = 26.0;
+    this._camDir = new THREE.Vector3();
+    this._neighborOffsets = [
+      { dx: -1, dz: 0, edgeAxis: 'x', sign: -1 },
+      { dx: 1,  dz: 0, edgeAxis: 'x', sign: 1 },
+      { dx: 0,  dz: -1, edgeAxis: 'z', sign: -1 },
+      { dx: 0,  dz: 1,  edgeAxis: 'z', sign: 1 }
+    ];
+
     // Store reference to scene fog or create it
     if (!this.scene.fog) {
       this.scene.fog = new THREE.Fog(this.horizonColor.getHex(), this.fogNear, this.fogFar);
@@ -66,17 +77,21 @@ export class MobileFog {
 
   /**
    * Computes the distance from the CAMERA to the nearest unloaded chunk edge ahead and to the sides.
-   * A chunk is loaded if it is present in loadedChunkKeys (Set of "cx,cz").
-   * For the grid of loaded chunks, an edge is any perimeter boundary (x = minX or maxX, z = minZ or maxZ of the chunk)
-   * that borders an unloaded chunk.
+   * Throttled to run at most every 100 ms, reuses preallocated vector and offset table, reads cx/cz directly.
    */
   _computeNearestUnloadedEdge(camera, loadedChunks, chunkSize = 20.0) {
     if (!loadedChunks || loadedChunks.size === 0) {
-      return 26.0; // clamp min 22 + 4m margin
+      return 26.0;
     }
 
+    const now = performance.now();
+    if (now - this._lastEdgeCheckTime < 100) {
+      return this._cachedMinEdgeDist;
+    }
+    this._lastEdgeCheckTime = now;
+
     const camPos = camera.position;
-    const camDir = new THREE.Vector3();
+    const camDir = this._camDir;
     camera.getWorldDirection(camDir);
     camDir.y = 0;
     if (camDir.lengthSq() > 0.0001) camDir.normalize();
@@ -84,49 +99,36 @@ export class MobileFog {
     let minEdgeDist = Infinity;
     const half = chunkSize * 0.5;
 
-    // Check every loaded chunk (loadedChunks can be a Map or Set)
-    const keys = loadedChunks.keys ? loadedChunks.keys() : loadedChunks;
-    for (const key of keys) {
-      const parts = key.split(',');
-      const cx = parseInt(parts[0], 10);
-      const cz = parseInt(parts[1], 10);
+    // Check loaded chunk records directly (avoid string splitting and parseInt)
+    for (const chunk of loadedChunks.values()) {
+      const cx = (chunk.cx !== undefined) ? chunk.cx : parseInt(chunk.key?.split(',')[0] || 0, 10);
+      const cz = (chunk.cz !== undefined) ? chunk.cz : parseInt(chunk.key?.split(',')[1] || 0, 10);
 
       const chunkMinX = cx * chunkSize - half;
       const chunkMaxX = cx * chunkSize + half;
       const chunkMinZ = cz * chunkSize - half;
       const chunkMaxZ = cz * chunkSize + half;
 
-      // 4 boundaries:
-      // West: cx - 1, cz
-      // East: cx + 1, cz
-      // North: cx, cz - 1
-      // South: cx, cz + 1
-      const neighbors = [
-        { nx: cx - 1, nz: cz, edgeAxis: 'x', edgeVal: chunkMinX, minCoord: chunkMinZ, maxCoord: chunkMaxZ },
-        { nx: cx + 1, nz: cz, edgeAxis: 'x', edgeVal: chunkMaxX, minCoord: chunkMinZ, maxCoord: chunkMaxZ },
-        { nx: cx, nz: cz - 1, edgeAxis: 'z', edgeVal: chunkMinZ, minCoord: chunkMinX, maxCoord: chunkMaxX },
-        { nx: cx, nz: cz + 1, edgeAxis: 'z', edgeVal: chunkMaxZ, minCoord: chunkMinX, maxCoord: chunkMaxX }
-      ];
-
       for (let i = 0; i < 4; i++) {
-        const nb = neighbors[i];
-        const nbKey = `${nb.nx},${nb.nz}`;
+        const nb = this._neighborOffsets[i];
+        const nbCx = cx + nb.dx;
+        const nbCz = cz + nb.dz;
+        const nbKey = `${nbCx},${nbCz}`;
+
         if (!loadedChunks.has(nbKey)) {
-          // This boundary is an unloaded edge segment
           let closestPtX, closestPtZ;
           if (nb.edgeAxis === 'x') {
-            closestPtX = nb.edgeVal;
-            closestPtZ = THREE.MathUtils.clamp(camPos.z, nb.minCoord, nb.maxCoord);
+            closestPtX = (nb.sign < 0) ? chunkMinX : chunkMaxX;
+            closestPtZ = THREE.MathUtils.clamp(camPos.z, chunkMinZ, chunkMaxZ);
           } else {
-            closestPtX = THREE.MathUtils.clamp(camPos.x, nb.minCoord, nb.maxCoord);
-            closestPtZ = nb.edgeVal;
+            closestPtX = THREE.MathUtils.clamp(camPos.x, chunkMinX, chunkMaxX);
+            closestPtZ = (nb.sign < 0) ? chunkMinZ : chunkMaxZ;
           }
 
           const toEdgeX = closestPtX - camPos.x;
           const toEdgeZ = closestPtZ - camPos.z;
           const dist = Math.hypot(toEdgeX, toEdgeZ);
 
-          // Test if edge is ahead or to the sides: dot product with camera direction >= -0.2 (ahead and sides)
           const dot = dist > 0.0001 ? (toEdgeX * camDir.x + toEdgeZ * camDir.z) / dist : 1.0;
           if (dot >= -0.2) {
             if (dist < minEdgeDist) {
@@ -141,6 +143,7 @@ export class MobileFog {
       minEdgeDist = 55.0 + 4.0;
     }
 
+    this._cachedMinEdgeDist = minEdgeDist;
     return minEdgeDist;
   }
 
@@ -154,8 +157,8 @@ export class MobileFog {
     const rawEdgeDist = this._computeNearestUnloadedEdge(camera, loadedChunks, chunkSize);
     this.nearestEdgeDist = rawEdgeDist;
 
-    // fogFar = distance from the CAMERA to the nearest unloaded edge ahead and to the sides, minus 4 m, clamped to [22, 55] m
-    const targetFar = THREE.MathUtils.clamp(rawEdgeDist - 4.0, 35.0, 55.0);
+    // fogFar = distance from the CAMERA to the nearest unloaded edge ahead and to the sides, minus 4 m, clamped to [28, 55] m
+    const targetFar = THREE.MathUtils.clamp(rawEdgeDist - 4.0, 28.0, 55.0);
     const targetNear = Math.max(targetFar * 0.35, 12.0); // fogNear ~35% of fogFar, never below 12m
 
     // Smooth over ~1 s: exponential smoothing lerp factor alpha = 1.0 - Math.exp(-delta / 1.0)
@@ -165,8 +168,8 @@ export class MobileFog {
     this.fogFar += (targetFar - this.fogFar) * lerpAlpha;
     this.fogNear += (targetNear - this.fogNear) * lerpAlpha;
 
-    if (this.fogFar < 35.0 && !this._warnedFog) {
-      console.warn('[MobileFog] fogFar below 35m:', this.fogFar);
+    if (this.fogFar < 28.0 && !this._warnedFog) {
+      console.warn('[MobileFog] fogFar below 28m:', this.fogFar);
       this._warnedFog = true;
     }
 
