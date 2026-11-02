@@ -945,7 +945,7 @@ export class PerformanceDebugger {
       <div style="color:#a5f3fc; font-size:10px;">• <strong>santa aseet:</strong> ${this._getSantaAseetInfo()}</div>
       <div><strong>DPR:</strong> ${dpr}x | <strong>Buffer:</strong> ${drawSize.x}x${drawSize.y} px | <strong>Cap:</strong> ${window._targetFpsCap || 60} FPS</div>
       <div><strong>Composer:</strong> ${composerState} | <strong>Bloom:</strong> ${bloomName}</div>
-      <div><strong>ShadowMap:</strong> ${this.ctx.renderer.shadowMap.enabled ? (this.ctx.moonLight?.shadow?.mapSize?.width || 2048) + 'px' : 'OFF'} | <strong>Model:</strong> ${window._loadedModelName || window._mobileModelSet || 'desktop'} | <strong>Lights:</strong> ${lights.totalLights}</div>
+      <div><strong>ShadowMap:</strong> ${this.ctx.renderer.shadowMap.enabled ? (this.ctx.moonLight?.shadow?.mapSize?.width || 2048) + 'px' : 'OFF'} | <strong>Model:</strong> ${window._loadedModelName || 'terrain.glb'} (${Math.round((this.ctx.chunkSystem?.trianglesPerChunk || 0) / 1000)}k/chunk) | <strong>Lights:</strong> ${lights.totalLights}</div>
       <div style="color:#fde047; font-size:10px;"><strong>Active Flags:</strong> ${(() => {
         const p = new URLSearchParams(window.location.search);
         const flags = [];

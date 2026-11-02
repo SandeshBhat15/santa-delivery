@@ -3189,7 +3189,7 @@ function animate(currentTime) {
         const t = cs.telemetry;
         fpsElement.innerHTML = `FPS: ${fps} | Calls: ${sceneCalls} | Polys: Total ${Math.round(t.totalTriangles/1000)}k (Main ${Math.round(t.mainTriangles/1000)}k, Shadow ${Math.round(t.shadowTriangles/1000)}k)<br>` +
           `Chunks: ${t.loadedChunks} (Q:${t.queueLength}, Gen:${t.lastGenDurationMs.toFixed(1)}ms, Max5s:${t.worstFrameTime5s.toFixed(1)}ms) | Sleigh: ${window.chunkScheduler?.telemetry?.sleighChunkKey || "?"} ${window.chunkScheduler?.telemetry?.sleighChunkLoaded ? "OK" : "MISSING"} | ` +
-          `Rad: ${Math.round(t.loadRadius)}m`;
+          `Model: ${window._loadedModelName || 'terrain.glb'} (${Math.round((cs.trianglesPerChunk || 0) / 1000)}k/chunk) | Rad: ${Math.round(t.loadRadius)}m`;
       } else {
         const visTri = window._visibleSceneTriangles || sceneTriangles;
         fpsElement.textContent = `FPS: ${fps} | Calls: ${sceneCalls} | Polys: ${visTri.toLocaleString()}`;

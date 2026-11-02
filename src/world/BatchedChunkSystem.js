@@ -110,6 +110,7 @@ export class BatchedChunkSystem {
 
     this.mobileFog = this.isMobile ? new MobileFog(this.scene, { isMobile: true }) : null;
     this.scheduler = this.isMobile ? new ChunkScheduler(this, { isMobile: true, maxChunks: MOBILE_MAX_CHUNKS }) : null;
+    this.trianglesPerChunk = 0;
     this.capViolations = 0;
 
     // 1. Load radius: matches scheduler region on mobile (~45m), 110m on desktop
@@ -443,6 +444,9 @@ export class BatchedChunkSystem {
 
     // Build the InstancedMeshes
     this.createGlobalInstancedMeshes();
+
+    this.trianglesPerChunk = this.meshDefinitions.reduce((sum, def) => sum + def.baseCount * def.triangles, 0);
+    console.log(`[BatchedChunkSystem] Loaded ${window._loadedModelName || "terrain.glb"}: ${this.trianglesPerChunk.toLocaleString()} triangles per chunk`);
   }
 
   createGlobalInstancedMeshes() {
