@@ -2902,7 +2902,7 @@ const modelUrl = '/assets/models/terrain.glb';
     }
   }
 );
-});
+})();
 
 // --- Window Resize Handling ---
 window.addEventListener('resize', () => {
