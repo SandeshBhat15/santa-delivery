@@ -743,6 +743,64 @@ const skyDomeMesh = new THREE.Mesh(new THREE.SphereGeometry(SKY_RADIUS, 48, 32),
 skyDomeMesh.renderOrder = -20;
 skyGroup.add(skyDomeMesh);
 
+// --- Distant Horizon Silhouette Mountains Ring ---
+// Procedural low-poly silhouette ring (64 segments, ~128 triangles, 1 draw call)
+// Attached to skyGroup so it always centers around camera without translation jitter.
+const MOUNTAIN_RADIUS = 350;
+const MOUNTAIN_SEGS = 64;
+const mtnPos = [];
+const mtnIndices = [];
+
+for (let i = 0; i <= MOUNTAIN_SEGS; i++) {
+  const theta = (i / MOUNTAIN_SEGS) * Math.PI * 2;
+  const cosT = Math.cos(theta);
+  const sinT = Math.sin(theta);
+  
+  // Jagged harmonic mountain ridges
+  const n1 = Math.sin(theta * 5.0) * 0.5 + 0.5;
+  const n2 = Math.sin(theta * 11.0 + 1.2) * 0.25;
+  const n3 = Math.cos(theta * 23.0 + 2.5) * 0.15;
+  const ridge = Math.max(0.08, n1 * 0.65 + n2 + n3);
+  
+  const bottomY = -35.0;
+  const peakY = bottomY + 28.0 + ridge * 42.0;
+  
+  // Bottom vertex
+  mtnPos.push(cosT * MOUNTAIN_RADIUS, bottomY, sinT * MOUNTAIN_RADIUS);
+  // Top peak vertex
+  mtnPos.push(cosT * MOUNTAIN_RADIUS, peakY, sinT * MOUNTAIN_RADIUS);
+}
+
+for (let i = 0; i < MOUNTAIN_SEGS; i++) {
+  const b1 = i * 2;
+  const t1 = i * 2 + 1;
+  const b2 = (i + 1) * 2;
+  const t2 = (i + 1) * 2 + 1;
+  
+  // Quad (2 triangles) facing inward
+  mtnIndices.push(b1, b2, t1);
+  mtnIndices.push(b2, t2, t1);
+}
+
+const mountainGeo = new THREE.BufferGeometry();
+mountainGeo.setAttribute('position', new THREE.Float32BufferAttribute(mtnPos, 3));
+mountainGeo.setIndex(mtnIndices);
+
+// Deep nocturnal navy-indigo silhouette matching horizon haze (0x0b1626)
+const mountainMat = new THREE.MeshBasicMaterial({
+  color: 0x0a1424,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+  fog: false,
+  toneMapped: true
+});
+
+const mountainMesh = new THREE.Mesh(mountainGeo, mountainMat);
+mountainMesh.name = 'DistantHorizonMountains';
+mountainMesh.renderOrder = -15; // Renders right in front of sky dome
+skyGroup.add(mountainMesh);
+
+
 const STAR_COUNT = 700;
 const starGeo = new THREE.BufferGeometry();
 const starPositions = new Float32Array(STAR_COUNT * 3);

@@ -6,7 +6,7 @@ export const USE_LEGACY = typeof window !== 'undefined' && window.location.searc
 
 const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
 const chunkParam = parseInt(urlParams.get('chunks'), 10);
-export const MOBILE_MAX_CHUNKS = (!isNaN(chunkParam) && chunkParam > 0) ? Math.min(6, chunkParam) : 4;
+export const MOBILE_MAX_CHUNKS = (!isNaN(chunkParam) && chunkParam > 0) ? Math.min(6, chunkParam) : 5;
 export const DESKTOP_MAX_CHUNKS = (!isNaN(chunkParam) && chunkParam > 0) ? chunkParam : 16;
 
 /**
@@ -619,7 +619,7 @@ export class BatchedChunkSystem {
     this._frustum.setFromProjectionMatrix(this._projScreenMatrix);
 
     const camPos = camera.position;
-    const maxVisibleDist = this.isMobile ? ((this.mobileFog ? this.mobileFog.fogFar : 20.0) + this.chunkSize * 0.7) : 200.0;
+    const maxVisibleDist = this.isMobile ? ((this.mobileFog ? this.mobileFog.fogFar : 32.0) + this.chunkSize * 0.7) : 200.0;
 
     let left = 0;
     let right = this.activeChunkCount - 1;

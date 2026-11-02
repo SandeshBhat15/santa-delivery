@@ -1577,8 +1577,8 @@ export class DeliverySystem {
     const route = [];
     const usedIds = new Set();
     let cursor = origin;
-    const minDistance = 7.5;  // Comfortable separation in meters
-    const maxDistance = 14.0; // Avoid excessively distant outliers
+    const minDistance = 6.0;  // Comfortable separation in meters
+    const maxDistance = 18.0; // Visible within fog distance (32m)
 
     while (route.length < this.deliveriesRequired) {
       // Find all unused houses within the ideal distance band (7.5m - 14.0m)
@@ -1636,7 +1636,7 @@ export class DeliverySystem {
       // Prefer houses at comfortable distance (7.5m - 14.0m away)
       const distantCandidates = candidates.filter((h) => {
         const d = Math.hypot(h.worldPos.x - sleighPos.x, h.worldPos.z - sleighPos.z);
-        return d >= 7.5 && d <= 14.0;
+        return d >= 6.0 && d <= 18.0;
       });
 
       const pool = distantCandidates.length > 0 ? distantCandidates : candidates;

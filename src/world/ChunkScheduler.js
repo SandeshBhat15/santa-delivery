@@ -31,7 +31,7 @@ export class ChunkScheduler {
   constructor(chunkSystem, options = {}) {
     this.chunkSystem = chunkSystem;
     this.isMobile = options.isMobile ?? false;
-    this.maxChunks = options.maxChunks || (this.isMobile ? 4 : 5);
+    this.maxChunks = options.maxChunks || (this.isMobile ? 5 : 5);
 
     // Flags
     const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
@@ -276,7 +276,7 @@ export class ChunkScheduler {
     }
 
     const loadedKeys = new Set(cs.chunks.keys());
-    const fogFar = mobileFog ? mobileFog.fogFar : (this.isMobile ? 20.0 : 45.0);
+    const fogFar = mobileFog ? mobileFog.fogFar : (this.isMobile ? 32.0 : 45.0);
 
     // 4. Score Candidate Chunks Around Sleigh (max radius 2 chunks)
     // Run full scheduling decision at most every 100 ms or immediately when sleigh chunk changes
