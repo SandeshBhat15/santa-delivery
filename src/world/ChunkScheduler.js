@@ -358,26 +358,26 @@ export class ChunkScheduler {
       this._desiredChunks.length = 0;
       this._desiredKeySet.clear();
 
-      // On mobile with ultra-dense fog (20m far):
-      // Only schedule chunks that are within camera frustum and within fog reach (or close to camera).
+      // On mobile:
+      // ONLY schedule chunks that are strictly within the camera frustum and within fog reach.
       const camPos = camera.position;
-      const maxDistFromCam = (this.isMobile ? (fogFar + cs.chunkSize * 0.7) : 100.0);
+      const maxDistFromCam = (this.isMobile ? (fogFar + cs.chunkSize * 0.4) : 100.0);
 
       for (let i = 0; i < this._cachedCandidates.length; i++) {
         if (this._desiredChunks.length >= this.maxChunks) break;
         const c = this._cachedCandidates[i];
 
         if (this.isMobile) {
-          // Check distance to camera
-          const distToCam = this._nearestPointDistanceToCamera(c.cx, c.cz, camPos);
-          if (distToCam > maxDistFromCam) {
-            continue; // Too far, completely obscured by fog!
-          }
-
-          // Frustum check: chunk must intersect camera frustum
-          const inFrustum = this._isBoxInFrustum(c.cx, c.cz, 1.15);
+          // Frustum check: chunk must intersect the camera frustum
+          const inFrustum = this._isBoxInFrustum(c.cx, c.cz, 1.05);
           if (!inFrustum) {
             continue; // Not visible on camera!
+          }
+
+          // Check distance to camera (must be within visible fog distance)
+          const distToCam = this._nearestPointDistanceToCamera(c.cx, c.cz, camPos);
+          if (distToCam > maxDistFromCam) {
+            continue; // Beyond fog reach!
           }
         }
 
@@ -424,10 +424,18 @@ export class ChunkScheduler {
       this.sleighChunkMissingSince = null;
     }
 
-    // 5. Eviction: If more than maxChunks or an unloaded slot is needed
-    // Evict lowest priority chunk: never sleigh chunk, never younger than 1.5 s
-    // Generate or unload only while AABB (+10%) is outside camera frustum when possible
-    if (cs.chunks.size >= this.maxChunks) {
+    // 5. Eviction: On mobile, promptly evict any loaded chunk that is no longer desired (exited frustum or beyond fog)
+    // On desktop: evict lowest priority when slots are needed or outside bounds
+    for (const [key, chunk] of cs.chunks.entries()) {
+      if (this.isMobile) {
+        if (!neededKeySet.has(key)) {
+          cs.destroyChunk(key);
+          loadedKeys.delete(key);
+        }
+      }
+    }
+
+    if (!this.isMobile && cs.chunks.size >= this.maxChunks) {
       // Find loaded chunks not in desiredChunks
       let evictionCandidate = null;
       let lowestPriority = Infinity;
