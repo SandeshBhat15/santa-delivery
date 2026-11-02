@@ -4,6 +4,7 @@ export function runMobileWarmup(ctx) {
   const { renderer, scene, camera, chunkSystem, loaderElement } = ctx || {};
   if (!renderer || !scene || !camera) return;
 
+  // 1. Initialize all textures on the GPU
   if (renderer.initTexture) {
     scene.traverse((obj) => {
       if (obj.isMesh && obj.material) {
@@ -18,8 +19,17 @@ export function runMobileWarmup(ctx) {
     });
   }
 
-  if (chunkSystem && typeof chunkSystem.update === 'function') {
-    try { chunkSystem.update(new THREE.Vector3(0, 0, 0)); } catch (e) {}
+  // 2. Fill all 6 chunk slots once at maximum capacity
+  if (chunkSystem && typeof chunkSystem.generateChunk === 'function') {
+    const slots = [
+      [0, 0], [1, 0], [-1, 0],
+      [0, 1], [0, -1], [1, 1]
+    ];
+    for (let i = 0; i < slots.length; i++) {
+      try {
+        chunkSystem.generateChunk(slots[i][0], slots[i][1]);
+      } catch (e) {}
+    }
   }
 
   const hideLoader = () => {
@@ -30,6 +40,7 @@ export function runMobileWarmup(ctx) {
     if (typeof window !== 'undefined') window._loadingCompleteTime = performance.now();
   };
 
+  // 3. Compile async with all lights & shadows enabled, and render one frame with effects visible
   if (renderer.compileAsync) {
     renderer.compileAsync(scene, camera).catch(() => {}).finally(() => {
       try { renderer.render(scene, camera); } catch (e) {}

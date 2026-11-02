@@ -397,6 +397,7 @@ export class BatchedChunkSystem {
   }
 
   initFromGLTF(gltfRoot) {
+    const meshoptStart = performance.now();
     this.meshDefinitions = [];
     this.templateHouseColliders = [];
     this.chunks.clear();
@@ -536,6 +537,10 @@ export class BatchedChunkSystem {
 
     // Build the 3 LOD InstancedMesh arrays
     this.createGlobalInstancedMeshes();
+
+    const meshoptDuration = performance.now() - meshoptStart;
+    console.log(`[BatchedChunkSystem] Meshopt simplification took ${meshoptDuration.toFixed(1)} ms`);
+    this.meshoptSimplificationDurationMs = meshoptDuration;
   }
 
   createGlobalInstancedMeshes() {
