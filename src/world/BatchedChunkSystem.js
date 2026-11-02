@@ -199,7 +199,9 @@ export class BatchedChunkSystem {
       shadowTriangles: 0,
       totalTriangles: 0
     };
-    this._frameTimes5s = [];
+    this._frameTimeRing = new Float32Array(360);
+    this._frameTimeRingIdx = 0;
+    this._frameTimeRingCount = 0;
     this._lastFrameTime = performance.now();
   }
 
@@ -729,13 +731,17 @@ export class BatchedChunkSystem {
     const frameDeltaMs = now - this._lastFrameTime;
     this._lastFrameTime = now;
 
-    this._frameTimes5s.push({ t: now, dt: frameDeltaMs });
-    while (this._frameTimes5s.length > 0 && (now - this._frameTimes5s[0].t) > 5000) {
-      this._frameTimes5s.shift();
+    this._frameTimeRing[this._frameTimeRingIdx] = frameDeltaMs;
+    this._frameTimeRingIdx = (this._frameTimeRingIdx + 1) % 360;
+    if (this._frameTimeRingCount < 360) {
+      this._frameTimeRingCount++;
     }
+
     let worstDt = 0;
-    for (let i = 0; i < this._frameTimes5s.length; i++) {
-      if (this._frameTimes5s[i].dt > worstDt) worstDt = this._frameTimes5s[i].dt;
+    const ringCount = this._frameTimeRingCount;
+    for (let i = 0; i < ringCount; i++) {
+      const dt = this._frameTimeRing[i];
+      if (dt > worstDt) worstDt = dt;
     }
     this.telemetry.worstFrameTime5s = worstDt;
 
