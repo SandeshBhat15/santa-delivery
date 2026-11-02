@@ -10,6 +10,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { KawaseBloomPass } from './postprocessing/KawaseBloomPass.js';
 import { PerformanceDebugger } from './debug/PerformanceDebugger.js';
+import { QualityPanel } from './debug/QualityPanel.js';
 import { MobileOptimizer } from './mobile/MobileOptimizer.js';
 import { runMobileWarmup } from './mobile/MobileWarmup.js';
 import { BatchedChunkSystem, USE_LEGACY } from './world/BatchedChunkSystem.js';
@@ -128,6 +129,23 @@ const perfDebugger = new PerformanceDebugger({
   get skyGroup() { return skyGroup; }
 });
 window.perfDebugger = perfDebugger;
+
+// Live Quality Panel (?debug=1, touch buttons, no reload)
+const qualityPanel = new QualityPanel({
+  renderer,
+  scene,
+  camera,
+  composer,
+  bloomPass,
+  get moonLight() { return moonLight; },
+  get starlightHemiLight() { return starlightHemiLight; },
+  get villageFacadeLight() { return villageFacadeLight; },
+  get ambientWarm() { return ambientWarm; },
+  get auroraGroundLight() { return auroraGroundLight; },
+  get sleighController() { return sleighController; },
+  get chunkSystem() { return chunkSystem; }
+});
+window.qualityPanel = qualityPanel;
 
 // Mobile Performance Optimizer (only active on mobile devices, desktop unchanged)
 const mobileOptimizer = new MobileOptimizer({
@@ -3151,8 +3169,10 @@ function animate(currentTime) {
   const renderStart = performance.now();
   let shadowTrianglesReal = 0;
   if (!perfDebugger?.state?.skipRender) {
-    const isComposerDisabled = IS_MOBILE && (new URLSearchParams(window.location.search).get('composer') === '0');
+    const isComposerDisabled = (window.qualityPanel?.composerEnabled === false)
+                  || (IS_MOBILE && (new URLSearchParams(window.location.search).get('composer') === '0'));
     const useBloom = !isComposerDisabled
+                  && (window.qualityPanel?.bloomEnabled !== false)
                   && (perfDebugger?.state?.postProcessing !== false)
                   && !(mobileOptimizer?.enabled && mobileOptimizer._bloomDisabled);
 
@@ -3178,6 +3198,7 @@ function animate(currentTime) {
   const sceneTriangles = renderer.info.render.triangles;
 
   if (perfDebugger) perfDebugger.endFrame();
+  if (qualityPanel) qualityPanel.update(delta > 0 ? (1.0 / delta) : 60);
 
   // FPS & Draw Call Telemetry
   frameCount++;
