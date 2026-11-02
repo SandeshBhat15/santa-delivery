@@ -3134,7 +3134,9 @@ function animate(currentTime) {
   const renderStart = performance.now();
   let shadowTrianglesReal = 0;
   if (!perfDebugger?.state?.skipRender) {
-    const useBloom = (perfDebugger?.state?.postProcessing !== false)
+    const isComposerDisabled = IS_MOBILE && (new URLSearchParams(window.location.search).get('composer') === '0');
+    const useBloom = !isComposerDisabled
+                  && (perfDebugger?.state?.postProcessing !== false)
                   && !(mobileOptimizer?.enabled && mobileOptimizer._bloomDisabled);
 
     // Measure shadow pass triangle count by sampling renderer.info before and after shadow pass
