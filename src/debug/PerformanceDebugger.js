@@ -908,8 +908,8 @@ export class PerformanceDebugger {
     this.hud.innerHTML = `
       <div style="font-weight:bold; color:#ffd700; margin-bottom:2px;">🎮 TELEMETRY (FULL FRAME)</div>
       <div><strong>FPS:</strong> <span style="font-size:13px; font-weight:bold; color:${fpsColor}">${fps}</span> (${this.avgFrameTime.toFixed(1)} ms)</div>
-      <div><strong>Draw Calls:</strong> ${this.lastCalls}</div>
-      <div><strong>Triangles:</strong> ${(this.lastTriangles || 0).toLocaleString()} (Shadow: ${(this.lastShadowTriangles || window._shadowPassTriangles || 0).toLocaleString()})</div>
+      <div><strong>Draw Calls:</strong> ${this.lastCalls} (info) | <strong>Triangles:</strong> ${(this.lastTriangles || 0).toLocaleString()} (info) ${this.ctx.chunkSystem?.telemetry ? `[est: ${(this.ctx.chunkSystem.telemetry.totalTriangles || 0).toLocaleString()}]` : ''}</div>
+      <div><strong>Pass Split:</strong> Shadow: ${(this.lastShadowTriangles || window._shadowPassTriangles || 0).toLocaleString()} | Main: ${Math.max(0, (this.lastTriangles || 0) - (this.lastShadowTriangles || window._shadowPassTriangles || 0)).toLocaleString()} ${this.ctx.chunkSystem?.telemetry ? `[est Main: ${(this.ctx.chunkSystem.telemetry.mainTriangles || 0).toLocaleString()}, Shadow: ${(this.ctx.chunkSystem.telemetry.shadowTriangles || 0).toLocaleString()}]` : ''}</div>
       <div><strong>Geometries:</strong> ${this.lastGeometries} | <strong>Textures:</strong> ${this.lastTextures}</div>
       ${window.chunkScheduler ? `
         <div style="color:#38bdf8; font-size:10px; margin-top:2px; border-top:1px dashed #475569; padding-top:2px;">
@@ -918,15 +918,29 @@ export class PerformanceDebugger {
           • <strong>Fog [F]:</strong> ${window.mobileFog?.enabled ? `${window.mobileFog.fogNear.toFixed(1)}m / ${window.mobileFog.fogFar.toFixed(1)}m` : 'OFF'}<br/>
           • <strong>Pops:</strong> ${window.chunkScheduler.telemetry.visiblePops} | <strong>Gen:</strong> ${window.chunkScheduler.telemetry.lastGenMs.toFixed(1)}ms | <strong>LastGen:</strong> ${window.chunkScheduler.telemetry.lastSuccessfulGenTime ? (performance.now() - window.chunkScheduler.telemetry.lastSuccessfulGenTime).toFixed(0) : "n/a"}ms ago | <strong>Max5s:</strong> ${(window._loadingCompleteTime && performance.now() - window._loadingCompleteTime < 10000) ? 'warmup' : this.maxFrameTime5s.toFixed(1) + 'ms'}<br/>
           • <strong>AABB [B]:</strong> ${window.chunkScheduler.showAABBs ? 'ON' : 'OFF'}
-          <div style="display:flex; gap:6px; margin-top:4px;">
-            <button id="btn-touch-fog" style="flex:1; background:#1e293b; border:1px solid #38bdf8; color:#38bdf8; border-radius:4px; font-size:10px; padding:3px 2px; cursor:pointer;">Toggle Fog</button>
-            <button id="btn-touch-aabb" style="flex:1; background:#1e293b; border:1px solid #4ade80; color:#4ade80; border-radius:4px; font-size:10px; padding:3px 2px; cursor:pointer;">Toggle Bounds</button>
+          <div style="display:flex; gap:4px; margin-top:4px; flex-wrap:wrap;">
+            <button id="btn-touch-fog" style="flex:1; min-width:70px; background:#1e293b; border:1px solid #38bdf8; color:#38bdf8; border-radius:4px; font-size:10px; padding:3px 2px; cursor:pointer;">Toggle Fog [F]</button>
+            <button id="btn-touch-aabb" style="flex:1; min-width:70px; background:#1e293b; border:1px solid #4ade80; color:#4ade80; border-radius:4px; font-size:10px; padding:3px 2px; cursor:pointer;">Toggle Bounds [B]</button>
+            <button id="btn-touch-refill" style="flex:1; min-width:70px; background:#1e293b; border:1px solid #facc15; color:#facc15; border-radius:4px; font-size:10px; padding:3px 2px; cursor:pointer;">Refill Gifts [R]</button>
+            <button id="btn-touch-compare" style="flex:1; min-width:70px; background:#1e293b; border:1px solid #c084fc; color:#c084fc; border-radius:4px; font-size:10px; padding:3px 2px; cursor:pointer;">Compare [C]</button>
           </div>
         </div>
       ` : ''}
       <div style="color:#a5f3fc; font-size:10px;">• <strong>santa aseet:</strong> ${this._getSantaAseetInfo()}</div>
       <div><strong>DPR:</strong> ${dpr}x | <strong>ShadowMap:</strong> ${this.ctx.renderer.shadowMap.enabled ? (this.ctx.moonLight?.shadow?.mapSize?.width || 2048) + 'px' : 'OFF'} | <strong>Model:</strong> ${window._mobileModelSet || 'desktop'} | <strong>Cap:</strong> ${window._targetFpsCap || 60} FPS</div>
-      <div><strong>Lights:</strong> ${lights.totalLights} (Shadows: ${lights.shadowLights}) | <strong>Bloom:</strong> ${this.state.postProcessing ? 'ON' : 'OFF'} | <strong>dpr flag:</strong> ${new URLSearchParams(window.location.search).get('dpr') || 'auto'}</div>
+      <div><strong>Lights:</strong> ${lights.totalLights} (Shadows: ${lights.shadowLights}) | <strong>Bloom:</strong> ${this.state.postProcessing ? 'ON' : 'OFF'}</div>
+      <div style="color:#fde047; font-size:10px;"><strong>Active Flags:</strong> ${(() => {
+        const p = new URLSearchParams(window.location.search);
+        const flags = [];
+        if (p.has('dpr')) flags.push(`dpr=${p.get('dpr')}`);
+        if (p.has('bloom')) flags.push(`bloom=${p.get('bloom')}`);
+        if (p.has('shadows')) flags.push(`shadows=${p.get('shadows')}`);
+        if (p.has('orig')) flags.push(`orig=${p.get('orig')}`);
+        if (p.has('chunks')) flags.push(`chunks=${p.get('chunks')}`);
+        if (p.has('lod')) flags.push(`lod=${p.get('lod')}`);
+        if (p.has('smooth')) flags.push(`smooth=${p.get('smooth')}`);
+        return flags.length > 0 ? flags.join(', ') : 'none (default)';
+      })()}</div>
       ${window.mobileOptimizer ? `
         <div style="margin-top:2px; font-size:10px; border-top:1px dashed #475569; padding-top:2px;">
           <div style="color:#38bdf8; font-weight:600;">HouseOpaque: ${window.mobileOptimizer.toggles.houseOpaque ? 'ON' : 'OFF'} | FrontSide: ${window.mobileOptimizer.toggles.frontSideMaterials ? 'ON' : 'OFF'} [C]</div>
@@ -951,6 +965,24 @@ export class PerformanceDebugger {
       btnAABB.onclick = (e) => {
         e.stopPropagation();
         if (window.chunkScheduler) window.chunkScheduler.toggleAABBs();
+      };
+    }
+    const btnRefill = this.hud.querySelector('#btn-touch-refill');
+    if (btnRefill) {
+      btnRefill.onclick = (e) => {
+        e.stopPropagation();
+        if (window.deliverySystem && window.deliverySystem.refillGifts) {
+          window.deliverySystem.refillGifts();
+        }
+      };
+    }
+    const btnCompare = this.hud.querySelector('#btn-touch-compare');
+    if (btnCompare) {
+      btnCompare.onclick = (e) => {
+        e.stopPropagation();
+        if (window.mobileOptimizer && window.mobileOptimizer.toggleCompare) {
+          window.mobileOptimizer.toggleCompare();
+        }
       };
     }
 
