@@ -21,8 +21,6 @@ export class QualityPanel {
     const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
     this.enabled = urlParams.get('debug') === '1';
 
-    if (!this.enabled) return;
-
     const initialDpr = this.ctx.renderer ? this.ctx.renderer.getPixelRatio() : 2.0;
     const pixelRatios = [2.5, 2.25, 2.0, 1.75, 1.5];
     let dprIdx = pixelRatios.indexOf(initialDpr);
@@ -30,7 +28,11 @@ export class QualityPanel {
       dprIdx = 2; // Default 2.0
     }
 
-    const chunkCap = window.chunkScheduler?.maxChunks || this.ctx.chunkSystem?.maxLoadedChunks || 6;
+    let chunkCap = 6;
+try {
+  chunkCap = window.chunkScheduler?.maxChunks || this.ctx.chunkSystem?.maxLoadedChunks || 6;
+} catch (e) {}
+
     const chunkCaps = [3, 4, 5, 6];
     let chunkIdx = chunkCaps.indexOf(chunkCap);
     if (chunkIdx === -1) chunkIdx = 3; // Default 6
@@ -54,20 +56,22 @@ export class QualityPanel {
     this.fpsRingIdx = 0;
     this.fpsRingCount = 0;
 
+    if (!this.enabled) return;
+
     this._createDOM();
     this._updateButtonLabels();
   }
 
   get bloomEnabled() {
-    return this.state.bloom;
+    return this.state ? this.state.bloom : true;
   }
 
   get composerEnabled() {
-    return this.state.composer;
+    return this.state ? this.state.composer : true;
   }
 
   update(fps) {
-    if (!this.enabled) return;
+    if (!this.enabled || !this.state) return;
     const now = performance.now();
     if (now < this.warmupUntil) {
       this.fpsRingCount = 0;
