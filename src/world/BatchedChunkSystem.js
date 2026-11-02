@@ -7,6 +7,7 @@ export const USE_LEGACY = typeof window !== 'undefined' && window.location.searc
 const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
 const chunkParam = parseInt(urlParams.get('chunks'), 10);
 export const MOBILE_MAX_CHUNKS = (!isNaN(chunkParam) && chunkParam > 0) ? Math.min(6, chunkParam) : 6;
+export const DESKTOP_MAX_CHUNKS = (!isNaN(chunkParam) && chunkParam > 0) ? chunkParam : 16;
 
 /**
  * PriorityQueue — High-performance binary min-heap for candidate chunk scheduling
@@ -117,7 +118,7 @@ export class BatchedChunkSystem {
     this.scene = scene;
     this.chunkSize = 20.0;
     this.isMobile = options.isMobile ?? false;
-    this.maxLoadedChunks = options.maxLoadedChunks || (this.isMobile ? MOBILE_MAX_CHUNKS : 54);
+    this.maxLoadedChunks = options.maxLoadedChunks || (this.isMobile ? MOBILE_MAX_CHUNKS : DESKTOP_MAX_CHUNKS);
 
     this.mobileFog = this.isMobile ? new MobileFog(this.scene, { isMobile: true }) : null;
     this.scheduler = this.isMobile ? new ChunkScheduler(this, { isMobile: true, maxChunks: MOBILE_MAX_CHUNKS }) : null;
