@@ -58,7 +58,8 @@ const renderer = new THREE.WebGLRenderer({
 renderer.setSize(window.innerWidth, window.innerHeight);
 // High visual fidelity: 1.5x pixel ratio on mobile provides razor-sharp display on 1080p screens with smooth 60+ FPS
 const _initialDprParam = IS_MOBILE ? parseFloat(new URLSearchParams(window.location.search).get('dpr')) : NaN;
-renderer.setPixelRatio(Number.isFinite(_initialDprParam) ? _initialDprParam : Math.min(window.devicePixelRatio || 1, 2.5));
+const _initialDpr = Number.isFinite(_initialDprParam) ? _initialDprParam : Math.min(window.devicePixelRatio || 1, 2.5);
+renderer.setPixelRatio(_initialDpr);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.95;
 renderer.shadowMap.enabled = new URLSearchParams(window.location.search).get('shadows') !== '0';
@@ -83,11 +84,15 @@ window.controls = controls;
 // --- Cinematic Post-Processing Pipeline (Bloom for Glowing Window Hearths) ---
 // --- Full Cinematic Unreal Bloom Pipeline with Anti-Black-Square Protection ---
 const composer = new EffectComposer(renderer);
+composer.setPixelRatio(_initialDpr);
 
 const renderPass = new RenderPass(scene, camera);
 composer.addPass(renderPass);
 
-const bloomRes = new THREE.Vector2(window.innerWidth, window.innerHeight);
+const bloomRes = new THREE.Vector2(
+  Math.round(window.innerWidth * _initialDpr),
+  Math.round(window.innerHeight * _initialDpr)
+);
 const bloomPass = new KawaseBloomPass(
   bloomRes,
   1.4,  // Rich, warm cinematic bloom intensity
@@ -2884,7 +2889,7 @@ window.addEventListener('resize', () => {
   composer.setPixelRatio(pRatio);
 
   if (bloomPass) {
-    const bRes = new THREE.Vector2(width, height);
+    const bRes = new THREE.Vector2(Math.round(width * pRatio), Math.round(height * pRatio));
     bloomPass.setSize(bRes.x, bRes.y);
   }
 });

@@ -818,6 +818,11 @@ export class PerformanceDebugger {
     if (this.ctx.composer) {
       this.ctx.composer.setPixelRatio(dpr);
     }
+    if (this.ctx.bloomPass) {
+      const w = Math.round(window.innerWidth * dpr);
+      const h = Math.round(window.innerHeight * dpr);
+      this.ctx.bloomPass.setSize(w, h);
+    }
   }
 
   _toggleParticles(visible) {

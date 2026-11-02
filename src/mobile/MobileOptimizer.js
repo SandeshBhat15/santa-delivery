@@ -137,6 +137,11 @@ export class MobileOptimizer {
     if (this.ctx.composer) {
       this.ctx.composer.setPixelRatio(targetDpr);
     }
+    if (this.ctx.bloomPass) {
+      const w = Math.round(window.innerWidth * targetDpr);
+      const h = Math.round(window.innerHeight * targetDpr);
+      this.ctx.bloomPass.setSize(w, h);
+    }
 
     const moon = this.ctx.moonLight;
     if (moon) {
