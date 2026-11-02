@@ -1006,18 +1006,9 @@ export class DeliverySystem {
   _updateVisualMarkers() {
     const desired = this.activeTarget;
 
-    // Exactly one marker lives in the scene at a time.
-    this.trackedHouses.forEach((houseData) => {
-      if (houseData.marker && houseData !== desired && !houseData.marker.userData?.isFading) {
-        this.markersGroup.remove(houseData.marker);
-        houseData.marker = null;
-      }
-    });
-
-    if (desired && !desired.delivered && !desired.marker) {
-      const marker = this._createTargetMarker(desired);
-      desired.marker = marker;
-      this.markersGroup.add(marker);
+    // Delegate marker display solely to this.giftDropMarker (which is positioned and activated in _activateTarget)
+    if (desired && this.giftDropMarker) {
+      this.giftDropMarker.setVisible(true);
     }
   }
 
