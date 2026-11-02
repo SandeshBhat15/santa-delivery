@@ -77,11 +77,25 @@ export class ChunkScheduler {
     this._tempBox = new THREE.Box3();
     this._tempBoxMargin = new THREE.Box3();
     this._tempVec = new THREE.Vector3();
+    this._tempVec2_1 = new THREE.Vector2();
+    this._tempVec2_2 = new THREE.Vector2();
     this._sleighForward = new THREE.Vector3(0, 0, -1);
     this._lastSleighPos = new THREE.Vector3();
     this._lastSleighYaw = 0;
     this._sleighYawRate = 0;
     this._lastTime = performance.now();
+
+    // Scheduling throttle & preallocated structures (Item 3)
+    this.lastScheduleTime = 0;
+    this.lastScheduleSleighKey = '';
+    this._cachedCandidates = [];
+    for (let i = 0; i < 25; i++) {
+      this._cachedCandidates.push({ cx: 0, cz: 0, key: '', priority: 0, isSleighChunk: false });
+    }
+    this._desiredChunks = [];
+    this._desiredKeySet = new Set();
+    this._neededKeySet = new Set();
+    this._candidateLookup = new Map();
 
     // AABB Debug Wireframe Visualizer
     this.showAABBs = false;
@@ -265,111 +279,123 @@ export class ChunkScheduler {
     }
 
     // 4. Score Candidate Chunks Around Sleigh (max radius 2 chunks)
-    // Priority rules:
-    // 1. Sleigh's chunk (base priority: 10000)
-    // 2. Nearest chunk in the travel direction (dot > 0.6) (base priority: 8000)
-    // 3. Side neighbors (dot between -0.4 and 0.6) (base priority: 6000)
-    // 4. Next chunk ahead (2 chunks in travel direction) (base priority: 4000)
-    // + Current delivery target bonus (+2500)
-    // + Prefetch predicted chunk bonus (+1500)
-    const candidates = [];
-    const neededKeySet = new Set();
+    // Run full scheduling decision at most every 100 ms or immediately when sleigh chunk changes
+    const sleighChunkChanged = (currentSleighKey !== this.lastScheduleSleighKey);
+    const shouldReschedule = sleighChunkChanged || (now - this.lastScheduleTime >= 100);
 
-    // Check a 3x3 or 5x5 neighborhood around sleigh
-    for (let dx = -2; dx <= 2; dx++) {
-      for (let dz = -2; dz <= 2; dz++) {
-        const cx = currentCx + dx;
-        const cz = currentCz + dz;
-        const key = `${cx},${cz}`;
-        const wx = cx * cs.chunkSize;
-        const wz = cz * cs.chunkSize;
+    if (shouldReschedule) {
+      this.lastScheduleTime = now;
+      this.lastScheduleSleighKey = currentSleighKey;
 
-        let priority = 0;
-        const isSleighChunk = (dx === 0 && dz === 0);
+      const fwd2D = this._tempVec2_1.set(this._sleighForward.x, this._sleighForward.z);
+      if (fwd2D.lengthSq() > 0.0001) fwd2D.normalize();
 
-        if (isSleighChunk) {
-          priority = 10000;
-        } else {
-          // Direction from sleigh to chunk
-          const toChunk = new THREE.Vector2(wx - sleighPos.x, wz - sleighPos.z);
-          const dist = toChunk.length();
-          toChunk.normalize();
+      this._candidateLookup.clear();
+      let cIdx = 0;
 
-          const fwd2D = new THREE.Vector2(this._sleighForward.x, this._sleighForward.z).normalize();
-          const dot = toChunk.dot(fwd2D);
+      // Check 5x5 neighborhood around sleigh
+      for (let dx = -2; dx <= 2; dx++) {
+        for (let dz = -2; dz <= 2; dz++) {
+          const cx = currentCx + dx;
+          const cz = currentCz + dz;
+          const key = `${cx},${cz}`;
+          const wx = cx * cs.chunkSize;
+          const wz = cz * cs.chunkSize;
 
-          const chebyshev = Math.max(Math.abs(dx), Math.abs(dz));
+          let priority = 0;
+          const isSleighChunk = (dx === 0 && dz === 0);
 
-          if (chebyshev === 1) {
-            if (dot > 0.5) {
-              // Nearest chunk in travel direction
-              priority = 8000 + dot * 500 - dist;
-            } else if (dot >= -0.5) {
-              // Side neighbors
-              priority = 6000 + dot * 300 - dist;
-            } else {
-              // Chunk behind
-              priority = 2000 - dist;
-            }
-          } else if (chebyshev === 2) {
-            if (dot > 0.7) {
-              // Next chunk ahead
-              priority = 4000 + dot * 400 - dist;
-            } else {
-              priority = 1000 - dist;
+          if (isSleighChunk) {
+            priority = 10000;
+          } else {
+            const toChunk = this._tempVec2_2.set(wx - sleighPos.x, wz - sleighPos.z);
+            const dist = toChunk.length();
+            if (dist > 0.0001) toChunk.divideScalar(dist);
+
+            const dot = toChunk.dot(fwd2D);
+            const chebyshev = Math.max(Math.abs(dx), Math.abs(dz));
+
+            if (chebyshev === 1) {
+              if (dot > 0.5) {
+                priority = 8000 + dot * 500 - dist;
+              } else if (dot >= -0.5) {
+                priority = 6000 + dot * 300 - dist;
+              } else {
+                priority = 2000 - dist;
+              }
+            } else if (chebyshev === 2) {
+              if (dot > 0.7) {
+                priority = 4000 + dot * 400 - dist;
+              } else {
+                priority = 1000 - dist;
+              }
             }
           }
-        }
 
-        // Target bonus
-        if (key === targetChunkKey) {
-          priority += 2500;
-        }
+          // Target bonus
+          if (key === targetChunkKey) {
+            priority += 2500;
+          }
 
-        // Prefetch bonus
-        if (key === this.predictedChunkKey) {
-          priority += 1500;
-        }
+          // Prefetch bonus
+          if (key === this.predictedChunkKey) {
+            priority += 1500;
+          }
 
-        candidates.push({ cx, cz, key, priority, isSleighChunk });
+          const cand = this._cachedCandidates[cIdx++];
+          cand.cx = cx;
+          cand.cz = cz;
+          cand.key = key;
+          cand.priority = priority;
+          cand.isSleighChunk = isSleighChunk;
+          this._candidateLookup.set(key, cand);
+        }
+      }
+
+      // Sort candidates by priority descending
+      this._cachedCandidates.sort((a, b) => b.priority - a.priority);
+
+      this._desiredChunks.length = 0;
+      this._desiredKeySet.clear();
+
+      // MANDATORY: sleigh chunk + 1 ring first (up to cap)
+      for (let i = 0; i < this._cachedCandidates.length; i++) {
+        if (this._desiredChunks.length >= this.maxChunks) break;
+        const c = this._cachedCandidates[i];
+        if (Math.max(Math.abs(c.cx - currentCx), Math.abs(c.cz - currentCz)) <= 1) {
+          this._desiredChunks.push(c);
+          this._desiredKeySet.add(c.key);
+        }
+      }
+      // Fill remaining slots by priority
+      for (let i = 0; i < this._cachedCandidates.length; i++) {
+        if (this._desiredChunks.length >= this.maxChunks) break;
+        const c = this._cachedCandidates[i];
+        if (!this._desiredKeySet.has(c.key)) {
+          this._desiredChunks.push(c);
+          this._desiredKeySet.add(c.key);
+        }
+      }
+
+      // Ensure sleigh chunk is ALWAYS included in desired chunks
+      if (!this._desiredKeySet.has(currentSleighKey)) {
+        const sleighCand = this._candidateLookup.get(currentSleighKey);
+        if (sleighCand) {
+          if (this._desiredChunks.length >= this.maxChunks && this._desiredChunks.length > 0) {
+            const removed = this._desiredChunks[this._desiredChunks.length - 1];
+            this._desiredKeySet.delete(removed.key);
+            this._desiredChunks[this._desiredChunks.length - 1] = sleighCand;
+          } else {
+            this._desiredChunks.push(sleighCand);
+          }
+          this._desiredKeySet.add(currentSleighKey);
+        }
       }
     }
 
-    // Sort candidates by priority descending
-    candidates.sort((a, b) => b.priority - a.priority);
-
-    const isMandatoryChunk = (c) => Math.max(Math.abs(c.cx - currentCx), Math.abs(c.cz - currentCz)) <= 1;
-
-    // MANDATORY: sleigh chunk + 1 ring first (up to cap), then fill by priority
-    const desiredChunks = [];
-    const desiredSet = new Set();
-    for (const c of candidates) {
-      if (desiredChunks.length >= this.maxChunks) break;
-      if (!isMandatoryChunk(c)) continue;
-      desiredChunks.push(c);
-      desiredSet.add(c.key);
-    }
-    for (const c of candidates) {
-      if (desiredChunks.length >= this.maxChunks) break;
-      if (desiredSet.has(c.key)) continue;
-      desiredChunks.push(c);
-      desiredSet.add(c.key);
-    }
-    desiredChunks.forEach(c => neededKeySet.add(c.key));
-
-    // Ensure sleigh chunk is ALWAYS included in desired chunks
-    if (!neededKeySet.has(currentSleighKey)) {
-      const sleighCand = candidates.find(c => c.key === currentSleighKey);
-      if (sleighCand) {
-        if (desiredChunks.length >= this.maxChunks && desiredChunks.length > 0) {
-          desiredChunks[desiredChunks.length - 1] = sleighCand;
-        } else {
-          desiredChunks.push(sleighCand);
-        }
-        neededKeySet.add(currentSleighKey);
-      }
-    }
-    this._desiredKeySet = neededKeySet;
+    const desiredChunks = this._desiredChunks;
+    const neededKeySet = this._desiredKeySet;
+    const candidates = this._cachedCandidates;
 
     const loadedKeys = new Set(cs.chunks.keys());
     const fogFar = mobileFog ? mobileFog.fogFar : 25.0;
@@ -410,8 +436,8 @@ export class ChunkScheduler {
         // Determine if chunk is outside frustum
         const outsideFrustum = !this._isBoxInFrustum(chunk.cx, chunk.cz, 1.10);
 
-        // Find candidate priority
-        const cand = candidates.find(c => c.key === key);
+        // Find candidate priority from map (no candidates.find allocation/scan)
+        const cand = this._candidateLookup.get(key);
         let prio = cand ? cand.priority : 0;
         // Chunks outside frustum get lower priority (favored for eviction)
         if (outsideFrustum) prio -= 50000;
@@ -423,7 +449,13 @@ export class ChunkScheduler {
       }
 
       // If we found an eviction candidate and a desired chunk needs to be loaded
-      const needsSlot = desiredChunks.some(dc => !loadedKeys.has(dc.key));
+      let needsSlot = false;
+      for (let i = 0; i < desiredChunks.length; i++) {
+        if (!loadedKeys.has(desiredChunks[i].key)) {
+          needsSlot = true;
+          break;
+        }
+      }
       if (needsSlot && evictionCandidate) {
         this._checkPop(evictionCandidate.chunk.cx, evictionCandidate.chunk.cz, camera, fogFar);
         cs.destroyChunk(evictionCandidate.key);
@@ -433,7 +465,14 @@ export class ChunkScheduler {
 
     // 6. Smooth Generation Scheduling:
     // Generate at most 1 chunk per frame (~2 ms budget)
-    const hasMandatoryUnloaded = desiredChunks.some(c => Math.max(Math.abs(c.cx - currentCx), Math.abs(c.cz - currentCz)) <= 1 && !loadedKeys.has(c.key));
+    let hasMandatoryUnloaded = false;
+    for (let i = 0; i < desiredChunks.length; i++) {
+      const c = desiredChunks[i];
+      if (Math.max(Math.abs(c.cx - currentCx), Math.abs(c.cz - currentCz)) <= 1 && !loadedKeys.has(c.key)) {
+        hasMandatoryUnloaded = true;
+        break;
+      }
+    }
     const allowGen = cs.chunks.size < this.maxChunks && (!skipThisFrame || hasMandatoryUnloaded);
     if (allowGen) {
       // Find highest priority desired chunk not yet loaded
@@ -507,7 +546,11 @@ export class ChunkScheduler {
     }
 
     // Update Telemetry
-    this.telemetry.queueLength = desiredChunks.filter(c => !loadedKeys.has(c.key)).length;
+    let queueLen = 0;
+    for (let i = 0; i < desiredChunks.length; i++) {
+      if (!loadedKeys.has(desiredChunks[i].key)) queueLen++;
+    }
+    this.telemetry.queueLength = queueLen;
     this.telemetry.delayedRequestsCount = this.delayedRequests.size;
     this.telemetry.loadedChunksCount = cs.chunks.size;
     this.telemetry.maxChunks = this.maxChunks;
@@ -539,7 +582,7 @@ export class ChunkScheduler {
       }
     }
 
-    const fwd2D = new THREE.Vector2(this._sleighForward.x, this._sleighForward.z);
+    const fwd2D = this._tempVec2_1.set(this._sleighForward.x, this._sleighForward.z);
     if (fwd2D.lengthSq() > 0.0001) fwd2D.normalize();
 
     let evictionCandidate = null;
@@ -557,7 +600,7 @@ export class ChunkScheduler {
       const distFromSleigh = Math.hypot(wx - this._lastSleighPos.x, wz - this._lastSleighPos.z);
 
       // Vector from sleigh to chunk
-      const toChunk = new THREE.Vector2(wx - this._lastSleighPos.x, wz - this._lastSleighPos.z);
+      const toChunk = this._tempVec2_2.set(wx - this._lastSleighPos.x, wz - this._lastSleighPos.z);
       if (toChunk.lengthSq() > 0.0001) toChunk.normalize();
       const dotHeading = toChunk.dot(fwd2D);
 
