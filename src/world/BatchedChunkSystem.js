@@ -654,22 +654,28 @@ export class BatchedChunkSystem {
     chunk.aabb.min.set(wx - 10.0, this.templateBounds.min.y, wz - 10.0);
     chunk.aabb.max.set(wx + 10.0, this.templateBounds.max.y, wz + 10.0);
 
-    chunk.houseColliders.length = 0;
-    for (let i = 0; i < this.templateHouseColliders.length; i++) {
+    const houseCount = this.templateHouseColliders.length;
+    // Ensure chunk.houseColliders has enough pooled Box3 instances
+    while (chunk.houseColliders.length < houseCount) {
+      chunk.houseColliders.push(new THREE.Box3());
+    }
+    chunk.houseColliders.length = houseCount;
+
+    for (let i = 0; i < houseCount; i++) {
       const srcBox = this.templateHouseColliders[i];
-      const b = srcBox.clone();
-      b.min.x += wx;
-      b.min.z += wz;
-      b.max.x += wx;
-      b.max.z += wz;
-      chunk.houseColliders.push(b);
+      const b = chunk.houseColliders[i];
+      b.min.x = srcBox.min.x + wx;
+      b.min.y = srcBox.min.y;
+      b.min.z = srcBox.min.z + wz;
+      b.max.x = srcBox.max.x + wx;
+      b.max.y = srcBox.max.y;
+      b.max.z = srcBox.max.z + wz;
     }
 
     return chunk;
   }
 
   _releaseChunkRecord(chunk) {
-    chunk.houseColliders.length = 0;
     chunk.unneededSince = 0;
     this.chunkPool.push(chunk);
   }
