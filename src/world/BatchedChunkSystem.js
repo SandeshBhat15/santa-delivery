@@ -92,26 +92,14 @@ class PriorityQueue {
 }
 
 /**
- * BatchedChunkSystem — Ultra-Low Draw Call Dynamic Chunk Streaming World System with LOD & Hard Budget
+ * BatchedChunkSystem — Ultra-Low Draw Call Dynamic Chunk Streaming World System
  *
  * Implements:
- * 1. MOBILE LOAD RADIUS: 75m on mobile (desktop keeps 110m / fog far). Never loads beyond it.
- * 2. MESHOPTIMIZER LOD GEOMETRIES (LOD0 / LOD1 ~35% / LOD2 ~10%):
- *    - Automatically generated via meshoptimizer at startup for houses, trees, and cliffs.
- *    - Each mesh definition maintains 3 InstancedMeshes (one per LOD level).
- * 3. MOBILE LOD BANDS:
- *    - LOD0 (< 20m), LOD1 (20-45m), LOD2 (>= 45m), with 8m hysteresis measured from sleigh.
- * 4. HARD BUDGET GOVERNOR (Mobile 1,000,000 triangles total = main + shadow):
- *    - If total triangles > 1,000,000, dynamically contracts LOD0 radius (20 -> 15 -> 10m),
- *      then LOD1 radius (45 -> 35 -> 25m), then loadRadius (75 -> 65 -> 55m).
- *    - If under 800k, restores them back towards nominal defaults.
- * 5. MOBILE SHADOW PASS:
- *    - Casters within 30m of the sleigh only.
- *    - Main pass LOD0 meshes have castShadow = false on mobile; dedicated LOD1/LOD2 shadow casters handle the shadow map.
- * 6. CHUNK GENERATION TIME BUDGET:
- *    - At most 1 chunk per frame, within a 2ms time budget, keeping Gen under 3ms.
- * 7. HUD TELEMETRY:
- *    - Real-time display of Main Tris, Shadow Tris, Total Tris, Budget, Rad, LOD Radii, per-LOD counts.
+ * 1. CHUNK STREAMING: Single-slot InstancedMesh per mesh definition with full original geometry.
+ * 2. MOBILE CHUNK SCHEDULER: Priority scoring, directional lookahead, eviction thrash protection, and hard chunk cap.
+ * 3. SHADOW PASS: Controlled shadow casting on mobile with optional full shadows flag.
+ * 4. CHUNK GENERATION TIME BUDGET: Smooth chunk generation with per-frame time budgeting.
+ * 5. HUD TELEMETRY: Real-time display of loaded chunks, triangles, draw calls, and frame times.
  */
 export class BatchedChunkSystem {
   constructor(scene, options = {}) {
