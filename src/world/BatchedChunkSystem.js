@@ -357,6 +357,7 @@ export class BatchedChunkSystem {
       if (child.isInstancedMesh) {
         const m = new THREE.Matrix4();
         for (let i = 0; i < child.count; i++) {
+          if (this.isMobile && isHouse && (i % 2 === 1)) continue;
           child.getMatrixAt(i, m);
           matrices.push(m.clone());
         }
