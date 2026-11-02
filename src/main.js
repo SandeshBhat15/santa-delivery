@@ -56,14 +56,25 @@ const renderer = new THREE.WebGLRenderer({
   powerPreference: 'high-performance'
 });
 renderer.setSize(window.innerWidth, window.innerHeight);
-// High visual fidelity: 1.5x pixel ratio on mobile provides razor-sharp display on 1080p screens with smooth 60+ FPS
-const _initialDprParam = IS_MOBILE ? parseFloat(new URLSearchParams(window.location.search).get('dpr')) : NaN;
-const _initialDpr = Number.isFinite(_initialDprParam) ? _initialDprParam : Math.min(window.devicePixelRatio || 1, 2.5);
+// Mobile DPR: clamp to 1.5-1.75 on mobile to eliminate severe 4K/retina fillrate bottleneck while preserving razor-sharp visuals.
+// Desktop keeps up to 2.5 full quality.
+const _initialDprParam = parseFloat(new URLSearchParams(window.location.search).get('dpr'));
+const _maxMobileDpr = 1.75;
+const _initialDpr = Number.isFinite(_initialDprParam)
+  ? _initialDprParam
+  : (IS_MOBILE ? Math.min(window.devicePixelRatio || 1, _maxMobileDpr) : Math.min(window.devicePixelRatio || 1, 2.5));
+
 renderer.setPixelRatio(_initialDpr);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.95;
 renderer.shadowMap.enabled = new URLSearchParams(window.location.search).get('shadows') !== '0';
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// Desktop uses PCFSoftShadowMap (soft shadows); mobile uses PCFShadowMap (efficient, crisp)
+renderer.shadowMap.type = IS_MOBILE ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
+// On mobile, control shadow update frequency (every 2nd frame) to cut secondary depth draw load in half
+if (IS_MOBILE) {
+  renderer.shadowMap.autoUpdate = false;
+  renderer.shadowMap.needsUpdate = true;
+}
 renderer.info.autoReset = false;
 container.appendChild(renderer.domElement);
 
@@ -1046,8 +1057,8 @@ scene.add(starlightHemiLight);
 const moonLight = new THREE.DirectionalLight(0x7ea4e8, 0.95);
 moonLight.position.set(28, 48, -22);
 moonLight.castShadow = true;
-// 2048 shadow map saves massive fillrate and depth bandwidth (75% less texels than 4096)
-const shadowMapDim = 2048;
+// Shadow map resolution: 1024 on mobile (perfect for 36m frustum), 2048 on desktop (razor-sharp)
+const shadowMapDim = IS_MOBILE ? 1024 : 2048;
 moonLight.shadow.mapSize.width = shadowMapDim;
 moonLight.shadow.mapSize.height = shadowMapDim;
 moonLight.shadow.camera.near = 12;
@@ -2564,6 +2575,10 @@ const modelUrl = '/assets/models/terrain.glb';
             mat.metalness = 0.0;
             mat.customProgramCacheKey = () => 'terrain_procedural_snow_v3';
 
+            if (IS_MOBILE) {
+              mat.defines = mat.defines || {};
+              mat.defines['IS_MOBILE_TERRAIN'] = '';
+            }
             mat.onBeforeCompile = (shader) => {
               shader.uniforms.uTime = terrainSnowUniforms.uTime;
               shader.uniforms.uSnowColor = terrainSnowUniforms.uSnowColor;
@@ -2781,7 +2796,7 @@ const modelUrl = '/assets/models/terrain.glb';
                 `
                 #include <normal_fragment_maps>
 
-                #if 0
+                #if defined(IS_MOBILE_TERRAIN)
                 // Mobile: lightweight macro drift curvature avoids 4 multi-octave FBM evaluations per pixel
                 vec3 worldDriftN = normalize(vec3(-cos(sDriftUv.x * 1.5) * 0.12, 1.0, -sin(sDriftUv.y * 1.0) * 0.12));
                 vec3 viewDriftN = normalize((viewMatrix * vec4(worldDriftN, 0.0)).xyz);
@@ -2897,7 +2912,9 @@ window.addEventListener('resize', () => {
   camera.fov = (height > width) ? 65 : 50;
   camera.updateProjectionMatrix();
   renderer.setSize(width, height);
-  const pRatio = (IS_MOBILE && Number.isFinite(_initialDprParam)) ? _initialDprParam : Math.min(window.devicePixelRatio || 1, 2.5);
+  const pRatio = Number.isFinite(_initialDprParam)
+    ? _initialDprParam
+    : (IS_MOBILE ? Math.min(window.devicePixelRatio || 1, _maxMobileDpr) : Math.min(window.devicePixelRatio || 1, 2.5));
   renderer.setPixelRatio(pRatio);
   composer.setSize(width, height);
   composer.setPixelRatio(pRatio);
@@ -3145,6 +3162,11 @@ function animate(currentTime) {
   // Reset shadow pass triangle accumulator
   window._shadowPassTriangles = window._frameShadowTriangles || 0;
   window._frameShadowTriangles = 0;
+
+   // On mobile, render shadow map every 2nd frame to cut secondary depth draw load in half
+   if (IS_MOBILE && renderer && renderer.shadowMap.enabled && !renderer.shadowMap.autoUpdate) {
+     renderer.shadowMap.needsUpdate = (frameCount % 2 === 0);
+   }
 
    // Reset renderer.info once per frame before the composer/render passes
    if (renderer) renderer.info.reset();
