@@ -2390,26 +2390,10 @@ dracoLoader.setDecoderPath('/libs/draco/gltf/');
 const gltfLoader = new GLTFLoader();
 gltfLoader.setDRACOLoader(dracoLoader);
 
-// Mobile asset selection: if /assets/models/terrain_mobile.glb exists on mobile, load it, otherwise fallback to terrain.glb
-async function resolveTerrainModelUrl() {
-  if (!IS_MOBILE) {
-    window._loadedModelName = 'terrain.glb';
-    return '/assets/models/terrain.glb';
-  }
-  try {
-    const res = await fetch('/assets/models/terrain_mobile.glb', { method: 'HEAD' });
-    if (res.ok) {
-      window._loadedModelName = 'terrain_mobile.glb';
-      return '/assets/models/terrain_mobile.glb';
-    }
-  } catch (e) {
-    // Fall back
-  }
-  window._loadedModelName = 'terrain.glb';
-  return '/assets/models/terrain.glb';
-}
+window._loadedModelName = 'terrain.glb';
+const modelUrl = '/assets/models/terrain.glb';
 
-resolveTerrainModelUrl().then((modelUrl) => {
+(() => {
   gltfLoader.load(
     modelUrl,
     (gltf) => {
