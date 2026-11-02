@@ -369,6 +369,7 @@ export class ChunkScheduler {
         neededKeySet.add(currentSleighKey);
       }
     }
+    this._desiredKeySet = neededKeySet;
 
     const loadedKeys = new Set(cs.chunks.keys());
     const fogFar = mobileFog ? mobileFog.fogFar : 25.0;
@@ -380,7 +381,7 @@ export class ChunkScheduler {
       if (now - this.sleighChunkMissingSince > 500) {
         console.error(`[ChunkScheduler] Sleigh chunk ${currentSleighKey} not loaded after 500ms; force-generating.`);
         if (cs.chunks.size >= this.maxChunks && !cs.chunks.has(currentSleighKey)) {
-          if (this.evictLowestPriority) this.evictLowestPriority(now);
+          if (this.evictLowestPriority) this.evictLowestPriority(now, true);
         }
         if (!cs.chunks.has(currentSleighKey)) {
           cs.generateChunk(currentCx, currentCz);
@@ -402,6 +403,7 @@ export class ChunkScheduler {
 
       for (const [key, chunk] of cs.chunks.entries()) {
         if (key === currentSleighKey) continue; // Never evict sleigh chunk
+        if (neededKeySet.has(key)) continue; // Never evict a chunk we want!
         const ageMs = now - (chunk.createdAt || 0);
         if (ageMs < 1500) continue; // Never younger than 1.5s
 
@@ -521,7 +523,7 @@ export class ChunkScheduler {
     return true; // Successfully managed by ChunkScheduler
   }
 
-  evictLowestPriority(now = performance.now()) {
+  evictLowestPriority(now = performance.now(), isWatchdog = false) {
     const cs = this.chunkSystem;
     const half = cs.chunkSize * 0.5;
     const currentCx = Math.floor((this._lastSleighPos.x + half) / cs.chunkSize);
@@ -545,6 +547,8 @@ export class ChunkScheduler {
 
     for (const [key, chunk] of cs.chunks.entries()) {
       if (key === currentSleighKey) continue; // Never evict sleigh chunk
+      // Skip desired chunk unless this is watchdog case
+      if (!isWatchdog && this._desiredKeySet && this._desiredKeySet.has(key)) continue;
       const ageMs = now - (chunk.createdAt || 0);
       if (ageMs < 1500) continue; // Strict 1.5s age guard (no fallback)
 
