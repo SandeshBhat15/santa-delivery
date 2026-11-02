@@ -906,6 +906,18 @@ export class PerformanceDebugger {
     const lights = this._countLights();
     const dpr = this.ctx.renderer.getPixelRatio().toFixed(2);
     const passes = this.state.postProcessing ? (this.ctx.composer?.passes?.length || 0) : 0;
+    const isMobile = window.IS_MOBILE ?? (window.innerWidth <= 840 || ('ontouchstart' in window && window.innerWidth <= 1024));
+    const composerFlagOff = isMobile && (new URLSearchParams(window.location.search).get('composer') === '0');
+    const composerState = composerFlagOff ? 'composer OFF' : (this.state.postProcessing ? 'ON' : 'OFF');
+
+    let bloomName = 'None';
+    if (this.ctx.bloomPass) {
+      bloomName = this.ctx.bloomPass.constructor?.name || 'KawaseBloomPass';
+      if (!this.ctx.bloomPass.enabled) bloomName += ' (disabled)';
+    }
+
+    const drawSize = new THREE.Vector2();
+    this.ctx.renderer.getDrawingBufferSize(drawSize);
 
     const fps = this.rAfFps;
     const fpsColor = fps < 25 ? '#ff4d4f' : (fps < 50 ? '#faad14' : '#52c41a');
@@ -932,12 +944,14 @@ export class PerformanceDebugger {
         </div>
       ` : ''}
       <div style="color:#a5f3fc; font-size:10px;">• <strong>santa aseet:</strong> ${this._getSantaAseetInfo()}</div>
-      <div><strong>DPR:</strong> ${dpr}x | <strong>ShadowMap:</strong> ${this.ctx.renderer.shadowMap.enabled ? (this.ctx.moonLight?.shadow?.mapSize?.width || 2048) + 'px' : 'OFF'} | <strong>Model:</strong> ${window._mobileModelSet || 'desktop'} | <strong>Cap:</strong> ${window._targetFpsCap || 60} FPS</div>
-      <div><strong>Lights:</strong> ${lights.totalLights} (Shadows: ${lights.shadowLights}) | <strong>Bloom:</strong> ${this.state.postProcessing ? 'ON' : 'OFF'}</div>
+      <div><strong>DPR:</strong> ${dpr}x | <strong>Buffer:</strong> ${drawSize.x}x${drawSize.y} px | <strong>Cap:</strong> ${window._targetFpsCap || 60} FPS</div>
+      <div><strong>Composer:</strong> ${composerState} | <strong>Bloom:</strong> ${bloomName}</div>
+      <div><strong>ShadowMap:</strong> ${this.ctx.renderer.shadowMap.enabled ? (this.ctx.moonLight?.shadow?.mapSize?.width || 2048) + 'px' : 'OFF'} | <strong>Model:</strong> ${window._mobileModelSet || 'desktop'} | <strong>Lights:</strong> ${lights.totalLights}</div>
       <div style="color:#fde047; font-size:10px;"><strong>Active Flags:</strong> ${(() => {
         const p = new URLSearchParams(window.location.search);
         const flags = [];
         if (p.has('dpr')) flags.push(`dpr=${p.get('dpr')}`);
+        if (p.has('composer')) flags.push(`composer=${p.get('composer')}`);
         if (p.has('bloom')) flags.push(`bloom=${p.get('bloom')}`);
         if (p.has('shadows')) flags.push(`shadows=${p.get('shadows')}`);
         if (p.has('orig')) flags.push(`orig=${p.get('orig')}`);
