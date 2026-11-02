@@ -930,8 +930,7 @@ export class PerformanceDebugger {
       <div><strong>Geometries:</strong> ${this.lastGeometries} | <strong>Textures:</strong> ${this.lastTextures}</div>
       ${window.chunkScheduler ? `
         <div style="color:#38bdf8; font-size:10px; margin-top:2px; border-top:1px dashed #475569; padding-top:2px;">
-          • <strong>Chunks:</strong> ${this.ctx.chunkSystem?.chunks?.size || window.chunkScheduler.telemetry.loadedChunksCount}/${window.chunkScheduler.telemetry.maxChunks} (Q:${window.chunkScheduler.telemetry.queueLength}, Delay:${window.chunkScheduler.telemetry.delayedRequestsCount}) | Sleigh: ${window.chunkScheduler.telemetry.sleighChunkKey} ${window.chunkScheduler.telemetry.sleighChunkLoaded ? "LOADED" : "MISSING"}<br/>
-          • <strong>LOD:</strong> ${this.ctx.chunkSystem?.useLod ? 'ON' : 'OFF'} [L0:${this.ctx.chunkSystem?.lodActiveCounts?.[0] || 0}, L1:${this.ctx.chunkSystem?.lodActiveCounts?.[1] || 0}, L2:${this.ctx.chunkSystem?.lodActiveCounts?.[2] || 0}] | <strong>Violations:</strong> ${this.ctx.chunkSystem?.capViolations || 0}<br/>
+          • <strong>Chunks:</strong> ${this.ctx.chunkSystem?.chunks?.size || window.chunkScheduler.telemetry.loadedChunksCount}/${window.chunkScheduler.telemetry.maxChunks} (Q:${window.chunkScheduler.telemetry.queueLength}, Delay:${window.chunkScheduler.telemetry.delayedRequestsCount}) | Sleigh: ${window.chunkScheduler.telemetry.sleighChunkKey} ${window.chunkScheduler.telemetry.sleighChunkLoaded ? "LOADED" : "MISSING"} | <strong>Violations:</strong> ${this.ctx.chunkSystem?.capViolations || 0}<br/>
           • <strong>Fog [F]:</strong> ${window.mobileFog?.enabled ? `${window.mobileFog.fogNear.toFixed(1)}m / ${window.mobileFog.fogFar.toFixed(1)}m` : 'OFF'}<br/>
           • <strong>Pops:</strong> ${window.chunkScheduler.telemetry.visiblePops} | <strong>Gen:</strong> ${window.chunkScheduler.telemetry.lastGenMs.toFixed(1)}ms | <strong>LastGen:</strong> ${window.chunkScheduler.telemetry.lastSuccessfulGenTime ? (performance.now() - window.chunkScheduler.telemetry.lastSuccessfulGenTime).toFixed(0) : "n/a"}ms ago | <strong>Max5s:</strong> ${(window._loadingCompleteTime && performance.now() - window._loadingCompleteTime < 10000) ? 'warmup' : this.maxFrameTime5s.toFixed(1) + 'ms'}<br/>
           • <strong>AABB [B]:</strong> ${window.chunkScheduler.showAABBs ? 'ON' : 'OFF'}
@@ -946,7 +945,7 @@ export class PerformanceDebugger {
       <div style="color:#a5f3fc; font-size:10px;">• <strong>santa aseet:</strong> ${this._getSantaAseetInfo()}</div>
       <div><strong>DPR:</strong> ${dpr}x | <strong>Buffer:</strong> ${drawSize.x}x${drawSize.y} px | <strong>Cap:</strong> ${window._targetFpsCap || 60} FPS</div>
       <div><strong>Composer:</strong> ${composerState} | <strong>Bloom:</strong> ${bloomName}</div>
-      <div><strong>ShadowMap:</strong> ${this.ctx.renderer.shadowMap.enabled ? (this.ctx.moonLight?.shadow?.mapSize?.width || 2048) + 'px' : 'OFF'} | <strong>Model:</strong> ${window._mobileModelSet || 'desktop'} | <strong>Lights:</strong> ${lights.totalLights}</div>
+      <div><strong>ShadowMap:</strong> ${this.ctx.renderer.shadowMap.enabled ? (this.ctx.moonLight?.shadow?.mapSize?.width || 2048) + 'px' : 'OFF'} | <strong>Model:</strong> ${window._loadedModelName || window._mobileModelSet || 'desktop'} | <strong>Lights:</strong> ${lights.totalLights}</div>
       <div style="color:#fde047; font-size:10px;"><strong>Active Flags:</strong> ${(() => {
         const p = new URLSearchParams(window.location.search);
         const flags = [];
@@ -954,9 +953,7 @@ export class PerformanceDebugger {
         if (p.has('composer')) flags.push(`composer=${p.get('composer')}`);
         if (p.has('bloom')) flags.push(`bloom=${p.get('bloom')}`);
         if (p.has('shadows')) flags.push(`shadows=${p.get('shadows')}`);
-        if (p.has('orig')) flags.push(`orig=${p.get('orig')}`);
         if (p.has('chunks')) flags.push(`chunks=${p.get('chunks')}`);
-        if (p.has('lod')) flags.push(`lod=${p.get('lod')}`);
         if (p.has('smooth')) flags.push(`smooth=${p.get('smooth')}`);
         return flags.length > 0 ? flags.join(', ') : 'none (default)';
       })()}</div>

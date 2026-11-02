@@ -13,7 +13,6 @@ import { PerformanceDebugger } from './debug/PerformanceDebugger.js';
 import { MobileOptimizer } from './mobile/MobileOptimizer.js';
 import { runMobileWarmup } from './mobile/MobileWarmup.js';
 import { BatchedChunkSystem, USE_LEGACY } from './world/BatchedChunkSystem.js';
-import { MeshoptSimplifier } from 'meshoptimizer';
 
 // --- DOM Elements ---
 const container = document.getElementById('app');
@@ -2362,7 +2361,6 @@ const chunkSystem = USE_LEGACY
 console.log(USE_LEGACY ? '[World] Running in LEGACY per-chunk mode (?legacy=1)' : '[World] Running in HIGH-PERFORMANCE BATCHED mode');
 window.chunkSystem = chunkSystem;
 window.game.chunkSystem = chunkSystem;
-window._mobileModelSet = IS_MOBILE ? ((new URLSearchParams(window.location.search).get('orig') === '1') ? 'orig' : 'mobile') : 'desktop';
 
 let sleighController = null;
 let deliverySystem = null;
@@ -2374,12 +2372,26 @@ dracoLoader.setDecoderPath('/libs/draco/gltf/');
 const gltfLoader = new GLTFLoader();
 gltfLoader.setDRACOLoader(dracoLoader);
 
-const _origModelParam = IS_MOBILE && new URLSearchParams(window.location.search).get('orig') === '1';
-const modelUrl = (IS_MOBILE && !_origModelParam) ? '/assets/models/terrain-mobile.glb' : '/assets/models/terrain.glb';
+// Mobile asset selection: if /assets/models/terrain_mobile.glb exists on mobile, load it, otherwise fallback to terrain.glb
+async function resolveTerrainModelUrl() {
+  if (!IS_MOBILE) {
+    window._loadedModelName = 'terrain.glb';
+    return '/assets/models/terrain.glb';
+  }
+  try {
+    const res = await fetch('/assets/models/terrain_mobile.glb', { method: 'HEAD' });
+    if (res.ok) {
+      window._loadedModelName = 'terrain_mobile.glb';
+      return '/assets/models/terrain_mobile.glb';
+    }
+  } catch (e) {
+    // Fall back
+  }
+  window._loadedModelName = 'terrain.glb';
+  return '/assets/models/terrain.glb';
+}
 
-Promise.all([
-  MeshoptSimplifier.ready.catch(() => {})
-]).then(() => {
+resolveTerrainModelUrl().then((modelUrl) => {
   gltfLoader.load(
     modelUrl,
     (gltf) => {
@@ -3175,13 +3187,9 @@ function animate(currentTime) {
       const cs = window.chunkSystem;
       if (cs && cs.telemetry) {
         const t = cs.telemetry;
-        const c0 = t.countsPerLOD.LOD0;
-        const c1 = t.countsPerLOD.LOD1;
-        const c2 = t.countsPerLOD.LOD2;
-        fpsElement.innerHTML = `FPS: ${fps} | Calls: ${sceneCalls} | Polys: Total ${Math.round(t.totalTriangles/1000)}k (Main ${Math.round(t.mainTriangles/1000)}k, Shadow ${Math.round(t.shadowTriangles/1000)}k / Budget ${Math.round(t.budget/1000)}k)<br>` +
+        fpsElement.innerHTML = `FPS: ${fps} | Calls: ${sceneCalls} | Polys: Total ${Math.round(t.totalTriangles/1000)}k (Main ${Math.round(t.mainTriangles/1000)}k, Shadow ${Math.round(t.shadowTriangles/1000)}k)<br>` +
           `Chunks: ${t.loadedChunks} (Q:${t.queueLength}, Gen:${t.lastGenDurationMs.toFixed(1)}ms, Max5s:${t.worstFrameTime5s.toFixed(1)}ms) | Sleigh: ${window.chunkScheduler?.telemetry?.sleighChunkKey || "?"} ${window.chunkScheduler?.telemetry?.sleighChunkLoaded ? "OK" : "MISSING"} | ` +
-          `Rad: ${Math.round(t.loadRadius)}m | LODs: [0: <${Math.round(t.lod0Radius)}m, 1: ${Math.round(t.lod0Radius)}-${Math.round(t.lod1Radius)}m, 2: >${Math.round(t.lod1Radius)}m] | ` +
-          `LOD0: ${c0.chunks}c (${Math.round(c0.tris/1000)}k) | LOD1: ${c1.chunks}c (${Math.round(c1.tris/1000)}k) | LOD2: ${c2.chunks}c (${Math.round(c2.tris/1000)}k)`;
+          `Rad: ${Math.round(t.loadRadius)}m`;
       } else {
         const visTri = window._visibleSceneTriangles || sceneTriangles;
         fpsElement.textContent = `FPS: ${fps} | Calls: ${sceneCalls} | Polys: ${visTri.toLocaleString()}`;

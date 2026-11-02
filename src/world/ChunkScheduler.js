@@ -24,7 +24,6 @@ import * as THREE from 'three';
  *   - Skip chunk work on any frame after a frame over 20 ms.
  *   - Fallback: If scheduler throws or loaded set becomes empty, disable and fall back with console warning.
  *   - Flag ?smooth=0 restores old behavior exactly.
- *   - Flag ?lod=0 (default 0 on mobile) keeps original geometry without runtime LOD simplification.
  *   - Visible pops counter: chunks generated or unloaded while inside frustum and within fogFar.
  *   - Debug wireframe AABB visualization toggle.
  */
@@ -37,8 +36,6 @@ export class ChunkScheduler {
     // Flags
     const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
     this.smoothEnabled = params.get('smooth') !== '0';
-    this.lodFlag = params.get('lod');
-    this.useLod = this.lodFlag === '1' || (!this.isMobile && this.lodFlag !== '0'); // default 0 on mobile, 1 on desktop
     this.debug = params.get('debug') === '1';
 
     const chunkParam = parseInt(params.get('chunks'), 10);
