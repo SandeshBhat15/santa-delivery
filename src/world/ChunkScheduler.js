@@ -276,7 +276,7 @@ export class ChunkScheduler {
     }
 
     const loadedKeys = new Set(cs.chunks.keys());
-    const fogFar = mobileFog ? mobileFog.fogFar : (this.isMobile ? 32.0 : 45.0);
+    const fogFar = mobileFog ? mobileFog.fogFar : (this.isMobile ? 26.0 : 45.0);
 
     // 4. Score Candidate Chunks Around Sleigh (max radius 2 chunks)
     // Run full scheduling decision at most every 100 ms or immediately when sleigh chunk changes
@@ -499,8 +499,13 @@ export class ChunkScheduler {
         let canGenerate = false;
 
         if (this.isMobile) {
-          // On mobile: strictly visible in frustum
-          if (inFrustum) {
+          // On mobile: strictly visible in frustum AND generates smoothly at the edge of fog (~85% fogFar)
+          // Minimum 60ms gap between generations so chunks never burst in together
+          const nearestDist = this._nearestPointDistanceToCamera(candidate.cx, candidate.cz, camera.position);
+          const isBeyond85Fog = nearestDist >= (fogFar * 0.85);
+          const timeSinceLastGen = now - this.lastSuccessfulGenTime;
+
+          if (inFrustum && (isBeyond85Fog || timeSinceLastGen >= 180) && timeSinceLastGen >= 60) {
             canGenerate = true;
             this.delayedRequests.delete(candidate.key);
           }

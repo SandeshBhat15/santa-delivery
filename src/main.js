@@ -744,10 +744,10 @@ skyDomeMesh.renderOrder = -20;
 skyGroup.add(skyDomeMesh);
 
 // --- Distant Horizon Silhouette Mountains Ring ---
-// Procedural low-poly silhouette ring (64 segments, ~128 triangles, 1 draw call)
+// Majestic Alpine Peaks (96 segments, ~192 triangles, 1 draw call)
 // Attached to skyGroup so it always centers around camera without translation jitter.
-const MOUNTAIN_RADIUS = 350;
-const MOUNTAIN_SEGS = 64;
+const MOUNTAIN_RADIUS = 450;
+const MOUNTAIN_SEGS = 96;
 const mtnPos = [];
 const mtnIndices = [];
 
@@ -756,14 +756,16 @@ for (let i = 0; i <= MOUNTAIN_SEGS; i++) {
   const cosT = Math.cos(theta);
   const sinT = Math.sin(theta);
   
-  // Jagged harmonic mountain ridges
-  const n1 = Math.sin(theta * 5.0) * 0.5 + 0.5;
-  const n2 = Math.sin(theta * 11.0 + 1.2) * 0.25;
-  const n3 = Math.cos(theta * 23.0 + 2.5) * 0.15;
-  const ridge = Math.max(0.08, n1 * 0.65 + n2 + n3);
+  // Dramatic alpine mountain ridges with sharp crags and varied saddles
+  const n1 = Math.sin(theta * 4.0 + 0.3) * 0.5 + 0.5;
+  const n2 = Math.sin(theta * 9.0 + 1.7) * 0.28;
+  const n3 = Math.cos(theta * 19.0 + 2.8) * 0.16;
+  const n4 = Math.sin(theta * 37.0) * 0.08;
+  const ridge = Math.max(0.05, n1 * 0.55 + n2 + n3 + n4);
   
-  const bottomY = -35.0;
-  const peakY = bottomY + 28.0 + ridge * 42.0;
+  const bottomY = -25.0;
+  // Towering alpine heights: peaks rise 70m to 140m into the sky above the horizon mist
+  const peakY = bottomY + 35.0 + Math.pow(ridge, 1.25) * 105.0;
   
   // Bottom vertex
   mtnPos.push(cosT * MOUNTAIN_RADIUS, bottomY, sinT * MOUNTAIN_RADIUS);
@@ -786,9 +788,9 @@ const mountainGeo = new THREE.BufferGeometry();
 mountainGeo.setAttribute('position', new THREE.Float32BufferAttribute(mtnPos, 3));
 mountainGeo.setIndex(mtnIndices);
 
-// Deep nocturnal navy-indigo silhouette matching horizon haze (0x0b1626)
+// Deep nocturnal navy-indigo silhouette matching horizon haze (0x0a1424)
 const mountainMat = new THREE.MeshBasicMaterial({
-  color: 0x0a1424,
+  color: 0x091220,
   side: THREE.DoubleSide,
   depthWrite: false,
   fog: false,

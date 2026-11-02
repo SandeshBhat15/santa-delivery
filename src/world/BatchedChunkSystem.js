@@ -619,7 +619,7 @@ export class BatchedChunkSystem {
     this._frustum.setFromProjectionMatrix(this._projScreenMatrix);
 
     const camPos = camera.position;
-    const maxVisibleDist = this.isMobile ? ((this.mobileFog ? this.mobileFog.fogFar : 32.0) + this.chunkSize * 0.7) : 200.0;
+    const maxVisibleDist = this.isMobile ? ((this.mobileFog ? this.mobileFog.fogFar : 26.0) + this.chunkSize * 0.4) : 200.0;
 
     let left = 0;
     let right = this.activeChunkCount - 1;
