@@ -555,13 +555,18 @@ export class BatchedChunkSystem {
 
     const numLods = (this.isMobile && !this.useLod) ? 1 : 3;
     const fullShadows = urlParams.get('shadows') === 'full';
+    const forceOrigGeo = urlParams.get('orig') === '1';
 
     for (let lod = 0; lod < numLods; lod++) {
       for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
         const def = this.meshDefinitions[defIdx];
         const maxInstances = def.baseCount * this.maxLoadedChunks;
 
-        const instMesh = new THREE.InstancedMesh(def.geometryLOD[lod], def.material, maxInstances);
+        // On mobile with LOD off, use LOD1 (~35% simplified) for houses and foliage unless ?orig=1
+        const geoIndex = (this.isMobile && !this.useLod && !forceOrigGeo && (def.category === 'house' || def.category === 'foliage')) ? 1 : lod;
+        const geom = def.geometryLOD[geoIndex] || def.geometryLOD[0];
+
+        const instMesh = new THREE.InstancedMesh(geom, def.material, maxInstances);
         instMesh.name = `Global_${def.name}_LOD${lod}`;
 
         // 5. SHADOW PASS: On mobile without runtime LOD, houses and trees do NOT cast shadows unless ?shadows=full
@@ -586,7 +591,7 @@ export class BatchedChunkSystem {
           defName: def.name,
           category: def.category,
           baseCount: def.baseCount,
-          triPerInst: def.trisLOD[lod]
+          triPerInst: def.trisLOD[geoIndex]
         };
 
         this.worldGroup.add(instMesh);
@@ -890,7 +895,8 @@ export class BatchedChunkSystem {
         const def = this.meshDefinitions[defIdx];
         if (!meshes[defIdx]) continue;
         const count = meshes[defIdx].count;
-        const triPerInst = def.trisLOD[lod];
+        const geoIndex = (this.isMobile && !this.useLod && !(urlParams.get('orig') === '1') && (def.category === 'house' || def.category === 'foliage')) ? 1 : lod;
+        const triPerInst = def.trisLOD[geoIndex] || def.trisLOD[0];
         const totalTrisForMesh = count * triPerInst;
 
         mainTris += totalTrisForMesh;
