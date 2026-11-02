@@ -21,11 +21,11 @@ export class MobileFog {
     // Horizon color (#0e1b2f = 0x0e1b2f)
     this.horizonColor = new THREE.Color(0x0e1b2f);
     
-    // Target and smoothed values
-    this.fogNear = 12.25; // ~35% of 35
-    this.fogFar = 35.0;
-    this.targetFogFar = 35.0;
-    this.targetFogNear = 12.25;
+    // Target and smoothed values (Ultra-dense fog on mobile: 5m near, 20m far)
+    this.fogNear = this.isMobile ? 5.0 : 12.25;
+    this.fogFar = this.isMobile ? 20.0 : 35.0;
+    this.targetFogFar = this.fogFar;
+    this.targetFogNear = this.fogNear;
     this._warnedFog = false;
     
     // Smoothing half-life or time constant ~ 1.0s
@@ -157,9 +157,16 @@ export class MobileFog {
     const rawEdgeDist = this._computeNearestUnloadedEdge(camera, loadedChunks, chunkSize);
     this.nearestEdgeDist = rawEdgeDist;
 
-    // fogFar = distance from the CAMERA to the nearest unloaded edge ahead and to the sides, minus 4 m, clamped to [28, 55] m
-    const targetFar = THREE.MathUtils.clamp(rawEdgeDist - 4.0, 28.0, 55.0);
-    const targetNear = Math.max(targetFar * 0.35, 12.0); // fogNear ~35% of fogFar, never below 12m
+    // fogFar = distance from the CAMERA to the nearest unloaded edge ahead and to the sides, minus 4 m
+    // For mobile: ultra-dense fog capped to 20m max, near at 5m
+    let targetFar, targetNear;
+    if (this.isMobile) {
+      targetFar = THREE.MathUtils.clamp(rawEdgeDist - 3.0, 15.0, 20.0);
+      targetNear = 5.0;
+    } else {
+      targetFar = THREE.MathUtils.clamp(rawEdgeDist - 4.0, 28.0, 55.0);
+      targetNear = Math.max(targetFar * 0.35, 12.0);
+    }
 
     // Smooth over ~1 s: exponential smoothing lerp factor alpha = 1.0 - Math.exp(-delta / 1.0)
     const dt = Math.min(delta, 0.1);
@@ -168,7 +175,7 @@ export class MobileFog {
     this.fogFar += (targetFar - this.fogFar) * lerpAlpha;
     this.fogNear += (targetNear - this.fogNear) * lerpAlpha;
 
-    if (this.fogFar < 28.0 && !this._warnedFog) {
+    if (!this.isMobile && this.fogFar < 28.0 && !this._warnedFog) {
       console.warn('[MobileFog] fogFar below 28m:', this.fogFar);
       this._warnedFog = true;
     }

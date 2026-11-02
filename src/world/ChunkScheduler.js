@@ -31,7 +31,7 @@ export class ChunkScheduler {
   constructor(chunkSystem, options = {}) {
     this.chunkSystem = chunkSystem;
     this.isMobile = options.isMobile ?? false;
-    this.maxChunks = options.maxChunks || 5;
+    this.maxChunks = options.maxChunks || (this.isMobile ? 4 : 5);
 
     // Flags
     const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
@@ -355,37 +355,45 @@ export class ChunkScheduler {
       this._desiredChunks.length = 0;
       this._desiredKeySet.clear();
 
-      // MANDATORY: sleigh chunk + 1 ring first (up to cap)
+      // On mobile with ultra-dense fog (20m far):
+      // Only schedule chunks that are within camera frustum and within fog reach (or close to camera).
+      const camPos = camera.position;
+      const maxDistFromCam = (this.isMobile ? (fogFar + cs.chunkSize * 0.7) : 100.0);
+
       for (let i = 0; i < this._cachedCandidates.length; i++) {
         if (this._desiredChunks.length >= this.maxChunks) break;
         const c = this._cachedCandidates[i];
-        if (Math.max(Math.abs(c.cx - currentCx), Math.abs(c.cz - currentCz)) <= 1) {
-          this._desiredChunks.push(c);
-          this._desiredKeySet.add(c.key);
+
+        if (this.isMobile) {
+          // Check distance to camera
+          const distToCam = this._nearestPointDistanceToCamera(c.cx, c.cz, camPos);
+          if (distToCam > maxDistFromCam) {
+            continue; // Too far, completely obscured by fog!
+          }
+
+          // Frustum check: chunk must intersect camera frustum
+          const inFrustum = this._isBoxInFrustum(c.cx, c.cz, 1.15);
+          if (!inFrustum) {
+            continue; // Not visible on camera!
+          }
         }
-      }
-      // Fill remaining slots by priority
-      for (let i = 0; i < this._cachedCandidates.length; i++) {
-        if (this._desiredChunks.length >= this.maxChunks) break;
-        const c = this._cachedCandidates[i];
+
         if (!this._desiredKeySet.has(c.key)) {
           this._desiredChunks.push(c);
           this._desiredKeySet.add(c.key);
         }
       }
 
-      // Ensure sleigh chunk is ALWAYS included in desired chunks
-      if (!this._desiredKeySet.has(currentSleighKey)) {
-        const sleighCand = this._candidateLookup.get(currentSleighKey);
-        if (sleighCand) {
-          if (this._desiredChunks.length >= this.maxChunks && this._desiredChunks.length > 0) {
-            const removed = this._desiredChunks[this._desiredChunks.length - 1];
-            this._desiredKeySet.delete(removed.key);
-            this._desiredChunks[this._desiredChunks.length - 1] = sleighCand;
-          } else {
-            this._desiredChunks.push(sleighCand);
+      // If mobile found fewer visible chunks than maxChunks, that's fine (least possible chunks visible to camera).
+      // On desktop, keep fallback ring if needed.
+      if (!this.isMobile && this._desiredChunks.length === 0) {
+        for (let i = 0; i < this._cachedCandidates.length; i++) {
+          if (this._desiredChunks.length >= this.maxChunks) break;
+          const c = this._cachedCandidates[i];
+          if (!this._desiredKeySet.has(c.key)) {
+            this._desiredChunks.push(c);
+            this._desiredKeySet.add(c.key);
           }
-          this._desiredKeySet.add(currentSleighKey);
         }
       }
     }
@@ -395,14 +403,14 @@ export class ChunkScheduler {
     const candidates = this._cachedCandidates;
 
     const loadedKeys = new Set(cs.chunks.keys());
-    const fogFar = mobileFog ? mobileFog.fogFar : 25.0;
+    const fogFar = mobileFog ? mobileFog.fogFar : (this.isMobile ? 20.0 : 45.0);
 
-    // Watchdog: if sleigh chunk not loaded after 500 ms, force-generate it.
+    // Watchdog: on mobile with strict camera view, only force-generate sleigh chunk if it is in view
+    const sleighInView = this._isBoxInFrustum(currentCx, currentCz, 1.15);
     const sleighLoaded = loadedKeys.has(currentSleighKey);
-    if (!sleighLoaded) {
+    if (!sleighLoaded && (!this.isMobile || sleighInView)) {
       if (this.sleighChunkMissingSince == null) this.sleighChunkMissingSince = now;
       if (now - this.sleighChunkMissingSince > 500) {
-        console.error(`[ChunkScheduler] Sleigh chunk ${currentSleighKey} not loaded after 500ms; force-generating.`);
         if (cs.chunks.size >= this.maxChunks && !cs.chunks.has(currentSleighKey)) {
           if (this.evictLowestPriority) this.evictLowestPriority(now, true);
         }
@@ -465,7 +473,7 @@ export class ChunkScheduler {
     let hasMandatoryUnloaded = false;
     for (let i = 0; i < desiredChunks.length; i++) {
       const c = desiredChunks[i];
-      if (Math.max(Math.abs(c.cx - currentCx), Math.abs(c.cz - currentCz)) <= 1 && !loadedKeys.has(c.key)) {
+      if (!this.isMobile && Math.max(Math.abs(c.cx - currentCx), Math.abs(c.cz - currentCz)) <= 1 && !loadedKeys.has(c.key)) {
         hasMandatoryUnloaded = true;
         break;
       }
@@ -477,14 +485,18 @@ export class ChunkScheduler {
         if (loadedKeys.has(candidate.key)) continue;
 
         const chebyshevToSleigh = Math.max(Math.abs(candidate.cx - currentCx), Math.abs(candidate.cz - currentCz));
-        const isMandatory = chebyshevToSleigh <= 1;
-        const isSleighChunk = (candidate.key === currentSleighKey);
-
+        const isMandatory = !this.isMobile && (chebyshevToSleigh <= 1);
         const inFrustum = this._isBoxInFrustum(candidate.cx, candidate.cz, 1.10);
 
         let canGenerate = false;
 
-        if (isMandatory) {
+        if (this.isMobile) {
+          // On mobile: strictly visible in frustum
+          if (inFrustum) {
+            canGenerate = true;
+            this.delayedRequests.delete(candidate.key);
+          }
+        } else if (isMandatory) {
           // MANDATORY: no frustum/fog/delay gating
           canGenerate = true;
           this.delayedRequests.delete(candidate.key);
@@ -510,8 +522,8 @@ export class ChunkScheduler {
           }
         }
 
-        // Progress: force-generate after 200ms since last successful generation
-        if (!canGenerate && (now - this.lastSuccessfulGenTime >= 200)) {
+        // Progress: force-generate after 200ms since last successful generation (desktop only)
+        if (!this.isMobile && !canGenerate && (now - this.lastSuccessfulGenTime >= 200)) {
           canGenerate = true;
           this.delayedRequests.delete(candidate.key);
         }

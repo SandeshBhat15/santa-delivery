@@ -6,7 +6,7 @@ export const USE_LEGACY = typeof window !== 'undefined' && window.location.searc
 
 const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
 const chunkParam = parseInt(urlParams.get('chunks'), 10);
-export const MOBILE_MAX_CHUNKS = (!isNaN(chunkParam) && chunkParam > 0) ? Math.min(6, chunkParam) : 6;
+export const MOBILE_MAX_CHUNKS = (!isNaN(chunkParam) && chunkParam > 0) ? Math.min(6, chunkParam) : 4;
 export const DESKTOP_MAX_CHUNKS = (!isNaN(chunkParam) && chunkParam > 0) ? chunkParam : 16;
 
 /**
@@ -577,6 +577,102 @@ export class BatchedChunkSystem {
     }
   }
 
+  _swapChunkSlots(slotA, slotB) {
+    if (slotA === slotB) return;
+    const chunkA = this.chunkSlots[slotA];
+    const chunkB = this.chunkSlots[slotB];
+
+    for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
+      const def = this.meshDefinitions[defIdx];
+      const instMesh = this.instancedMeshes[defIdx];
+      const baseCount = def.baseCount;
+      const buf = instMesh.instanceMatrix.array;
+
+      const offsetA = slotA * baseCount * 16;
+      const offsetB = slotB * baseCount * 16;
+      const elementsToCopy = baseCount * 16;
+
+      // Swap using preallocated or temporary buffer
+      const tempBuf = new Float32Array(elementsToCopy);
+      tempBuf.set(buf.subarray(offsetA, offsetA + elementsToCopy));
+      buf.copyWithin(offsetA, offsetB, offsetB + elementsToCopy);
+      buf.set(tempBuf, offsetB);
+
+      instMesh.instanceMatrix.addUpdateRange(Math.min(offsetA, offsetB), Math.abs(offsetA - offsetB) + elementsToCopy);
+      instMesh.instanceMatrix.needsUpdate = true;
+    }
+
+    if (chunkA) chunkA.slotIndex = slotB;
+    if (chunkB) chunkB.slotIndex = slotA;
+    this.chunkSlots[slotA] = chunkB;
+    this.chunkSlots[slotB] = chunkA;
+  }
+
+  /**
+   * Dynamically compacts visible chunks into front slots [0 .. visibleCount - 1]
+   * and sets instMesh.count = visibleCount * baseCount so off-screen chunks cost 0 vertices / draw calls.
+   */
+  _compactVisibleChunks(camera) {
+    if (this.activeChunkCount === 0) return;
+
+    this._projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    this._frustum.setFromProjectionMatrix(this._projScreenMatrix);
+
+    const camPos = camera.position;
+    const maxVisibleDist = this.isMobile ? ((this.mobileFog ? this.mobileFog.fogFar : 20.0) + this.chunkSize * 0.7) : 200.0;
+
+    let left = 0;
+    let right = this.activeChunkCount - 1;
+
+    // Check visibility for all active slots
+    while (left <= right) {
+      const chunkLeft = this.chunkSlots[left];
+      let isLeftVisible = false;
+      if (chunkLeft) {
+        const inFrustum = this._frustum.intersectsBox(chunkLeft.aabb);
+        const dist = Math.hypot((chunkLeft.cx * this.chunkSize) - camPos.x, (chunkLeft.cz * this.chunkSize) - camPos.z);
+        isLeftVisible = inFrustum && (dist <= maxVisibleDist);
+      }
+
+      if (isLeftVisible) {
+        left++;
+      } else {
+        // Find a visible chunk from the right end to swap with
+        while (right > left) {
+          const chunkRight = this.chunkSlots[right];
+          let isRightVisible = false;
+          if (chunkRight) {
+            const inFrustum = this._frustum.intersectsBox(chunkRight.aabb);
+            const dist = Math.hypot((chunkRight.cx * this.chunkSize) - camPos.x, (chunkRight.cz * this.chunkSize) - camPos.z);
+            isRightVisible = inFrustum && (dist <= maxVisibleDist);
+          }
+          if (isRightVisible) {
+            this._swapChunkSlots(left, right);
+            left++;
+            right--;
+            break;
+          } else {
+            right--;
+          }
+        }
+        if (right <= left && !isLeftVisible) {
+          break;
+        }
+      }
+    }
+
+    const visibleChunkCount = left;
+
+    // Set instancedMesh.count to render only visible chunks!
+    for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
+      const def = this.meshDefinitions[defIdx];
+      const instMesh = this.instancedMeshes[defIdx];
+      instMesh.count = visibleChunkCount * def.baseCount;
+    }
+
+    this._updateBoundsAndStats();
+  }
+
   _swapRemoveChunkBlock(freedSlot) {
     const lastSlot = this.activeChunkCount - 1;
 
@@ -780,6 +876,7 @@ export class BatchedChunkSystem {
     // 3. On mobile with the scheduler active, the old priority queue and old radius-based loading must NEVER run
     if (this.scheduler && !this.scheduler.disabled) {
       this.scheduler.update(this._sleighPos, camera, now, frameDeltaMs, this.mobileFog);
+      this._compactVisibleChunks(camera);
       return; // Return unconditionally when scheduler is active!
     }
 
