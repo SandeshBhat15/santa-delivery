@@ -94,6 +94,9 @@ const bloomPass = new KawaseBloomPass(
   0.32, // Smooth threshold for glowing windows, aurora, and lanterns
   2.2   // Wide, soft blur scattering radius
 );
+if (IS_MOBILE && new URLSearchParams(window.location.search).get('bloom') === '0') {
+  bloomPass.enabled = false;
+}
 composer.addPass(bloomPass);
 
 const outputPass = new OutputPass();
@@ -2864,7 +2867,7 @@ window.addEventListener('resize', () => {
   camera.fov = (height > width) ? 65 : 50;
   camera.updateProjectionMatrix();
   renderer.setSize(width, height);
-  const pRatio = Math.min(window.devicePixelRatio || 1, 2.5);
+  const pRatio = (IS_MOBILE && Number.isFinite(_initialDprParam)) ? _initialDprParam : Math.min(window.devicePixelRatio || 1, 2.5);
   renderer.setPixelRatio(pRatio);
   composer.setSize(width, height);
   composer.setPixelRatio(pRatio);
