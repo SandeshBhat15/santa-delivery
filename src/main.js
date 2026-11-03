@@ -2651,7 +2651,7 @@ const modelUrl = '/assets/models/terrain.glb';
             mat.userData.snowShaderApplied = true;
             mat.roughness = 0.80;
             mat.metalness = 0.0;
-            mat.customProgramCacheKey = () => 'terrain_procedural_snow_unified_v8';
+            mat.customProgramCacheKey = () => 'terrain_procedural_snow_unified_v9';
 
             // Unified high-fidelity desktop snow shader across all devices
             mat.onBeforeCompile = (shader) => {
@@ -2680,11 +2680,11 @@ const modelUrl = '/assets/models/terrain.glb';
                 #include <worldpos_vertex>
                 #ifdef USE_INSTANCING
                   vTerrainWorldPos = worldPosition.xyz;
-                  vTerrainWorldNormal = normalize((modelMatrix * vec4(transformedNormal, 0.0)).xyz);
                 #else
                   vTerrainWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
-                  vTerrainWorldNormal = normalize(mat3(modelMatrix) * normal);
                 #endif
+                // Standard Three.js inverse transform yields exact world-space normal for instanced and non-instanced meshes
+                vTerrainWorldNormal = inverseTransformDirection(transformedNormal, viewMatrix);
                 `
               );
 
@@ -2839,18 +2839,21 @@ const modelUrl = '/assets/models/terrain.glb';
                   vec4 shadowCoord = vDirectionalShadowCoord[ 0 ];
                   shadowCoord.xyz /= shadowCoord.w;
                   shadowCoord.z += directionalLightShadows[ 0 ].shadowBias;
-                  // Check if inside shadow camera frustum [0, 1] to prevent edge clamping artifacts
-                  bool inFrustum = shadowCoord.x >= 0.0 && shadowCoord.x <= 1.0 &&
-                                   shadowCoord.y >= 0.0 && shadowCoord.y <= 1.0 &&
-                                   shadowCoord.z <= 1.0;
-                  if (inFrustum) {
+                  // Smoothly feather edge falloff at frustum boundary to prevent square box lines
+                  float edgeDist = min(
+                    min(shadowCoord.x, 1.0 - shadowCoord.x),
+                    min(shadowCoord.y, 1.0 - shadowCoord.y)
+                  );
+                  float inBounds = step(0.0, edgeDist) * step(shadowCoord.z, 1.0);
+                  if (inBounds > 0.5) {
                     vec2 shadowTexel = 1.0 / directionalLightShadows[ 0 ].shadowMapSize;
                     float lit = step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy ) ) );
                     lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy + vec2( shadowTexel.x, 0.0 ) ) ) );
                     lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy - vec2( shadowTexel.x, 0.0 ) ) ) );
                     lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy + vec2( 0.0, shadowTexel.y ) ) ) );
                     lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy - vec2( 0.0, shadowTexel.y ) ) ) );
-                    terrainShadow = lit * 0.2;
+                    float edgeFade = smoothstep(0.0, 0.12, edgeDist);
+                    terrainShadow = mix(1.0, lit * 0.2, edgeFade);
                   }
                 }
                 #endif
