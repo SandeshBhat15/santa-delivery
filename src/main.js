@@ -9,6 +9,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { KawaseBloomPass } from './postprocessing/KawaseBloomPass.js';
+import { HardwareProfiler, DEVICE_TIER } from './utils/HardwareProfiler.js';
 import { PerformanceDebugger } from './debug/PerformanceDebugger.js';
 import { QualityPanel } from './debug/QualityPanel.js';
 import { MobileOptimizer } from './mobile/MobileOptimizer.js';
@@ -57,24 +58,23 @@ const renderer = new THREE.WebGLRenderer({
   powerPreference: 'high-performance'
 });
 renderer.setSize(window.innerWidth, window.innerHeight);
-// Mobile DPR: clamp to 1.5-1.75 on mobile to eliminate severe 4K/retina fillrate bottleneck while preserving razor-sharp visuals.
-// Desktop keeps up to 2.5 full quality.
+
+// Hardware auto-detection & profiling
+const hardwareProfiler = new HardwareProfiler(renderer);
+window.hardwareProfiler = hardwareProfiler;
+
 const _initialDprParam = parseFloat(new URLSearchParams(window.location.search).get('dpr'));
-const _maxMobileDpr = 1.5;
 const _initialDpr = Number.isFinite(_initialDprParam)
   ? _initialDprParam
-  : (IS_MOBILE ? Math.min(window.devicePixelRatio || 1, _maxMobileDpr) : Math.min(window.devicePixelRatio || 1, 2.5));
+  : hardwareProfiler.profile.targetDpr;
 
 renderer.setPixelRatio(_initialDpr);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.95;
 renderer.shadowMap.enabled = new URLSearchParams(window.location.search).get('shadows') !== '0';
-// Desktop uses PCFSoftShadowMap (soft shadows); mobile uses PCFShadowMap (efficient, crisp)
-renderer.shadowMap.type = IS_MOBILE ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
-// Smooth shadows: full autoUpdate ensures zero frame-skipping jitter
-if (IS_MOBILE) {
-  renderer.shadowMap.autoUpdate = true;
-}
+// Soft PCF shadow filtering for smooth anti-aliased shadows across all devices
+renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.shadowMap.autoUpdate = true;
 renderer.info.autoReset = false;
 container.appendChild(renderer.domElement);
 
@@ -1131,7 +1131,7 @@ const moonLight = new THREE.DirectionalLight(0x7ea4e8, 0.95);
 moonLight.position.set(28, 48, -22);
 moonLight.castShadow = true;
 // Shadow map resolution: 1024 on mobile (perfect for 36m frustum), 2048 on desktop (razor-sharp)
-const shadowMapDim = IS_MOBILE ? 1024 : 2048;
+const shadowMapDim = hardwareProfiler.profile.shadowMapSize;
 moonLight.shadow.mapSize.width = shadowMapDim;
 moonLight.shadow.mapSize.height = shadowMapDim;
 moonLight.shadow.camera.near = 12;
@@ -1228,8 +1228,8 @@ const snowFragmentShader = `
     float alpha = clamp(1.0 - r2, 0.0, 1.0);
     alpha = alpha * alpha; // Smooth natural falloff
 
-    // Coloration: Crisp winter matte snow (held under bloom threshold 0.30 so snowfall never glows)
-    vec3 flakeColor = vec3(0.24, 0.26, 0.28);
+    // Coloration: Luminous crisp winter snowflakes, subtly catching cool moonlight
+    vec3 flakeColor = mix(vec3(0.78, 0.84, 0.92), vec3(0.92, 0.96, 1.0), vFlakeType);
 
     float finalAlpha = alpha * uOpacity * vDepthFade;
     if (finalAlpha < 0.005) discard;
@@ -1238,10 +1238,10 @@ const snowFragmentShader = `
   }
 `;
 
-const snowBounds = { x: 50, y: 22, z: 50 };
+const snowBounds = { x: 55, y: 32, z: 55 };
 
 // Layer 1: Ambient village snowfall (optimized count for silky 60-120+ FPS on mobile, high density on desktop)
-const snowCount = IS_MOBILE ? 600 : 3600;
+const snowCount = hardwareProfiler.profile.baseSnowCount;
 const snowGeo = new THREE.BufferGeometry();
 const snowPositions = new Float32Array(snowCount * 3);
 const snowSizes = new Float32Array(snowCount);
@@ -1292,7 +1292,7 @@ snowParticles.visible = true;
 scene.add(snowParticles);
 
 // Layer 2: Near-camera fluffy flakes & Bokeh Orbs
-const largeSnowCount = IS_MOBILE ? 80 : 420;
+const largeSnowCount = hardwareProfiler.profile.largeSnowCount;
 const largeSnowGeo = new THREE.BufferGeometry();
 const largeSnowPositions = new Float32Array(largeSnowCount * 3);
 const largeSnowSizes = new Float32Array(largeSnowCount);
@@ -1439,13 +1439,18 @@ class DynamicWeatherEngine {
       skyUniforms.uWeatherOvercast.value = this.weatherIntensity;
     }
 
-    // Continuous snowfall across all phases (crisp ambient flurries even in clear weather, dense during blizzards)
-    const snowAlpha = 0.75 + this.weatherIntensity * 0.22;
+    // Dynamic snowfall intensity: scale flake size, opacity, and turbulence with weather intensity
+    const snowAlpha = 0.60 + this.weatherIntensity * 0.38;
+    const baseFlakeSize = 0.12 + this.weatherIntensity * 0.08;
+    const largeFlakeSize = 0.18 + this.weatherIntensity * 0.12;
+
     if (snowMat && snowMat.uniforms.uOpacity) {
       snowMat.uniforms.uOpacity.value = snowAlpha;
+      if (snowMat.uniforms.uSize) snowMat.uniforms.uSize.value = baseFlakeSize;
     }
     if (largeSnowMat && largeSnowMat.uniforms.uOpacity) {
       largeSnowMat.uniforms.uOpacity.value = snowAlpha * 0.95;
+      if (largeSnowMat.uniforms.uSize) largeSnowMat.uniforms.uSize.value = largeFlakeSize;
     }
   }
 }
@@ -2646,12 +2651,9 @@ const modelUrl = '/assets/models/terrain.glb';
             mat.userData.snowShaderApplied = true;
             mat.roughness = 0.80;
             mat.metalness = 0.0;
-            mat.customProgramCacheKey = () => IS_MOBILE ? 'terrain_procedural_snow_mob_v6' : 'terrain_procedural_snow_desk_v5';
+            mat.customProgramCacheKey = () => 'terrain_procedural_snow_unified_v7';
 
-            if (IS_MOBILE) {
-              mat.defines = mat.defines || {};
-              mat.defines['IS_MOBILE_TERRAIN'] = '';
-            }
+            // Unified high-fidelity desktop snow shader across all devices
             mat.onBeforeCompile = (shader) => {
               shader.uniforms.uTime = terrainSnowUniforms.uTime;
               shader.uniforms.uSnowColor = terrainSnowUniforms.uSnowColor;
@@ -2742,20 +2744,12 @@ const modelUrl = '/assets/models/terrain.glb';
                   vec3 sWNorm = normalize(vTerrainWorldNormal);
                   vec2 sDriftUv = vec2(sWPos.x * 0.18 + sWPos.z * 0.11, sWPos.z * 0.18 - sWPos.x * 0.11);
                   float sMacroDrift = sin(sDriftUv.x * 1.5 + sin(sDriftUv.y * 1.0) * 0.8) * 0.5 + 0.5;
-                  #if defined(IS_MOBILE_TERRAIN)
-                  // Mobile: single-pass procedural noise restores organic ripples, crevice AO & powder layering
-                  float sMicroRipples = snowNoise(sWPos.xz * 1.15);
-                  float sDriftCombined = sMacroDrift * 0.42 + sMicroRipples * 0.58;
-                  float sSlope = clamp(sWNorm.y, 0.0, 1.0);
-                  float sSnowThreshold = 0.15 - sMicroRipples * 0.10;
-                  float sSnowCoverage = smoothstep(sSnowThreshold, sSnowThreshold + 0.25, sSlope);
-                  #else
+                  // Full 3-octave FBM procedural drifts & organic snow accumulation across all platforms
                   float sMicroRipples = snowFBM(sWPos.xz * 1.15);
                   float sDriftCombined = sMacroDrift * 0.42 + sMicroRipples * 0.58;
                   float sSlope = clamp(sWNorm.y, 0.0, 1.0);
                   float sSnowThreshold = 0.15 - sMicroRipples * 0.10;
                   float sSnowCoverage = smoothstep(sSnowThreshold, sSnowThreshold + 0.25, sSlope);
-                  #endif
                 `
               );
 
@@ -2797,17 +2791,11 @@ const modelUrl = '/assets/models/terrain.glb';
                 vec3 halfVec = normalize(viewDir + moonDir);
                 float specAngle = clamp(dot(sWNorm, halfVec), 0.0, 1.0);
                 float moonSheen = pow(specAngle, 16.0) * (0.28 + 0.72 * sMacroDrift);
-                // Smooth crystalline sheen and glint with low frequency to prevent temporal aliasing and crawling
-                #if defined(IS_MOBILE_TERRAIN)
-                float glitter1 = snowNoise(sWPos.xz * 4.5);
-                float glitterBase = clamp(glitter1 * specAngle, 0.0, 1.0);
-                float glitter = pow(glitterBase, 2.5) * 0.85;
-                #else
-                float glitter1 = snowNoise(sWPos.xz * 32.0 + sin(uTime * 0.4) * 0.03);
-                float glitter2 = snowNoise(sWPos.xz * 68.0 - cos(uTime * 0.3) * 0.03);
+                // Dual-frequency crystalline moonlight sheen and sparkling glint
+                float glitter1 = snowNoise(sWPos.xz * 18.0 + sin(uTime * 0.25) * 0.02);
+                float glitter2 = snowNoise(sWPos.xz * 38.0 - cos(uTime * 0.20) * 0.02);
                 float glitterBase = clamp(glitter1 * glitter2 * specAngle, 0.0, 1.0);
-                float glitter = pow(glitterBase, 4.5) * 1.6;
-                #endif
+                float glitter = pow(glitterBase, 3.5) * 1.35;
                 vec3 sparkleColor = vec3(0.92, 0.96, 1.0) * clamp(moonSheen * 0.22 + glitter * 0.28, 0.0, 1.0) * uSparkleIntensity;
 
                 // 4. Harmonious Mixing with Existing Terrain Texture
@@ -2885,13 +2873,7 @@ const modelUrl = '/assets/models/terrain.glb';
                 `
                 #include <normal_fragment_maps>
 
-                #if defined(IS_MOBILE_TERRAIN)
-                // Mobile: lightweight macro drift curvature avoids 4 multi-octave FBM evaluations per pixel
-                vec3 worldDriftN = normalize(vec3(-cos(sDriftUv.x * 1.5) * 0.12, 1.0, -sin(sDriftUv.y * 1.0) * 0.12));
-                vec3 viewDriftN = normalize((viewMatrix * vec4(worldDriftN, 0.0)).xyz);
-                normal = normalize(mix(normal, viewDriftN, sSnowCoverage * 0.35));
-                #else
-                // Desktop: full multi-frequency FBM analytical derivative
+                // Full analytical derivative of procedural snow drifts for rich 3D surface volume
                 float eps = 0.06;
                 float hC = snowFBM(sWPos.xz * 1.15) * 0.6 + sMacroDrift * 0.4;
                 float hX = snowFBM((sWPos.xz + vec2(eps, 0.0)) * 1.15) * 0.6 + (sin((sDriftUv.x + eps * 0.18) * 1.5 + sin(sDriftUv.y * 1.0) * 0.8) * 0.5 + 0.5) * 0.4;
@@ -2900,7 +2882,6 @@ const modelUrl = '/assets/models/terrain.glb';
                 vec3 worldDriftN = normalize(vec3(-(hX - hC) / eps * 0.38, 1.0, -(hZ - hC) / eps * 0.38));
                 vec3 viewDriftN = normalize((viewMatrix * vec4(worldDriftN, 0.0)).xyz);
                 normal = normalize(mix(normal, viewDriftN, sSnowCoverage * 0.50));
-                #endif
                 `
               );
             };
@@ -3075,6 +3056,37 @@ function animate(currentTime) {
     renderer.info.reset();
   }
 
+
+  // Dynamic Runtime FPS Supervisor (auto-scales DPR if sustained frame drops occur)
+  if (!window._fpsSupervisor) {
+    window._fpsSupervisor = {
+      windowStart: performance.now(),
+      frames: 0,
+      dropCount: 0,
+      currentDpr: _initialDpr
+    };
+  }
+  const sup = window._fpsSupervisor;
+  sup.frames++;
+  const supNow = performance.now();
+  if (supNow - sup.windowStart >= 2000) {
+    const avgFps = (sup.frames * 1000) / (supNow - sup.windowStart);
+    if (avgFps < 48 && sup.currentDpr > 1.15) {
+      sup.dropCount++;
+      if (sup.dropCount >= 2) {
+        sup.currentDpr = Math.max(1.15, sup.currentDpr - 0.20);
+        renderer.setPixelRatio(sup.currentDpr);
+        if (composer) composer.setPixelRatio(sup.currentDpr);
+        console.warn(`[Hardware Supervisor] Frame rate under 48 FPS (${avgFps.toFixed(1)} FPS). Auto-scaled DPR to ${sup.currentDpr.toFixed(2)}`);
+        sup.dropCount = 0;
+      }
+    } else if (avgFps >= 58 && sup.dropCount > 0) {
+      sup.dropCount = 0;
+    }
+    sup.windowStart = supNow;
+    sup.frames = 0;
+  }
+
   const logicStart = performance.now();
   const delta = clock.getDelta();
   const elapsedTime = clock.getElapsedTime();
@@ -3128,13 +3140,14 @@ function animate(currentTime) {
     weatherEngine.update(elapsedTime, delta);
   }
 
-  // Anchor snowfall simulation volume to current exploration focus (controls.target or camera)
-  const snowFocus = (controls && controls.target) ? controls.target : camera.position;
+  // Anchor snowfall simulation volume to active player position (sleigh, or camera/target)
+  const activeFocus = sleighController ? sleighController.position : ((controls && controls.target) ? controls.target : camera.position);
+  const snowBaseY = Math.max(0, activeFocus.y - 4.0);
   if (snowParticles) {
-    snowParticles.position.set(snowFocus.x, 0, snowFocus.z);
+    snowParticles.position.set(activeFocus.x, snowBaseY, activeFocus.z);
   }
   if (largeSnowParticles) {
-    largeSnowParticles.position.set(snowFocus.x, 0, snowFocus.z);
+    largeSnowParticles.position.set(activeFocus.x, snowBaseY, activeFocus.z);
   }
 
   // Modulate aurora sky-to-ground ambient bounce in sync with atmospheric curtains & weather
