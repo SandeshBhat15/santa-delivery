@@ -1242,7 +1242,7 @@ const snowFragmentShader = `
 const snowBounds = { x: 50, y: 22, z: 50 };
 
 // Layer 1: Ambient village snowfall (optimized count for silky 60-120+ FPS on mobile, high density on desktop)
-const snowCount = 3600;
+const snowCount = IS_MOBILE ? 600 : 3600;
 const snowGeo = new THREE.BufferGeometry();
 const snowPositions = new Float32Array(snowCount * 3);
 const snowSizes = new Float32Array(snowCount);
@@ -1293,7 +1293,7 @@ snowParticles.visible = true;
 scene.add(snowParticles);
 
 // Layer 2: Near-camera fluffy flakes & Bokeh Orbs
-const largeSnowCount = 420;
+const largeSnowCount = IS_MOBILE ? 80 : 420;
 const largeSnowGeo = new THREE.BufferGeometry();
 const largeSnowPositions = new Float32Array(largeSnowCount * 3);
 const largeSnowSizes = new Float32Array(largeSnowCount);
@@ -2789,10 +2789,14 @@ const modelUrl = '/assets/models/terrain.glb';
                 vec3 halfVec = normalize(viewDir + moonDir);
                 float specAngle = clamp(dot(sWNorm, halfVec), 0.0, 1.0);
                 float moonSheen = pow(specAngle, 16.0) * (0.28 + 0.72 * sMacroDrift);
+                #if defined(IS_MOBILE_TERRAIN)
+                float glitter = specAngle * 0.45;
+                #else
                 float glitter1 = snowNoise(sWPos.xz * 32.0 + sin(uTime * 0.4) * 0.03);
                 float glitter2 = snowNoise(sWPos.xz * 68.0 - cos(uTime * 0.3) * 0.03);
                 float glitterBase = clamp(glitter1 * glitter2 * specAngle, 0.0, 1.0);
                 float glitter = pow(glitterBase, 4.5) * 1.6;
+                #endif
                 vec3 sparkleColor = vec3(0.92, 0.96, 1.0) * clamp(moonSheen * 0.22 + glitter * 0.28, 0.0, 1.0) * uSparkleIntensity;
 
                 // 4. Harmonious Mixing with Existing Terrain Texture
@@ -2831,7 +2835,7 @@ const modelUrl = '/assets/models/terrain.glb';
                 // flatten every tree/house shadow out. Sampling the same shadow map here and
                 // attenuating the glows restores the contrast the moon key is supposed to give.
                 float terrainShadow = 1.0;
-                #if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
+                #if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0 && !defined( IS_MOBILE_TERRAIN )
                 {
                   vec4 shadowCoord = vDirectionalShadowCoord[ 0 ];
                   shadowCoord.xyz /= shadowCoord.w;
