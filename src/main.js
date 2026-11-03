@@ -71,10 +71,9 @@ renderer.toneMappingExposure = 0.95;
 renderer.shadowMap.enabled = new URLSearchParams(window.location.search).get('shadows') !== '0';
 // Desktop uses PCFSoftShadowMap (soft shadows); mobile uses PCFShadowMap (efficient, crisp)
 renderer.shadowMap.type = IS_MOBILE ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
-// On mobile, control shadow update frequency (every 2nd frame) to cut secondary depth draw load in half
+// Smooth shadows: full autoUpdate ensures zero frame-skipping jitter
 if (IS_MOBILE) {
-  renderer.shadowMap.autoUpdate = false;
-  renderer.shadowMap.needsUpdate = true;
+  renderer.shadowMap.autoUpdate = true;
 }
 renderer.info.autoReset = false;
 container.appendChild(renderer.domElement);
@@ -2647,7 +2646,7 @@ const modelUrl = '/assets/models/terrain.glb';
             mat.userData.snowShaderApplied = true;
             mat.roughness = 0.80;
             mat.metalness = 0.0;
-            mat.customProgramCacheKey = () => IS_MOBILE ? 'terrain_procedural_snow_mob_v5' : 'terrain_procedural_snow_desk_v5';
+            mat.customProgramCacheKey = () => IS_MOBILE ? 'terrain_procedural_snow_mob_v6' : 'terrain_procedural_snow_desk_v5';
 
             if (IS_MOBILE) {
               mat.defines = mat.defines || {};
@@ -2798,10 +2797,11 @@ const modelUrl = '/assets/models/terrain.glb';
                 vec3 halfVec = normalize(viewDir + moonDir);
                 float specAngle = clamp(dot(sWNorm, halfVec), 0.0, 1.0);
                 float moonSheen = pow(specAngle, 16.0) * (0.28 + 0.72 * sMacroDrift);
+                // Smooth crystalline sheen and glint with low frequency to prevent temporal aliasing and crawling
                 #if defined(IS_MOBILE_TERRAIN)
-                // Mobile: fast single-noise crystalline sparkle catching moonlight
-                float glitterBase = clamp(snowNoise(sWPos.xz * 36.0) * specAngle, 0.0, 1.0);
-                float glitter = pow(glitterBase, 4.0) * 1.4;
+                float glitter1 = snowNoise(sWPos.xz * 4.5);
+                float glitterBase = clamp(glitter1 * specAngle, 0.0, 1.0);
+                float glitter = pow(glitterBase, 2.5) * 0.85;
                 #else
                 float glitter1 = snowNoise(sWPos.xz * 32.0 + sin(uTime * 0.4) * 0.03);
                 float glitter2 = snowNoise(sWPos.xz * 68.0 - cos(uTime * 0.3) * 0.03);
@@ -2851,21 +2851,15 @@ const modelUrl = '/assets/models/terrain.glb';
                   vec4 shadowCoord = vDirectionalShadowCoord[ 0 ];
                   shadowCoord.xyz /= shadowCoord.w;
                   shadowCoord.z += directionalLightShadows[ 0 ].shadowBias;
-                  #if defined( IS_MOBILE_TERRAIN )
-                    // Mobile: fast 1-tap depth test renders crisp tree and building shadows with zero PCF overhead
-                    float lit = step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy ) ) );
-                    terrainShadow = lit;
-                  #else
-                    vec2 shadowTexel = 1.0 / directionalLightShadows[ 0 ].shadowMapSize;
-                    // 4-tap cross PCF (4 extra fetches) keeps the shadow edge soft without paying
-                    // for the full 9-tap PCF_SOFT kernel twice on every terrain pixel
-                    float lit = step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy ) ) );
-                    lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy + vec2( shadowTexel.x, 0.0 ) ) ) );
-                    lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy - vec2( shadowTexel.x, 0.0 ) ) ) );
-                    lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy + vec2( 0.0, shadowTexel.y ) ) ) );
-                    lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy - vec2( 0.0, shadowTexel.y ) ) ) );
-                    terrainShadow = lit * 0.2;
-                  #endif
+                  vec2 shadowTexel = 1.0 / directionalLightShadows[ 0 ].shadowMapSize;
+                  // 4-tap cross PCF keeps shadow edges soft and anti-aliased on both desktop and mobile,
+                  // eliminating 1-tap sub-pixel crawling and temporal shadow aliasing completely
+                  float lit = step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy ) ) );
+                  lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy + vec2( shadowTexel.x, 0.0 ) ) ) );
+                  lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy - vec2( shadowTexel.x, 0.0 ) ) ) );
+                  lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy + vec2( 0.0, shadowTexel.y ) ) ) );
+                  lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy - vec2( 0.0, shadowTexel.y ) ) ) );
+                  terrainShadow = lit * 0.2;
                 }
                 #endif
                 float glowShadow = mix( 1.0, terrainShadow, 0.85 );
@@ -3258,14 +3252,7 @@ function animate(currentTime) {
   window._shadowPassTriangles = window._frameShadowTriangles || 0;
   window._frameShadowTriangles = 0;
 
-   // On mobile, render shadow map every 2nd frame to cut secondary depth draw load in half
-   if (IS_MOBILE && renderer && renderer.shadowMap.enabled) {
-     const shouldUpdateShadow = (frameCount % 2 === 0);
-     renderer.shadowMap.needsUpdate = shouldUpdateShadow;
-     if (moonLight && moonLight.shadow) {
-       moonLight.shadow.needsUpdate = shouldUpdateShadow;
-     }
-   }
+   // Mobile shadows: autoUpdate handles smooth 60fps tracking without 30Hz stutter
 
    // Reset renderer.info once per frame before the composer/render passes
    if (renderer) renderer.info.reset();

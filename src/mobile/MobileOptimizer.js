@@ -150,7 +150,7 @@ export class MobileOptimizer {
         this.ctx.renderer.shadowMap.type = THREE.PCFShadowMap;
         moon.shadow.mapSize.width = 1024;
         moon.shadow.mapSize.height = 1024;
-        moon.shadow.autoUpdate = false;
+        moon.shadow.autoUpdate = true;
       } else {
         this.ctx.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         moon.shadow.mapSize.width = 2048;
