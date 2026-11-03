@@ -151,6 +151,18 @@ export class DeliverySystem {
       opacity: 0.75,
       fog: false
     });
+
+    // 4. Boost Ring Geometry & Material (Glowing Torus Hoop)
+    this._ringGeo = new THREE.TorusGeometry(0.24, 0.026, 12, 32);
+    this._ringMat = new THREE.MeshStandardMaterial({
+      color: 0xffe066,
+      emissive: 0xff9900,
+      emissiveIntensity: 2.2,
+      metalness: 0.8,
+      roughness: 0.15,
+      fog: false,
+      toneMapped: false
+    });
   }
 
   // Soft, additive translucent golden beam material with subtle glow,
@@ -1461,7 +1473,6 @@ export class DeliverySystem {
 
     // Brief celebration: one sparkle burst (with gentle drift toward next target) and success chime.
     this._spawnSparkleBurst(houseData.worldPos, nextTarget ? nextTarget.worldPos : null);
-    soundManager.playSuccess();
     if (this.giftDropMarker) this.giftDropMarker.burst();
 
     // Trigger golden guiding wind stream from Santa toward the next rooftop marker
@@ -1475,10 +1486,22 @@ export class DeliverySystem {
       this.guidanceFlow.setTarget(sleighPos, forward, nextTarget.worldPos);
     }
 
-    this.showBanner(
-      `GIFT DELIVERED! +${points} PTS • ${this.deliveriesMade}/${this.deliveriesRequired}`,
-      'success'
-    );
+    // Multiplier streak bonus
+    const comboMult = this.combo > 1 ? this.combo : 1;
+    if (this.combo > 1) {
+      soundManager.playCombo(this.combo);
+      this._spawnWorldScorePopup(houseData.worldPos, `🔥 ${this.combo}X COMBO!`);
+      this.showBanner(
+        `🔥 ${this.combo}X COMBO! +${points} PTS • ${this.deliveriesMade}/${this.deliveriesRequired}`,
+        'success'
+      );
+    } else {
+      soundManager.playSuccess();
+      this.showBanner(
+        `GIFT DELIVERED! +${points} PTS • ${this.deliveriesMade}/${this.deliveriesRequired}`,
+        'success'
+      );
+    }
 
     this.activeTarget = null;
     this.closestTarget = null;
@@ -1489,9 +1512,10 @@ export class DeliverySystem {
     // Don't clear guidance flow here so the wind continues guiding the player during the transition to the next target
 
     if (this.deliveriesMade >= this.deliveriesRequired) {
-      this._finishTimeout = setTimeout(() => this._finishRun(true), 1100);
+      this._finishTimeout = setTimeout(() => this._finishRun(true), 900);
     } else {
-      this._nextTargetTimeout = setTimeout(() => this._setNextTarget(), 900);
+      // Rapid arcade pacing: activate next stop in 350ms instead of 900ms!
+      this._nextTargetTimeout = setTimeout(() => this._setNextTarget(), 350);
     }
   }
 
@@ -1963,52 +1987,69 @@ export class DeliverySystem {
         }
         if (tooCloseToHouse) continue;
 
+        const isBoostRing = (starId % 2 === 1);
         const group = new THREE.Group();
-        group.name = `RouteStar_${starId}`;
+        group.name = isBoostRing ? `BoostRing_${starId}` : `RouteStar_${starId}`;
         group.position.set(posX, finalY, posZ);
 
-        // 1. Faceted 3D diamond star
-        const starMesh = new THREE.Mesh(this._starGeo, this._starMat);
-        starMesh.rotation.z = (starId * 0.65) % Math.PI;
-        group.add(starMesh);
+        let starMesh, coreMesh = null, halo = null, motesMesh = null;
 
-        // 2. Diamond sparkling core
-        const coreMesh = new THREE.Mesh(this._starCoreGeo, this._starCoreMat);
-        group.add(coreMesh);
+        if (isBoostRing) {
+          // Radiant Speed Hoop (aligned facing oncoming flight path dx, dz)
+          starMesh = new THREE.Mesh(this._ringGeo, this._ringMat);
+          const flightAngle = Math.atan2(dx, dz);
+          starMesh.rotation.y = flightAngle;
+          group.add(starMesh);
 
-        // 3. Radiant celestial golden halo flare
-        const halo = new THREE.Sprite(this._starHaloMat);
-        halo.scale.set(0.55, 0.55, 0.55);
-        group.add(halo);
+          // Subtle halo flare centered on hoop
+          halo = new THREE.Sprite(this._starHaloMat);
+          halo.scale.set(0.70, 0.70, 0.70);
+          group.add(halo);
+        } else {
+          // 1. Faceted 3D diamond star
+          starMesh = new THREE.Mesh(this._starGeo, this._starMat);
+          starMesh.rotation.z = (starId * 0.65) % Math.PI;
+          group.add(starMesh);
 
-        // 4. Subtle orbiting golden stardust sparkles (fairy dust)
-        const motesGeo = new THREE.BufferGeometry();
-        const moteCount = 4;
-        const motePositions = new Float32Array(moteCount * 3);
-        for (let m = 0; m < moteCount; m++) {
-          const mAngle = (m / moteCount) * Math.PI * 2;
-          const mR = 0.22;
-          motePositions[m * 3]     = Math.cos(mAngle) * mR;
-          motePositions[m * 3 + 1] = (Math.random() - 0.5) * 0.08;
-          motePositions[m * 3 + 2] = Math.sin(mAngle) * mR;
+          // 2. Diamond sparkling core
+          coreMesh = new THREE.Mesh(this._starCoreGeo, this._starCoreMat);
+          group.add(coreMesh);
+
+          // 3. Radiant celestial golden halo flare
+          halo = new THREE.Sprite(this._starHaloMat);
+          halo.scale.set(0.55, 0.55, 0.55);
+          group.add(halo);
+
+          // 4. Subtle orbiting golden stardust sparkles
+          const motesGeo = new THREE.BufferGeometry();
+          const moteCount = 4;
+          const motePositions = new Float32Array(moteCount * 3);
+          for (let m = 0; m < moteCount; m++) {
+            const mAngle = (m / moteCount) * Math.PI * 2;
+            const mR = 0.22;
+            motePositions[m * 3]     = Math.cos(mAngle) * mR;
+            motePositions[m * 3 + 1] = (Math.random() - 0.5) * 0.08;
+            motePositions[m * 3 + 2] = Math.sin(mAngle) * mR;
+          }
+          motesGeo.setAttribute('position', new THREE.BufferAttribute(motePositions, 3));
+          const motesMat = new THREE.PointsMaterial({
+            map: this._starGlintTexture,
+            color: 0xfffae0,
+            size: 0.12,
+            transparent: true,
+            opacity: 0.85,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            fog: false
+          });
+          motesMesh = new THREE.Points(motesGeo, motesMat);
+          group.add(motesMesh);
         }
-        motesGeo.setAttribute('position', new THREE.BufferAttribute(motePositions, 3));
-        const motesMat = new THREE.PointsMaterial({
-          map: this._starGlintTexture,
-          color: 0xfffae0,
-          size: 0.12,
-          transparent: true,
-          opacity: 0.85,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-          fog: false
-        });
-        const motesMesh = new THREE.Points(motesGeo, motesMat);
-        group.add(motesMesh);
 
         this.starsGroup.add(group);
         this.activeStars.push({
           id: starId,
+          isBoostRing,
           group,
           mesh: starMesh,
           core: coreMesh,
@@ -2095,8 +2136,9 @@ export class DeliverySystem {
     this.starsGroup.remove(star.group);
     this.activeStars.splice(index, 1);
 
+    const isRing = star.isBoostRing;
     this.starsCollected++;
-    this.starScore += 50;
+    this.starScore += isRing ? 75 : 50;
     this.score = this.deliveryScore + this.starScore;
 
     // Spectacular, multi-layered celebratory collection effects:
@@ -2106,14 +2148,20 @@ export class DeliverySystem {
     // 2. Multi-tiered sparkling stardust & diamond ember burst
     this._spawnStarSparkleBurst(worldPos);
 
-    // 3. Floating 3D world-space "+50 🌟" score popup
-    this._spawnWorldScorePopup(worldPos, '+50 🌟');
+    if (isRing) {
+      // Trigger exhilarating speed boost
+      if (this.sleighController && this.sleighController.triggerBoost) {
+        this.sleighController.triggerBoost(2.2);
+      }
+      this._spawnWorldScorePopup(worldPos, '⚡ BOOST! +75');
+      soundManager.playBoost();
+      this.showBanner('⚡ SPEED BOOST! +75 PTS', 'star');
+    } else {
+      this._spawnWorldScorePopup(worldPos, '+50 🌟');
+      soundManager.playStar();
+      this.showBanner(`STAR COLLECTED! +50 • ${this.starsCollected}/${this.starsTotal}`, 'star');
+    }
 
-    // 4. Crystalline chime sound with shimmer overtones
-    soundManager.playStar();
-
-    // 5. HUD banner notification and tactile counter pulse
-    this.showBanner(`STAR COLLECTED! +50 • ${this.starsCollected}/${this.starsTotal}`, 'star');
     this._updateHUD();
     this._triggerHUDStarPulse();
   }
