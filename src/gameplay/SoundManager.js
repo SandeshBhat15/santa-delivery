@@ -182,6 +182,65 @@ class SoundManager {
     } catch (e) {}
   }
 
+
+  playBoost() {
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    try {
+      const now = this.ctx.currentTime;
+      // Ascending whoosh sweep + bright golden chord (C6, E6, G6)
+      const sweep = this.ctx.createOscillator();
+      const sweepGain = this.ctx.createGain();
+      sweep.type = 'sawtooth';
+      sweep.frequency.setValueAtTime(260, now);
+      sweep.frequency.exponentialRampToValueAtTime(880, now + 0.35);
+
+      sweepGain.gain.setValueAtTime(0.18, now);
+      sweepGain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+
+      sweep.connect(sweepGain);
+      sweepGain.connect(this.ctx.destination);
+      sweep.start(now);
+      sweep.stop(now + 0.4);
+
+      [1046.50, 1318.51, 1567.98].forEach((freq, idx) => {
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        const start = now + 0.05 + idx * 0.04;
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, start);
+        gain.gain.setValueAtTime(0.22, start);
+        gain.gain.exponentialRampToValueAtTime(0.001, start + 0.45);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(start);
+        osc.stop(start + 0.45);
+      });
+    } catch (e) {}
+  }
+
+  playCombo(comboCount = 1) {
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    try {
+      const now = this.ctx.currentTime;
+      // Pitch shifts upward with combo multiplier: base 1.0, 2x => 1.25, 3x => 1.5, 4x => 1.75
+      const pitchMult = 1.0 + Math.min(comboCount - 1, 5) * 0.22;
+      const baseFreqs = [1046.5, 1318.51, 1567.98, 2093.0];
+      baseFreqs.forEach((freq, idx) => {
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        const start = now + idx * 0.05;
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq * pitchMult, start);
+        gain.gain.setValueAtTime(0.26, start);
+        gain.gain.exponentialRampToValueAtTime(0.001, start + 0.4);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(start);
+        osc.stop(start + 0.4);
+      });
+    } catch (e) {}
+  }
+
   playRefill() {
     if (!this.ctx || this.ctx.state !== 'running') return;
     try {

@@ -30,12 +30,14 @@ export class SleighController {
     this.speed = 1.8;
 
     // Movement & Non-Linear Aerodynamics Parameters (Smooth, natural, magical flight)
-    this.baseCruiseSpeed = 1.8;   // m/s: comfortable magical forward cruise
-    this.minSpeed        = 1.05;  // m/s: lowest speed during steep climbs (heavy aerodynamic drag)
-    this.maxSpeed        = 3.4;   // m/s: top speed during steep dives (gravity swooping acceleration)
-    this.accelRate       = 3.2;   // fast, noticeable gravity acceleration surge on dive
-    this.decelRate       = 1.8;   // natural climb drag deceleration
-    this.turnSpeed       = 1.55;  // smooth, predictable turning rate
+    this.baseCruiseSpeed = 2.5;   // m/s: fast, engaging arcade flight cruise
+    this.minSpeed        = 1.4;   // m/s: lowest speed during steep climbs
+    this.maxSpeed        = 4.6;   // m/s: top speed during steep dives & boost surges
+    this.boostSpeed      = 4.4;   // m/s: speed surge when flying through golden boost rings
+    this.boostTimer      = 0.0;   // remaining boost duration (seconds)
+    this.accelRate       = 4.2;   // fast, punchy acceleration surge
+    this.decelRate       = 2.2;   // natural drag deceleration
+    this.turnSpeed       = 1.75;  // agile, responsive turning rate
     this.turnVelocity    = 0.0;   // smoothed rotational velocity for natural yaw inertia
     this.smoothTurnInput = 0.0;
     this.bankMax         = 0.42;  // stylish, majestic sleigh banking (radians)
@@ -851,6 +853,12 @@ export class SleighController {
     this.group.add(teamGroup);
   }
 
+
+  triggerBoost(duration = 2.0) {
+    this.boostTimer = Math.max(this.boostTimer, duration);
+    this.speed = Math.max(this.speed, this.boostSpeed);
+  }
+
   setJoystickInput(x, y) {
     this.joystick.x = x;
     this.joystick.y = y;
@@ -973,30 +981,36 @@ export class SleighController {
     const targetPitch = normVertRate * this.pitchMax;
     this.pitch += (targetPitch - this.pitch) * (1.0 - Math.exp(-5.5 * delta));
 
-    // 3. Dynamic Aerodynamic Flight Speed & Momentum
-    // Magical cruising momentum: noticeable gravity swooping acceleration when diving down,
-    // and distinct aerodynamic drag resistance when pulling up into climbs
-    let targetSpeed = this.baseCruiseSpeed;
-
-    if (normVertRate < -0.04) {
-      // Strong gravity swooping acceleration when descending (up to +1.6 m/s top speed)
-      const diveFactor = -normVertRate; // [0..1]
-      targetSpeed = this.baseCruiseSpeed + diveFactor * 1.6;
-    } else if (normVertRate > 0.04) {
-      // Natural aerodynamic drag during climbs (down to 1.05 m/s)
-      const climbFactor = Math.min(normVertRate, 1.0);
-      targetSpeed = this.baseCruiseSpeed - climbFactor * 0.75;
+    // 3. Dynamic Aerodynamic Flight Speed, Boost & Momentum
+    // Handle boost timer
+    if (this.boostTimer > 0) {
+      this.boostTimer -= delta;
     }
 
-    // Induced drag during banked turns
+    let targetSpeed = this.baseCruiseSpeed;
+
+    if (this.boostTimer > 0) {
+      // Powerful golden ring boost surge
+      targetSpeed = this.boostSpeed;
+    } else if (normVertRate < -0.04) {
+      // Strong gravity swooping acceleration when descending
+      const diveFactor = -normVertRate; // [0..1]
+      targetSpeed = this.baseCruiseSpeed + diveFactor * 1.8;
+    } else if (normVertRate > 0.04) {
+      // Aerodynamic drag during climbs
+      const climbFactor = Math.min(normVertRate, 1.0);
+      targetSpeed = this.baseCruiseSpeed - climbFactor * 0.85;
+    }
+
+    // Induced drag during banked turns (lightened for fast arcade flow)
     const bankRatio = Math.abs(this.bank) / (this.bankMax || 0.42);
-    if (bankRatio > 0.15) {
-      targetSpeed -= Math.pow(bankRatio, 1.4) * 0.30;
+    if (bankRatio > 0.25) {
+      targetSpeed -= Math.pow(bankRatio, 1.4) * 0.20;
     }
 
     targetSpeed = THREE.MathUtils.clamp(targetSpeed, this.minSpeed, this.maxSpeed);
 
-    // Fast-acting acceleration when swooping down, graceful deceleration when climbing
+    // Fast-acting acceleration when swooping down or boosting
     const speedRate = targetSpeed > this.speed ? this.accelRate : this.decelRate;
     this.speed += (targetSpeed - this.speed) * (1.0 - Math.exp(-speedRate * delta));
 
@@ -1250,6 +1264,15 @@ export class SleighController {
     const targetCamRoll = -this.bank * 0.35;
     this.cameraRoll += (targetCamRoll - this.cameraRoll) * (1.0 - Math.exp(-6.0 * delta));
     this.camera.up.set(Math.sin(this.cameraRoll), Math.cos(this.cameraRoll), 0);
+
+    // Dynamic FOV rush: widen lens by up to +12 degrees when diving or boosting for arcade kinetic rush
+    const baseFov = (window.innerHeight > window.innerWidth) ? 65 : 50;
+    const speedRatio = Math.max(0.0, (this.speed - this.baseCruiseSpeed) / (this.maxSpeed - this.baseCruiseSpeed || 1.0));
+    const targetFov = baseFov + speedRatio * (this.isMobile ? 10.0 : 12.0);
+    if (this.camera.fov !== targetFov) {
+      this.camera.fov += (targetFov - this.camera.fov) * (1.0 - Math.exp(-4.5 * delta));
+      this.camera.updateProjectionMatrix();
+    }
 
     // Look-at point eases smoothly with slightly higher responsiveness (7.5 / s) to keep flight direction centered
     const lookEase = 1.0 - Math.exp(-7.5 * delta);
