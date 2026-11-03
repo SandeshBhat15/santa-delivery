@@ -2651,7 +2651,7 @@ const modelUrl = '/assets/models/terrain.glb';
             mat.userData.snowShaderApplied = true;
             mat.roughness = 0.80;
             mat.metalness = 0.0;
-            mat.customProgramCacheKey = () => 'terrain_procedural_snow_unified_v9';
+            mat.customProgramCacheKey = () => 'terrain_procedural_snow_unified_v10';
 
             // Unified high-fidelity desktop snow shader across all devices
             mat.onBeforeCompile = (shader) => {
@@ -2828,39 +2828,7 @@ const modelUrl = '/assets/models/terrain.glb';
                 vec3 auroraGlow = uAuroraColor * (skyFacing * aMod * uAuroraGroundIntensity * sSnowCoverage);
                 auroraGlow *= (texLum * 0.40 + 0.60);
 
-                // 7. Shadow-aware additive glows.
-                // The runtime shadow map only attenuates the DIRECT moonlight term. The aurora and
-                // village glows are additive, so they keep re-lighting the snow inside a shadow and
-                // flatten every tree/house shadow out. Sampling the same shadow map here and
-                // attenuating the glows restores the contrast the moon key is supposed to give.
-                float terrainShadow = 1.0;
-                #if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
-                {
-                  vec4 shadowCoord = vDirectionalShadowCoord[ 0 ];
-                  shadowCoord.xyz /= shadowCoord.w;
-                  shadowCoord.z += directionalLightShadows[ 0 ].shadowBias;
-                  // Smoothly feather edge falloff at frustum boundary to prevent square box lines
-                  float edgeDist = min(
-                    min(shadowCoord.x, 1.0 - shadowCoord.x),
-                    min(shadowCoord.y, 1.0 - shadowCoord.y)
-                  );
-                  float inBounds = step(0.0, edgeDist) * step(shadowCoord.z, 1.0);
-                  if (inBounds > 0.5) {
-                    vec2 shadowTexel = 1.0 / directionalLightShadows[ 0 ].shadowMapSize;
-                    float lit = step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy ) ) );
-                    lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy + vec2( shadowTexel.x, 0.0 ) ) ) );
-                    lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy - vec2( shadowTexel.x, 0.0 ) ) ) );
-                    lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy + vec2( 0.0, shadowTexel.y ) ) ) );
-                    lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy - vec2( 0.0, shadowTexel.y ) ) ) );
-                    float edgeFade = smoothstep(0.0, 0.12, edgeDist);
-                    terrainShadow = mix(1.0, lit * 0.2, edgeFade);
-                  }
-                }
-                #endif
-                float glowShadow = mix( 1.0, terrainShadow, 0.85 );
-                auroraGlow *= glowShadow;
-                warmGlow *= mix( 1.0, glowShadow, 0.45 );
-
+                // 7. Additive glows
                 diffuseColor.rgb = blendedDiffuse + warmGlow + auroraGlow;
                 `
               );
