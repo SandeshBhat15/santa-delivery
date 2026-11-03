@@ -60,7 +60,7 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 // Mobile DPR: clamp to 1.5-1.75 on mobile to eliminate severe 4K/retina fillrate bottleneck while preserving razor-sharp visuals.
 // Desktop keeps up to 2.5 full quality.
 const _initialDprParam = parseFloat(new URLSearchParams(window.location.search).get('dpr'));
-const _maxMobileDpr = 1.75;
+const _maxMobileDpr = 1.5;
 const _initialDpr = Number.isFinite(_initialDprParam)
   ? _initialDprParam
   : (IS_MOBILE ? Math.min(window.devicePixelRatio || 1, _maxMobileDpr) : Math.min(window.devicePixelRatio || 1, 2.5));

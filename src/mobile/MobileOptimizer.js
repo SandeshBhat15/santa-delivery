@@ -132,7 +132,8 @@ export class MobileOptimizer {
   syncDesktopQuality() {
     const params = new URLSearchParams(window.location.search);
     const fixedDpr = params.has('dpr') ? parseFloat(params.get('dpr')) : this._fixedDpr;
-    const targetDpr = Number.isFinite(fixedDpr) ? fixedDpr : Math.min(window.devicePixelRatio || 1, 2.5);
+    const maxDpr = this.enabled ? 1.5 : 2.5;
+    const targetDpr = Number.isFinite(fixedDpr) ? fixedDpr : Math.min(window.devicePixelRatio || 1, maxDpr);
     this.ctx.renderer.setPixelRatio(targetDpr);
     if (this.ctx.composer) {
       this.ctx.composer.setPixelRatio(targetDpr);
@@ -145,10 +146,18 @@ export class MobileOptimizer {
 
     const moon = this.ctx.moonLight;
     if (moon) {
-      this.ctx.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-      moon.shadow.mapSize.width = 2048;
-      moon.shadow.mapSize.height = 2048;
-      const d = 28;
+      if (this.enabled) {
+        this.ctx.renderer.shadowMap.type = THREE.PCFShadowMap;
+        moon.shadow.mapSize.width = 1024;
+        moon.shadow.mapSize.height = 1024;
+        moon.shadow.autoUpdate = false;
+      } else {
+        this.ctx.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        moon.shadow.mapSize.width = 2048;
+        moon.shadow.mapSize.height = 2048;
+        moon.shadow.autoUpdate = true;
+      }
+      const d = this.enabled ? 20 : 28;
       moon.shadow.camera.left = -d;
       moon.shadow.camera.right = d;
       moon.shadow.camera.top = d;
@@ -156,7 +165,6 @@ export class MobileOptimizer {
       moon.shadow.camera.near = 12;
       moon.shadow.camera.far = 120;
       moon.shadow.camera.updateProjectionMatrix();
-      moon.shadow.autoUpdate = true;
     }
 
     if (this.ctx.camera) {

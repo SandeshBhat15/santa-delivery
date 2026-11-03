@@ -21,11 +21,11 @@ export class QualityPanel {
     const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
     this.enabled = urlParams.get('debug') === '1';
 
-    const initialDpr = this.ctx.renderer ? this.ctx.renderer.getPixelRatio() : 2.0;
+    const initialDpr = this.ctx.renderer ? this.ctx.renderer.getPixelRatio() : 1.75;
     const pixelRatios = [2.5, 2.25, 2.0, 1.75, 1.5];
     let dprIdx = pixelRatios.indexOf(initialDpr);
     if (dprIdx === -1) {
-      dprIdx = 2; // Default 2.0
+      dprIdx = pixelRatios.indexOf(1.75);
     }
 
     let chunkCap = 6;
