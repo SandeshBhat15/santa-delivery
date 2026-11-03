@@ -644,16 +644,13 @@ export class DeliverySystem {
     let originY = 0;
     const maxRadius = 46; // Max pixel deflection from dynamic touch center
 
-    // Default idle coordinates (bottom-left)
-    const defaultLeft = 80;
-    const defaultBottom = 80;
-
+    // Default idle coordinates (bottom-middle)
     const setBasePosition = (px, py, isFixedBottom = false) => {
       if (isFixedBottom) {
-        base.style.left = `${px}px`;
+        base.style.left = '50%';
         base.style.top = 'auto';
-        base.style.bottom = `${py}px`;
-        base.style.transform = 'translate(-50%, 50%)';
+        base.style.bottom = '40px';
+        base.style.transform = 'translate(-50%, 0)';
       } else {
         base.style.left = `${px}px`;
         base.style.top = `${py}px`;
@@ -684,7 +681,7 @@ export class DeliverySystem {
       activePointerId = null;
       thumb.style.transform = 'translate(-50%, -50%)';
       base.classList.remove('active');
-      setBasePosition(defaultLeft, defaultBottom, true);
+      setBasePosition(0, 0, true);
       this.sleighController.setJoystickInput(0, 0);
     };
 

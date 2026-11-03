@@ -324,13 +324,13 @@ canvas {
   box-sizing: border-box;
 }
 
-/* Floating joystick touch surface occupying the left 50% of screen */
+/* Virtual Joystick touch surface: centered bottom control */
 #joystick-zone {
   position: absolute;
-  top: 0;
+  bottom: 0;
   left: 0;
-  width: 50vw;
-  height: 100%;
+  width: 100%;
+  height: 38vh;
   pointer-events: auto;
   touch-action: none;
   user-select: none;
@@ -345,9 +345,9 @@ canvas {
   border: 2px solid rgba(255, 255, 255, 0.38);
   border-radius: 50%;
   position: absolute;
-  left: 80px;
-  bottom: 80px;
-  transform: translate(-50%, 50%);
+  left: 50%;
+  bottom: 40px;
+  transform: translate(-50%, 0);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5), inset 0 0 16px rgba(255, 255, 255, 0.15);
