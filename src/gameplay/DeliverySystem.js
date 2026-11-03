@@ -634,21 +634,37 @@ export class DeliverySystem {
   }
 
   _setupVirtualJoystick() {
+    const zone = document.getElementById('joystick-zone');
     const base = document.getElementById('joystick-base');
     const thumb = document.getElementById('joystick-thumb');
-    if (!base || !thumb || !this.sleighController) return;
+    if (!zone || !base || !thumb || !this.sleighController) return;
 
     let activePointerId = null;
-    let baseRect = null;
-    const maxRadius = 42; // Max pixel deflection from center
+    let originX = 0;
+    let originY = 0;
+    const maxRadius = 46; // Max pixel deflection from dynamic touch center
+
+    // Default idle coordinates (bottom-left)
+    const defaultLeft = 80;
+    const defaultBottom = 80;
+
+    const setBasePosition = (px, py, isFixedBottom = false) => {
+      if (isFixedBottom) {
+        base.style.left = `${px}px`;
+        base.style.top = 'auto';
+        base.style.bottom = `${py}px`;
+        base.style.transform = 'translate(-50%, 50%)';
+      } else {
+        base.style.left = `${px}px`;
+        base.style.top = `${py}px`;
+        base.style.bottom = 'auto';
+        base.style.transform = 'translate(-50%, -50%)';
+      }
+    };
 
     const updateStick = (clientX, clientY) => {
-      if (!baseRect) baseRect = base.getBoundingClientRect();
-      const centerX = baseRect.left + baseRect.width / 2;
-      const centerY = baseRect.top + baseRect.height / 2;
-
-      let dx = clientX - centerX;
-      let dy = clientY - centerY;
+      let dx = clientX - originX;
+      let dy = clientY - originY;
       const dist = Math.hypot(dx, dy);
 
       if (dist > maxRadius) {
@@ -658,7 +674,7 @@ export class DeliverySystem {
 
       thumb.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
 
-      // Normalized input [-1..1]
+      // Normalized deflection [-1..1]
       const normX = dx / maxRadius;
       const normY = dy / maxRadius;
       this.sleighController.setJoystickInput(normX, normY);
@@ -666,21 +682,28 @@ export class DeliverySystem {
 
     const resetStick = () => {
       activePointerId = null;
-      baseRect = null;
       thumb.style.transform = 'translate(-50%, -50%)';
+      base.classList.remove('active');
+      setBasePosition(defaultLeft, defaultBottom, true);
       this.sleighController.setJoystickInput(0, 0);
     };
 
-    base.addEventListener('pointerdown', (e) => {
+    zone.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       e.stopPropagation();
       activePointerId = e.pointerId;
-      base.setPointerCapture(e.pointerId);
-      baseRect = base.getBoundingClientRect();
+      try {
+        zone.setPointerCapture(e.pointerId);
+      } catch (_) {}
+
+      originX = e.clientX;
+      originY = e.clientY;
+      setBasePosition(originX, originY, false);
+      base.classList.add('active');
       updateStick(e.clientX, e.clientY);
     }, { passive: false });
 
-    base.addEventListener('pointermove', (e) => {
+    zone.addEventListener('pointermove', (e) => {
       if (activePointerId === e.pointerId) {
         e.preventDefault();
         e.stopPropagation();
@@ -693,14 +716,14 @@ export class DeliverySystem {
         e.preventDefault();
         e.stopPropagation();
         try {
-          base.releasePointerCapture(e.pointerId);
+          zone.releasePointerCapture(e.pointerId);
         } catch (_) {}
         resetStick();
       }
     };
 
-    base.addEventListener('pointerup', handlePointerEnd);
-    base.addEventListener('pointercancel', handlePointerEnd);
+    zone.addEventListener('pointerup', handlePointerEnd);
+    zone.addEventListener('pointercancel', handlePointerEnd);
   }
 
   _setupAltitudeControl() {

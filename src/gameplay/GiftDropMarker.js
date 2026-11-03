@@ -47,6 +47,7 @@ export class GiftDropMarker {
       depthWrite: false,
       side: THREE.DoubleSide,
       blending: THREE.AdditiveBlending,
+      fog: false,
       uniforms: { uColor: this.uColor, uT: this.uTime, uI: this.uIntensity, uF: { value: 1 } },
       vertexShader: 'varying vec2 v;void main(){v=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
       fragmentShader: `
@@ -73,37 +74,40 @@ export class GiftDropMarker {
   }
 
   _buildRings(radius) {
-    this.ring = this._addRing(radius, 0.018);                                  // Drop zone ring right on the roof ridge
+    this.ring = this._addRing(radius, 0.045);                                  // Drop zone ring elevated cleanly above roof ridge
     this.mini = [0, 1, 2].map(() => this._addRing(radius * .55, 0.12));        // Small rings drifting up the beam
-    this.burstRing = this._addRing(radius, 0.022);
+    this.burstRing = this._addRing(radius, 0.05);
     this.burstRing.visible = false;
   }
 
   _buildBeams() {
-    const H = 6.0; // Subtle vertical height
-    const makeBeam = (rTop, rBottom, k) => {
+    const H = 45.0; // Towering sky beacon reaching high into the clouds
+    const makeBeam = (rTop, rBottom, k, isSkyBeacon = false) => {
+      const beamHeight = isSkyBeacon ? 45.0 : 6.0;
       const m = new THREE.Mesh(
-        new THREE.CylinderGeometry(rTop, rBottom, H, 16, 1, true).translate(0, H / 2, 0),
+        new THREE.CylinderGeometry(rTop, rBottom, beamHeight, 16, 1, true).translate(0, beamHeight / 2, 0),
         new THREE.ShaderMaterial({
           transparent: true,
           depthWrite: false,
           side: THREE.DoubleSide,
           blending: THREE.AdditiveBlending,
+          fog: false,
           uniforms: { uColor: this.uColor, uI: this.uIntensity, uK: { value: k } },
           vertexShader: `varying vec3 n, w; varying float h;
-            void main(){ n = normalMatrix * normal; vec4 mv = modelViewMatrix * vec4(position, 1.); w = -mv.xyz; h = position.y / ${H}.; gl_Position = projectionMatrix * mv; }`,
+            void main(){ n = normalMatrix * normal; vec4 mv = modelViewMatrix * vec4(position, 1.); w = -mv.xyz; h = position.y / ${beamHeight}.; gl_Position = projectionMatrix * mv; }`,
           fragmentShader: `uniform vec3 uColor; uniform float uI, uK; varying vec3 n, w; varying float h;
             void main(){
               float f = pow(abs(dot(normalize(n), normalize(w))), 1.8);
-              // Translucent, feather-soft atmospheric glow
-              gl_FragColor = vec4(uColor * f * pow(clamp(1. - h * .88, 0.0, 1.0), 1.8) * uK * (uI * 0.45), 1.);
+              // Atmospheric glow fading upward towards clouds
+              float fade = pow(clamp(1. - h * 0.95, 0.0, 1.0), 1.4);
+              gl_FragColor = vec4(uColor * f * fade * uK * (uI * 0.55), 1.);
             }`,
         }));
       this.group.add(m);
       return m;
     };
-    this.beams = [makeBeam(0.012, 0.028, 0.45), makeBeam(0.005, 0.014, 0.75)];  // Gentle slender beam
-    this.needle = makeBeam(0.006, 0.012, 0);                                    // Subtle distant needle
+    this.beams = [makeBeam(0.016, 0.038, 0.65), makeBeam(0.008, 0.020, 0.95)];  // Ground-to-icon pillar
+    this.needle = makeBeam(0.012, 0.025, 0.8, true);                            // Towering vertical sky beacon
   }
 
   _buildIcon() {
@@ -222,6 +226,7 @@ export class GiftDropMarker {
       transparent: true,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
+      fog: false,
     }));
     this.sparks.frustumCulled = false;
     this.group.add(this.sparks);
@@ -276,13 +281,14 @@ export class GiftDropMarker {
     this.icon.material.opacity = this.iconOpacity;
 
     // beam terminates neatly under the floating icon
-    const kb = Math.sqrt(s * 0.65);
-    const far = Math.min(Math.max((camDist - 22) / 30, 0), 1);
+    const kb = Math.sqrt(s * 0.75);
     this.beams.forEach(b => b.scale.set(kb, Math.max(iy - 0.08 * s, 0.25) / 6.0, kb));
-    this.needle.visible = far > .01;
-    this.needle.position.y = iy + 0.25 * s;
-    this.needle.scale.set(kb, 1, kb);
-    this.needle.material.uniforms.uK.value = far * 0.4;
+    
+    // Towering sky needle is always active and visible above the icon
+    this.needle.visible = true;
+    this.needle.position.y = iy;
+    this.needle.scale.set(kb * 1.2, 1.0, kb * 1.2);
+    this.needle.material.uniforms.uK.value = Math.max(0.65, Math.min(camDist / 20.0, 1.5));
 
     // mini rings drift up smoothly
     this.mini.forEach((m, i) => {

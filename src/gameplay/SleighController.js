@@ -849,8 +849,8 @@ export class SleighController {
     let joyX = this.joystick.x; // Horizontal steering [-1..1]
     let joyY = this.joystick.y; // Vertical altitude [-1..1] (negative = up/climb, positive = down/dive)
 
-    // Dead zone check for analog joystick
-    const deadZone = 0.12;
+    // Dead zone check for analog joystick (with smooth dual-curve for agile micro-corrections)
+    const deadZone = 0.08;
     const joyMag = Math.hypot(joyX, joyY);
     if (joyMag < deadZone) {
       joyX = 0;
@@ -864,22 +864,24 @@ export class SleighController {
 
     if (Math.abs(joyX) > deadZone) {
       const normalizedTurn = (Math.abs(joyX) - deadZone) / (1.0 - deadZone);
+      // Ergonomic sensitivity curve: smooth precision near center, agile full-turn at edge
+      const curvedTurn = Math.pow(Math.min(Math.max(normalizedTurn, 0), 1.0), 1.35);
       const sign = joyX < 0 ? 1.0 : -1.0; // Left is positive rotationY, right is negative
-      turnInput = sign * Math.min(Math.max(normalizedTurn, 0), 1.0);
+      turnInput = sign * curvedTurn;
     }
 
-    // Smooth second-order turning with natural rotational momentum
-    const targetTurnVel = turnInput * this.turnSpeed;
-    const turnResponsiveness = (turnInput !== 0.0) ? 5.2 : 4.0;
+    // Smooth responsive turning with natural rotational momentum
+    const targetTurnVel = turnInput * (this.isMobile ? this.turnSpeed * 1.15 : this.turnSpeed);
+    const turnResponsiveness = (turnInput !== 0.0) ? (this.isMobile ? 6.8 : 5.6) : 4.5;
     this.turnVelocity += (targetTurnVel - this.turnVelocity) * (1.0 - Math.exp(-turnResponsiveness * delta));
     this.rotationY += this.turnVelocity * delta;
 
-    this.smoothTurnInput += (turnInput - this.smoothTurnInput) * (1.0 - Math.exp(-5.0 * delta));
+    this.smoothTurnInput += (turnInput - this.smoothTurnInput) * (1.0 - Math.exp(-6.0 * delta));
     this.turnInput = this.smoothTurnInput;
 
     // Subtle sleigh banking roll: tilts naturally into turn with smooth spring recovery
     const targetBank = (this.turnVelocity / this.turnSpeed) * this.bankMax;
-    this.bank += (targetBank - this.bank) * (1.0 - Math.exp(-4.2 * delta));
+    this.bank += (targetBank - this.bank) * (1.0 - Math.exp(-5.0 * delta));
 
     // 2. Pure Manual Vertical Flight (No Auto Altitude Correction over Terrain)
     let localGroundH = 0.5;
@@ -907,10 +909,10 @@ export class SleighController {
     // Joystick Y controls altitude: pushing forward/up (-joyY) climbs, pulling back (+joyY) descends
     if (Math.abs(joyY) > deadZone) {
       const normY = (-joyY - Math.sign(-joyY) * deadZone) / (1.0 - deadZone);
-      vertCommand += normY;
+      const curvedY = Math.sign(normY) * Math.pow(Math.abs(normY), 1.25);
+      vertCommand += curvedY;
     }
     vertCommand = Math.max(-1.0, Math.min(1.0, vertCommand));
-
     // Smooth soft-damping only near upper ceiling and ground limit
     let descendFactor = 1.0;
     if (currentAltitude < minAlt + buffer) {
