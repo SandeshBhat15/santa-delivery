@@ -1141,8 +1141,8 @@ moonLight.shadow.camera.left = -d;
 moonLight.shadow.camera.right = d;
 moonLight.shadow.camera.top = d;
 moonLight.shadow.camera.bottom = -d;
-moonLight.shadow.normalBias = 0.02;
-moonLight.shadow.bias = -0.00015;
+moonLight.shadow.normalBias = 0.06;
+moonLight.shadow.bias = -0.0004;
 moonLight.shadow.radius = 1.6;
 scene.add(moonLight);
 scene.add(moonLight.target);
@@ -2651,7 +2651,7 @@ const modelUrl = '/assets/models/terrain.glb';
             mat.userData.snowShaderApplied = true;
             mat.roughness = 0.80;
             mat.metalness = 0.0;
-            mat.customProgramCacheKey = () => 'terrain_procedural_snow_unified_v10';
+            mat.customProgramCacheKey = () => 'terrain_procedural_snow_unified_v11';
 
             // Unified high-fidelity desktop snow shader across all devices
             mat.onBeforeCompile = (shader) => {
@@ -2668,8 +2668,9 @@ const modelUrl = '/assets/models/terrain.glb';
               shader.uniforms.uAuroraColor = terrainSnowUniforms.uAuroraColor;
               shader.uniforms.uAuroraDir = terrainSnowUniforms.uAuroraDir;
 
-              // 1. Vertex Shader: compute and pass world coordinates & world normal
+              // 1. Vertex Shader: compute and pass world coordinates & world normal with high precision
               shader.vertexShader = `
+                precision highp float;
                 varying vec3 vTerrainWorldPos;
                 varying vec3 vTerrainWorldNormal;
               ` + shader.vertexShader;
@@ -2688,8 +2689,9 @@ const modelUrl = '/assets/models/terrain.glb';
                 `
               );
 
-              // 2. Fragment Shader: Inject procedural noise functions
+              // 2. Fragment Shader: Inject procedural noise functions with high precision
               shader.fragmentShader = `
+                precision highp float;
                 varying vec3 vTerrainWorldPos;
                 varying vec3 vTerrainWorldNormal;
                 uniform float uTime;
@@ -2809,10 +2811,12 @@ const modelUrl = '/assets/models/terrain.glb';
 
                 // 5. Automatic Adaptive Village Warm Ground Illumination
                 vec2 lightUv = (sWPos.xz - uLightBoundsMin) / uLightBoundsSize;
-                vec2 clampedUv = clamp(lightUv, 0.0, 1.0);
-                vec4 villageLight = texture2D(uVillageLightMap, clampedUv);
+                vec4 villageLight = vec4(0.0);
+                if (lightUv.x >= 0.005 && lightUv.x <= 0.995 && lightUv.y >= 0.005 && lightUv.y <= 0.995) {
+                  villageLight = texture2D(uVillageLightMap, lightUv);
+                }
 
-                float inBounds = smoothstep(0.0, 0.02, lightUv.x) * (1.0 - smoothstep(0.98, 1.0, lightUv.x)) * smoothstep(0.0, 0.02, lightUv.y) * (1.0 - smoothstep(0.98, 1.0, lightUv.y));
+                float inBounds = smoothstep(0.005, 0.035, lightUv.x) * (1.0 - smoothstep(0.965, 0.995, lightUv.x)) * smoothstep(0.005, 0.035, lightUv.y) * (1.0 - smoothstep(0.965, 0.995, lightUv.y));
                 float slopeFactor = pow(clamp(sWNorm.y, 0.0, 1.0), 1.2);
                 float lightLum = max(villageLight.r, max(villageLight.g, villageLight.b));
                 float cleanCutoff = smoothstep(0.012, 0.035, lightLum);
@@ -2857,6 +2861,22 @@ const modelUrl = '/assets/models/terrain.glb';
                 vec3 worldDriftN = normalize(vec3(-(hX - hC) / eps * 0.38, 1.0, -(hZ - hC) / eps * 0.38));
                 vec3 viewDriftN = normalize((viewMatrix * vec4(worldDriftN, 0.0)).xyz);
                 normal = normalize(mix(normal, viewDriftN, sSnowCoverage * 0.50));
+                `
+              );
+
+              // Soften shadow camera frustum border to avoid hard square edge artifacts on terrain
+              shader.fragmentShader = shader.fragmentShader.replace(
+                'return mix( 1.0, shadow, shadowIntensity );',
+                `
+                #if NUM_DIR_LIGHT_SHADOWS > 0
+                  // Smoothly fade shadow to 1.0 near the edges of directional shadow frustum [0.0, 1.0]
+                  float edgeDistX = min(shadowCoord.x, 1.0 - shadowCoord.x);
+                  float edgeDistY = min(shadowCoord.y, 1.0 - shadowCoord.y);
+                  float borderDist = min(edgeDistX, edgeDistY);
+                  float borderFade = smoothstep(0.0, 0.08, borderDist);
+                  shadow = mix(1.0, shadow, borderFade);
+                #endif
+                return mix( 1.0, shadow, shadowIntensity );
                 `
               );
             };
