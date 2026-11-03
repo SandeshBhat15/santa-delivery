@@ -2743,11 +2743,18 @@ const modelUrl = '/assets/models/terrain.glb';
                   vec3 sWNorm = normalize(vTerrainWorldNormal);
                   vec2 sDriftUv = vec2(sWPos.x * 0.18 + sWPos.z * 0.11, sWPos.z * 0.18 - sWPos.x * 0.11);
                   float sMacroDrift = sin(sDriftUv.x * 1.5 + sin(sDriftUv.y * 1.0) * 0.8) * 0.5 + 0.5;
+                  #if defined(IS_MOBILE_TERRAIN)
+                  float sMicroRipples = 0.5;
+                  float sDriftCombined = sMacroDrift;
+                  float sSlope = clamp(sWNorm.y, 0.0, 1.0);
+                  float sSnowCoverage = smoothstep(0.12, 0.35, sSlope);
+                  #else
                   float sMicroRipples = snowFBM(sWPos.xz * 1.15);
                   float sDriftCombined = sMacroDrift * 0.42 + sMicroRipples * 0.58;
                   float sSlope = clamp(sWNorm.y, 0.0, 1.0);
                   float sSnowThreshold = 0.15 - sMicroRipples * 0.10;
                   float sSnowCoverage = smoothstep(sSnowThreshold, sSnowThreshold + 0.25, sSlope);
+                  #endif
                 `
               );
 
