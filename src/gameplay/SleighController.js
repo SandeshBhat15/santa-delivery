@@ -91,6 +91,22 @@ export class SleighController {
     // Follow camera offset & sensitivity (calibrated close third-person follow camera for mini rig)
     this.camDistance = isMobile ? 0.82 : 0.65;
     this.camHeight = isMobile ? 0.33 : 0.25;
+
+    // Santa Throw Animation State
+    this.santaRigNode = null;
+    this.isThrowing = false;
+    this.throwProgress = 0.0;
+    this.throwDuration = 0.42; // seconds for full wind-up, pitch, and recovery
+    this.throwTargetAngle = 0.0; // horizontal angle toward target house
+    this.sleighThrowRecoil = 0.0;
+
+    // Santa Throw Animation State
+    this.santaRigNode = null;
+    this.isThrowing = false;
+    this.throwProgress = 0.0;
+    this.throwDuration = 0.42; // seconds for full wind-up, pitch, and recovery
+    this.throwTargetAngle = 0.0; // horizontal angle toward target house
+    this.sleighThrowRecoil = 0.0;
     this.camTargetPos = new THREE.Vector3();
     this.camLookPos = new THREE.Vector3();
     this._currentCamLookPos = new THREE.Vector3();
@@ -247,6 +263,9 @@ export class SleighController {
     }
     if (santaRigNode) {
       sleighGroup.add(santaRigNode);
+      this.santaRigNode = santaRigNode;
+      this._origSantaRot = santaRigNode.rotation.clone();
+      this._origSantaPos = santaRigNode.position.clone();
     }
     masterGroup.add(sleighGroup);
     this.sleighMeshGroup = sleighGroup;
@@ -1005,10 +1024,64 @@ export class SleighController {
     const subtleRollMotion = Math.sin(this.animTime * 0.9) * 0.012;
     const subtlePitchMotion = Math.cos(this.animTime * 1.1) * 0.010;
 
+    // Procedural Santa Throw Animation (Wind-up, Forward Pitch, Recoil & Sleigh Bob)
+    let santaPitch = 0.0;
+    let santaYaw = 0.0;
+    let santaRoll = 0.0;
+    let santaPosY = 0.0;
+
+    if (this.isThrowing) {
+      this.throwProgress += delta / this.throwDuration;
+      const t = this.throwProgress;
+
+      if (t < 0.28) {
+        // Phase 1: Wind-up (0 -> 0.28). Lean back, raise up slightly, twist toward target house
+        const w = t / 0.28;
+        const easeWind = Math.sin(w * Math.PI * 0.5);
+        santaPitch = -0.32 * easeWind; // Lean back
+        santaYaw = this.throwTargetAngle * easeWind;
+        santaRoll = -0.12 * Math.sign(this.throwTargetAngle || 1) * easeWind;
+        santaPosY = 0.015 * easeWind;
+        this.sleighThrowRecoil = -0.012 * easeWind;
+      } else if (t < 0.65) {
+        // Phase 2: Forward Athletic Pitch / Release (0.28 -> 0.65)
+        const p = (t - 0.28) / (0.65 - 0.28);
+        const easePitch = Math.sin(p * Math.PI);
+        // Explosive forward throw thrust
+        santaPitch = THREE.MathUtils.lerp(-0.32, 0.48, Math.sin(p * Math.PI * 0.5));
+        santaYaw = this.throwTargetAngle * (1.0 - p * 0.4);
+        santaRoll = 0.15 * Math.sign(this.throwTargetAngle || 1) * easePitch;
+        santaPosY = THREE.MathUtils.lerp(0.015, -0.010, p);
+        this.sleighThrowRecoil = THREE.MathUtils.lerp(-0.012, 0.025, easePitch);
+      } else if (t < 1.0) {
+        // Phase 3: Smooth spring recovery back to reins (0.65 -> 1.0)
+        const r = (t - 0.65) / (1.0 - 0.65);
+        const easeRecov = 1.0 - Math.pow(r, 1.8);
+        santaPitch = 0.48 * easeRecov;
+        santaYaw = this.throwTargetAngle * 0.6 * easeRecov;
+        santaRoll = 0.0;
+        santaPosY = -0.010 * easeRecov;
+        this.sleighThrowRecoil = 0.025 * easeRecov;
+      } else {
+        this.isThrowing = false;
+        this.throwProgress = 0.0;
+        this.sleighThrowRecoil = 0.0;
+      }
+    }
+
+    if (this.santaRigNode && this._origSantaRot) {
+      this.santaRigNode.rotation.x = this._origSantaRot.x + santaPitch;
+      this.santaRigNode.rotation.y = this._origSantaRot.y + santaYaw;
+      this.santaRigNode.rotation.z = this._origSantaRot.z + santaRoll;
+      if (this._origSantaPos) {
+        this.santaRigNode.position.y = this._origSantaPos.y + santaPosY;
+      }
+    }
+
     if (this.sleighMeshGroup) {
       this.sleighMeshGroup.position.y = primaryBob + secondaryBob;
       this.sleighMeshGroup.rotation.z = subtleRollMotion;
-      this.sleighMeshGroup.rotation.x = subtlePitchMotion;
+      this.sleighMeshGroup.rotation.x = subtlePitchMotion + this.sleighThrowRecoil;
     }
 
     // 8. Update Fairy Lights & Sleigh Lanterns Twinkle Animation
@@ -1414,9 +1487,38 @@ export class SleighController {
     this.armHouseCollisionDetection(1500);
   }
 
+  triggerThrow(targetWorldPos) {
+    this.isThrowing = true;
+    this.throwProgress = 0.0;
+
+    if (targetWorldPos) {
+      // Calculate horizontal angle between Santa's heading and target
+      const forwardX = -Math.sin(this.rotationY);
+      const forwardZ = -Math.cos(this.rotationY);
+      const dx = targetWorldPos.x - this.position.x;
+      const dz = targetWorldPos.z - this.position.z;
+
+      // Angle of target relative to sleigh heading in sleigh local space
+      const angleForward = Math.atan2(forwardX, forwardZ);
+      const angleTarget = Math.atan2(dx, dz);
+      let diff = angleTarget - angleForward;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+
+      // Note: Model inside masterGroup is rotated by Math.PI around Y,
+      // so local yaw rotation is inverted to point at target!
+      // Clamp to natural athletic throw angle range [-70 deg, +70 deg]
+      const maxAngle = 1.22;
+      this.throwTargetAngle = -THREE.MathUtils.clamp(diff, -maxAngle, maxAngle);
+    } else {
+      this.throwTargetAngle = 0.0;
+    }
+  }
+
   getDropOrigin() {
-    // Returns world position under the sleigh for gift release
-    const p = new THREE.Vector3(0, -0.05, 0);
+    // Returns world position of Santa's upper body / throwing hand in flight
+    // Sleigh rig local coordinates: Santa sits at x: 0, y: 0.18, z: 0.05
+    const p = new THREE.Vector3(0.04, 0.16, 0.02);
     this.group.localToWorld(p);
     return p;
   }

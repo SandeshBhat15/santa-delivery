@@ -1089,7 +1089,12 @@ export class DeliverySystem {
     this.giftsRemaining--;
     this.attempts++;
 
-    // Spawn falling gift from sleigh
+    // Notify SleighController to perform athletic Santa throw toward target
+    const target = this.activeTarget;
+    if (this.sleighController && this.sleighController.triggerThrow) {
+      this.sleighController.triggerThrow(target ? target.worldPos : null);
+    }
+
     const startPos = this.sleighController.getDropOrigin();
     const giftColorPair = this.giftColors[Math.floor(Math.random() * this.giftColors.length)];
 
@@ -1120,14 +1125,10 @@ export class DeliverySystem {
     this.scene.add(giftGroup);
     soundManager.playDrop();
 
-    // Only the currently highlighted target can be scored. Range is the same
-    // simple proximity check the HUD uses, so READY TO DROP always means the
-    // next press will land.
-    const target = this.activeTarget;
+    // Check delivery proximity
     const rangePos = this.sleighController.position;
     const inRange = this._isInDeliveryRange(rangePos);
 
-    // Closer drops score slightly better, but any in-range drop delivers.
     let precision = 0;
     if (inRange) {
       const dist = rangePos.distanceTo(target.worldPos);
@@ -1138,15 +1139,26 @@ export class DeliverySystem {
     if (inRange) {
       targetPos = target.worldPos.clone();
     } else {
+      const fwd = new THREE.Vector3(
+        -Math.sin(this.sleighController.rotationY || 0),
+        0,
+        -Math.cos(this.sleighController.rotationY || 0)
+      );
+      const tossDist = 2.4;
       const groundY = this.chunkSystem?.getHeight
-        ? this.chunkSystem.getHeight(startPos.x, startPos.z)
+        ? this.chunkSystem.getHeight(startPos.x + fwd.x * tossDist, startPos.z + fwd.z * tossDist)
         : 0.5;
-      targetPos = new THREE.Vector3(startPos.x, groundY + 0.05, startPos.z);
+      targetPos = new THREE.Vector3(startPos.x + fwd.x * tossDist, groundY + 0.05, startPos.z + fwd.z * tossDist);
     }
 
     if (!inRange) {
       this.showBanner('GET CLOSER TO THE TARGET!', 'miss');
     }
+
+    // Dynamic throw speed and trajectory height
+    const throwDist = startPos.distanceTo(targetPos);
+    const dropSpeed = inRange ? Math.max(1.1, Math.min(2.0, 1.8 / Math.max(0.6, throwDist * 0.45))) : 1.35;
+    const peakHeight = inRange ? Math.min(1.4, 0.45 + throwDist * 0.28) : 0.65;
 
     this.activeGifts.push({
       mesh: giftGroup,
@@ -1155,12 +1167,13 @@ export class DeliverySystem {
       isSuccess: inRange,
       precision,
       targetPos,
+      peakHeight,
       progress: 0.0,
-      dropSpeed: 1.6, // Drop trajectory speed
+      dropSpeed,
       rotVel: new THREE.Vector3(
-        (Math.random() - 0.5) * 6,
-        (Math.random() - 0.5) * 8,
-        (Math.random() - 0.5) * 6
+        (Math.random() - 0.5) * 12,
+        (Math.random() - 0.5) * 14,
+        (Math.random() - 0.5) * 10
       )
     });
 
