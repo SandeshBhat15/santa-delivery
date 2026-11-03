@@ -467,12 +467,7 @@ export class BatchedChunkSystem {
       const instMesh = new THREE.InstancedMesh(def.geometry, def.material, maxInstances);
       instMesh.name = `Global_${def.name}`;
 
-      if (this.isMobile) {
-        const isTreeOrHouse = (def.category === 'house' || def.category === 'foliage');
-        instMesh.castShadow = fullShadows ? def.castShadow : (def.castShadow && !isTreeOrHouse);
-      } else {
-        instMesh.castShadow = def.castShadow;
-      }
+      instMesh.castShadow = def.castShadow;
       instMesh.receiveShadow = def.receiveShadow;
       instMesh.frustumCulled = false;
       instMesh.count = 0;

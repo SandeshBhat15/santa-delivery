@@ -2647,7 +2647,7 @@ const modelUrl = '/assets/models/terrain.glb';
             mat.userData.snowShaderApplied = true;
             mat.roughness = 0.80;
             mat.metalness = 0.0;
-            mat.customProgramCacheKey = () => 'terrain_procedural_snow_v3';
+            mat.customProgramCacheKey = () => IS_MOBILE ? 'terrain_procedural_snow_mob_v5' : 'terrain_procedural_snow_desk_v5';
 
             if (IS_MOBILE) {
               mat.defines = mat.defines || {};
@@ -2744,10 +2744,12 @@ const modelUrl = '/assets/models/terrain.glb';
                   vec2 sDriftUv = vec2(sWPos.x * 0.18 + sWPos.z * 0.11, sWPos.z * 0.18 - sWPos.x * 0.11);
                   float sMacroDrift = sin(sDriftUv.x * 1.5 + sin(sDriftUv.y * 1.0) * 0.8) * 0.5 + 0.5;
                   #if defined(IS_MOBILE_TERRAIN)
-                  float sMicroRipples = 0.5;
-                  float sDriftCombined = sMacroDrift;
+                  // Mobile: single-pass procedural noise restores organic ripples, crevice AO & powder layering
+                  float sMicroRipples = snowNoise(sWPos.xz * 1.15);
+                  float sDriftCombined = sMacroDrift * 0.42 + sMicroRipples * 0.58;
                   float sSlope = clamp(sWNorm.y, 0.0, 1.0);
-                  float sSnowCoverage = smoothstep(0.12, 0.35, sSlope);
+                  float sSnowThreshold = 0.15 - sMicroRipples * 0.10;
+                  float sSnowCoverage = smoothstep(sSnowThreshold, sSnowThreshold + 0.25, sSlope);
                   #else
                   float sMicroRipples = snowFBM(sWPos.xz * 1.15);
                   float sDriftCombined = sMacroDrift * 0.42 + sMicroRipples * 0.58;
@@ -2797,7 +2799,9 @@ const modelUrl = '/assets/models/terrain.glb';
                 float specAngle = clamp(dot(sWNorm, halfVec), 0.0, 1.0);
                 float moonSheen = pow(specAngle, 16.0) * (0.28 + 0.72 * sMacroDrift);
                 #if defined(IS_MOBILE_TERRAIN)
-                float glitter = specAngle * 0.45;
+                // Mobile: fast single-noise crystalline sparkle catching moonlight
+                float glitterBase = clamp(snowNoise(sWPos.xz * 36.0) * specAngle, 0.0, 1.0);
+                float glitter = pow(glitterBase, 4.0) * 1.4;
                 #else
                 float glitter1 = snowNoise(sWPos.xz * 32.0 + sin(uTime * 0.4) * 0.03);
                 float glitter2 = snowNoise(sWPos.xz * 68.0 - cos(uTime * 0.3) * 0.03);
@@ -2842,20 +2846,26 @@ const modelUrl = '/assets/models/terrain.glb';
                 // flatten every tree/house shadow out. Sampling the same shadow map here and
                 // attenuating the glows restores the contrast the moon key is supposed to give.
                 float terrainShadow = 1.0;
-                #if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0 && !defined( IS_MOBILE_TERRAIN )
+                #if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
                 {
                   vec4 shadowCoord = vDirectionalShadowCoord[ 0 ];
                   shadowCoord.xyz /= shadowCoord.w;
                   shadowCoord.z += directionalLightShadows[ 0 ].shadowBias;
-                  vec2 shadowTexel = 1.0 / directionalLightShadows[ 0 ].shadowMapSize;
-                  // 4-tap cross PCF (4 extra fetches) keeps the shadow edge soft without paying
-                  // for the full 9-tap PCF_SOFT kernel twice on every terrain pixel
-                  float lit = step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy ) ) );
-                  lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy + vec2( shadowTexel.x, 0.0 ) ) ) );
-                  lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy - vec2( shadowTexel.x, 0.0 ) ) ) );
-                  lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy + vec2( 0.0, shadowTexel.y ) ) ) );
-                  lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy - vec2( 0.0, shadowTexel.y ) ) ) );
-                  terrainShadow = lit * 0.2;
+                  #if defined( IS_MOBILE_TERRAIN )
+                    // Mobile: fast 1-tap depth test renders crisp tree and building shadows with zero PCF overhead
+                    float lit = step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy ) ) );
+                    terrainShadow = lit;
+                  #else
+                    vec2 shadowTexel = 1.0 / directionalLightShadows[ 0 ].shadowMapSize;
+                    // 4-tap cross PCF (4 extra fetches) keeps the shadow edge soft without paying
+                    // for the full 9-tap PCF_SOFT kernel twice on every terrain pixel
+                    float lit = step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy ) ) );
+                    lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy + vec2( shadowTexel.x, 0.0 ) ) ) );
+                    lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy - vec2( shadowTexel.x, 0.0 ) ) ) );
+                    lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy + vec2( 0.0, shadowTexel.y ) ) ) );
+                    lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy - vec2( 0.0, shadowTexel.y ) ) ) );
+                    terrainShadow = lit * 0.2;
+                  #endif
                 }
                 #endif
                 float glowShadow = mix( 1.0, terrainShadow, 0.85 );
@@ -3249,8 +3259,12 @@ function animate(currentTime) {
   window._frameShadowTriangles = 0;
 
    // On mobile, render shadow map every 2nd frame to cut secondary depth draw load in half
-   if (IS_MOBILE && renderer && renderer.shadowMap.enabled && !renderer.shadowMap.autoUpdate) {
-     renderer.shadowMap.needsUpdate = (frameCount % 2 === 0);
+   if (IS_MOBILE && renderer && renderer.shadowMap.enabled) {
+     const shouldUpdateShadow = (frameCount % 2 === 0);
+     renderer.shadowMap.needsUpdate = shouldUpdateShadow;
+     if (moonLight && moonLight.shadow) {
+       moonLight.shadow.needsUpdate = shouldUpdateShadow;
+     }
    }
 
    // Reset renderer.info once per frame before the composer/render passes
