@@ -744,12 +744,14 @@ skyDomeMesh.renderOrder = -20;
 skyGroup.add(skyDomeMesh);
 
 // --- Distant Horizon Silhouette Mountains Ring ---
-// Majestic Alpine Peaks (96 segments, ~192 triangles, 1 draw call)
+// Majestic Alpine Peaks with Deep Downward Skirt & Base Floor (96 segments, 1 draw call)
 // Attached to skyGroup so it always centers around camera without translation jitter.
 const MOUNTAIN_RADIUS = 450;
 const MOUNTAIN_SEGS = 96;
 const mtnPos = [];
 const mtnIndices = [];
+
+const bottomY = -350.0; // Deep downward skirt to completely conceal lower sky dome / horizon gap
 
 for (let i = 0; i <= MOUNTAIN_SEGS; i++) {
   const theta = (i / MOUNTAIN_SEGS) * Math.PI * 2;
@@ -763,16 +765,16 @@ for (let i = 0; i <= MOUNTAIN_SEGS; i++) {
   const n4 = Math.sin(theta * 37.0) * 0.08;
   const ridge = Math.max(0.05, n1 * 0.55 + n2 + n3 + n4);
   
-  const bottomY = -25.0;
   // Towering alpine heights: peaks rise 70m to 140m into the sky above the horizon mist
-  const peakY = bottomY + 35.0 + Math.pow(ridge, 1.25) * 105.0;
+  const peakY = 10.0 + Math.pow(ridge, 1.25) * 105.0;
   
-  // Bottom vertex
+  // Bottom skirt vertex (y = -350m)
   mtnPos.push(cosT * MOUNTAIN_RADIUS, bottomY, sinT * MOUNTAIN_RADIUS);
   // Top peak vertex
   mtnPos.push(cosT * MOUNTAIN_RADIUS, peakY, sinT * MOUNTAIN_RADIUS);
 }
 
+// Inward facing quads for the mountain walls and deep skirt
 for (let i = 0; i < MOUNTAIN_SEGS; i++) {
   const b1 = i * 2;
   const t1 = i * 2 + 1;
@@ -784,11 +786,22 @@ for (let i = 0; i < MOUNTAIN_SEGS; i++) {
   mtnIndices.push(b2, t2, t1);
 }
 
+// Bottom floor center cap vertex at index (MOUNTAIN_SEGS + 1) * 2
+const centerFloorIdx = (MOUNTAIN_SEGS + 1) * 2;
+mtnPos.push(0, bottomY, 0);
+
+// Inward-facing floor disc sealing the entire bottom
+for (let i = 0; i < MOUNTAIN_SEGS; i++) {
+  const b1 = i * 2;
+  const b2 = (i + 1) * 2;
+  mtnIndices.push(centerFloorIdx, b1, b2);
+}
+
 const mountainGeo = new THREE.BufferGeometry();
 mountainGeo.setAttribute('position', new THREE.Float32BufferAttribute(mtnPos, 3));
 mountainGeo.setIndex(mtnIndices);
 
-// Deep nocturnal navy-indigo silhouette matching horizon haze (0x0a1424)
+// Deep nocturnal navy-indigo silhouette matching horizon haze (0x091220)
 const mountainMat = new THREE.MeshBasicMaterial({
   color: 0x091220,
   side: THREE.DoubleSide,
