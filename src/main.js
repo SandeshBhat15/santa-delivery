@@ -2651,7 +2651,7 @@ const modelUrl = '/assets/models/terrain.glb';
             mat.userData.snowShaderApplied = true;
             mat.roughness = 0.80;
             mat.metalness = 0.0;
-            mat.customProgramCacheKey = () => 'terrain_procedural_snow_unified_v7';
+            mat.customProgramCacheKey = () => 'terrain_procedural_snow_unified_v8';
 
             // Unified high-fidelity desktop snow shader across all devices
             mat.onBeforeCompile = (shader) => {
@@ -2839,15 +2839,19 @@ const modelUrl = '/assets/models/terrain.glb';
                   vec4 shadowCoord = vDirectionalShadowCoord[ 0 ];
                   shadowCoord.xyz /= shadowCoord.w;
                   shadowCoord.z += directionalLightShadows[ 0 ].shadowBias;
-                  vec2 shadowTexel = 1.0 / directionalLightShadows[ 0 ].shadowMapSize;
-                  // 4-tap cross PCF keeps shadow edges soft and anti-aliased on both desktop and mobile,
-                  // eliminating 1-tap sub-pixel crawling and temporal shadow aliasing completely
-                  float lit = step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy ) ) );
-                  lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy + vec2( shadowTexel.x, 0.0 ) ) ) );
-                  lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy - vec2( shadowTexel.x, 0.0 ) ) ) );
-                  lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy + vec2( 0.0, shadowTexel.y ) ) ) );
-                  lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy - vec2( 0.0, shadowTexel.y ) ) ) );
-                  terrainShadow = lit * 0.2;
+                  // Check if inside shadow camera frustum [0, 1] to prevent edge clamping artifacts
+                  bool inFrustum = shadowCoord.x >= 0.0 && shadowCoord.x <= 1.0 &&
+                                   shadowCoord.y >= 0.0 && shadowCoord.y <= 1.0 &&
+                                   shadowCoord.z <= 1.0;
+                  if (inFrustum) {
+                    vec2 shadowTexel = 1.0 / directionalLightShadows[ 0 ].shadowMapSize;
+                    float lit = step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy ) ) );
+                    lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy + vec2( shadowTexel.x, 0.0 ) ) ) );
+                    lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy - vec2( shadowTexel.x, 0.0 ) ) ) );
+                    lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy + vec2( 0.0, shadowTexel.y ) ) ) );
+                    lit += step( shadowCoord.z, unpackRGBAToDepth( texture2D( directionalShadowMap[ 0 ], shadowCoord.xy - vec2( 0.0, shadowTexel.y ) ) ) );
+                    terrainShadow = lit * 0.2;
+                  }
                 }
                 #endif
                 float glowShadow = mix( 1.0, terrainShadow, 0.85 );
