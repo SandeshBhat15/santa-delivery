@@ -558,7 +558,7 @@ export class DeliverySystem {
       </div>
 
       <div id="mobile-controls-wrapper">
-        <!-- Bottom-Left: Floating Virtual Flight Joystick (X: Turn/Roll, Y: Altitude/Climb/Dive) -->
+        <!-- Free-floating Virtual Flight Joystick -->
         <div id="joystick-zone">
           <div id="joystick-base">
             <div id="joystick-thumb"></div>
@@ -566,19 +566,9 @@ export class DeliverySystem {
           <div class="control-label">FLIGHT</div>
         </div>
 
-        <!-- Bottom-Right: Clearly labeled guide and drop actions -->
+        <!-- Proximity delivery status badge -->
         <div id="drop-zone">
-          <button id="btn-guide-wind" class="btn-guide-small" type="button" title="Summon Guiding Wind (G)">
-            <span class="guide-icon">🌬️</span>
-            <span class="guide-label">GUIDE</span>
-            <span class="guide-key" aria-hidden="true">G</span>
-          </button>
           <div id="drop-status" class="drop-status far" aria-live="polite">GET CLOSER</div>
-          <button id="btn-drop-gift" class="btn-drop-large" type="button">
-            <span class="drop-icon">🎁</span>
-            <span class="drop-label">DROP GIFT</span>
-            <span class="drop-key" aria-hidden="true">E</span>
-          </button>
         </div>
       </div>
 
@@ -620,7 +610,7 @@ export class DeliverySystem {
     this._progressPips = Array.from(hud.querySelectorAll('.progress-pip'));
 
     this._setupVirtualJoystick();
-    this._setupDropButton();
+    this._setupTapToDrop();
     this._setupGuideWind();
 
     const replayBtn = document.getElementById('btn-replay');
@@ -644,19 +634,15 @@ export class DeliverySystem {
     let originY = 0;
     const maxRadius = 46; // Max pixel deflection from dynamic touch center
 
-    // Default idle coordinates (bottom-middle)
-    const setBasePosition = (px, py, isFixedBottom = false) => {
-      if (isFixedBottom) {
-        base.style.left = '50%';
-        base.style.top = 'auto';
-        base.style.bottom = '40px';
-        base.style.transform = 'translate(-50%, 0)';
-      } else {
-        base.style.left = `${px}px`;
-        base.style.top = `${py}px`;
-        base.style.bottom = 'auto';
-        base.style.transform = 'translate(-50%, -50%)';
-      }
+    // Expose active joystick pointer id so tap-to-drop ignores flight touches
+    this._joystickPointerId = null;
+
+    // Set base position: permanently stays at (px, py) without snapping back
+    const setBasePosition = (px, py) => {
+      base.style.left = `${px}px`;
+      base.style.top = `${py}px`;
+      base.style.bottom = 'auto';
+      base.style.transform = 'translate(-50%, -50%)';
     };
 
     const updateStick = (clientX, clientY) => {
@@ -679,9 +665,10 @@ export class DeliverySystem {
 
     const resetStick = () => {
       activePointerId = null;
+      this._joystickPointerId = null;
       thumb.style.transform = 'translate(-50%, -50%)';
       base.classList.remove('active');
-      setBasePosition(0, 0, true);
+      // Free floating: base stays right where it was placed, only stick resets to (0,0)
       this.sleighController.setJoystickInput(0, 0);
     };
 
@@ -689,13 +676,14 @@ export class DeliverySystem {
       e.preventDefault();
       e.stopPropagation();
       activePointerId = e.pointerId;
+      this._joystickPointerId = e.pointerId;
       try {
         zone.setPointerCapture(e.pointerId);
       } catch (_) {}
 
       originX = e.clientX;
       originY = e.clientY;
-      setBasePosition(originX, originY, false);
+      setBasePosition(originX, originY);
       base.classList.add('active');
       updateStick(e.clientX, e.clientY);
     }, { passive: false });
@@ -721,6 +709,58 @@ export class DeliverySystem {
 
     zone.addEventListener('pointerup', handlePointerEnd);
     zone.addEventListener('pointercancel', handlePointerEnd);
+  }
+
+  _setupTapToDrop() {
+    // Multi-touch tap anywhere on screen outside active joystick touch drops a gift
+    const touchMap = new Map();
+    let lastDropTriggerTime = 0;
+
+    const handlePointerDown = (e) => {
+      // Ignore mouse right click
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      // Ignore if clicking on game over / restart button
+      if (e.target && (e.target.closest('#results-overlay') || e.target.closest('#btn-replay') || e.target.closest('#quality-toggle'))) return;
+      // Ignore pointer if it is currently driving the joystick
+      if (this._joystickPointerId !== null && e.pointerId === this._joystickPointerId) return;
+
+      touchMap.set(e.pointerId, {
+        startX: e.clientX,
+        startY: e.clientY,
+        startTime: performance.now()
+      });
+    };
+
+    const handlePointerUp = (e) => {
+      const data = touchMap.get(e.pointerId);
+      if (!data) return;
+      touchMap.delete(e.pointerId);
+
+      // Do not trigger if this was the joystick pointer
+      if (this._joystickPointerId !== null && e.pointerId === this._joystickPointerId) return;
+
+      const dx = e.clientX - data.startX;
+      const dy = e.clientY - data.startY;
+      const dist = Math.hypot(dx, dy);
+      const duration = performance.now() - data.startTime;
+
+      // Clean tap detection: < 14px movement and < 350ms touch duration
+      if (dist < 14 && duration < 350) {
+        const now = performance.now();
+        if (now - lastDropTriggerTime > 220) {
+          lastDropTriggerTime = now;
+          this.triggerDelivery();
+        }
+      }
+    };
+
+    const handlePointerCancel = (e) => {
+      touchMap.delete(e.pointerId);
+    };
+
+    window.addEventListener('pointerdown', handlePointerDown, { passive: true });
+    window.addEventListener('pointerup', handlePointerUp, { passive: true });
+    window.addEventListener('pointercancel', handlePointerCancel, { passive: true });
   }
 
   _setupAltitudeControl() {
@@ -787,23 +827,7 @@ export class DeliverySystem {
   }
 
   _setupDropButton() {
-    const dropBtn = document.getElementById('btn-drop-gift');
-    if (!dropBtn) return;
-
-    let lastTrigger = 0;
-    const trigger = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      // pointerdown gives instant feedback on touch; click covers keyboard
-      // activation. The guard keeps a single press from dropping two gifts.
-      const now = performance.now();
-      if (now - lastTrigger < 250) return;
-      lastTrigger = now;
-      this.triggerDelivery();
-    };
-
-    dropBtn.addEventListener('pointerdown', trigger);
-    dropBtn.addEventListener('click', trigger);
+    // Replaced by _setupTapToDrop on mobile; keyboard E/Space handled in SleighController
   }
 
   _setupGuideWind() {
