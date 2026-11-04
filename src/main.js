@@ -15,6 +15,7 @@ import { QualityPanel } from './debug/QualityPanel.js';
 import { MobileOptimizer } from './mobile/MobileOptimizer.js';
 import { runMobileWarmup } from './mobile/MobileWarmup.js';
 import { BatchedChunkSystem, USE_LEGACY } from './world/BatchedChunkSystem.js';
+import { createBakedSky } from './sky/BakedSky.js';
 
 // --- DOM Elements ---
 const container = document.getElementById('app');
@@ -696,7 +697,11 @@ const WINTER_SKY_AND_AURORA_GLSL = `
   }
 `;
 
-const skyDomeMat = new THREE.ShaderMaterial({
+const useBakedSky = IS_MOBILE && (new URLSearchParams(window.location.search).get('sky') !== 'direct');
+const bakedSky = useBakedSky ? createBakedSky(renderer, WINTER_SKY_AND_AURORA_GLSL, skyUniforms) : null;
+window.bakedSky = bakedSky;
+
+const skyDomeMat = bakedSky ? bakedSky.material : new THREE.ShaderMaterial({
   uniforms: {
     uTime: skyUniforms.uTime,
     uCameraPos: skyUniforms.uCameraPos,
@@ -2943,6 +2948,9 @@ const modelUrl = '/assets/models/terrain.glb';
     }
 
     // Pre-warm GPU textures, shaders, and chunk slots during the loading screen.
+    if (bakedSky) {
+      bakedSky.warm(skyUniforms.uTime.value, camera.position);
+    }
     runMobileWarmup({
       renderer,
       scene,
@@ -3116,6 +3124,9 @@ function animate(currentTime) {
     skyGroup.position.copy(camera.position);
     skyUniforms.uTime.value = elapsedTime;
     skyUniforms.uCameraPos.value.copy(camera.position);
+    if (bakedSky) {
+      bakedSky.update(elapsedTime, camera.position);
+    }
   }
 
   // Update procedural terrain snow shader time
