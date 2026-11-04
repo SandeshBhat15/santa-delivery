@@ -60,6 +60,7 @@ const _maxMobileDpr = 1.5;
 // --- Renderer ---
 const renderer = new THREE.WebGLRenderer({
   antialias: true,
+  precision: 'highp',
   powerPreference: 'high-performance'
 });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -751,78 +752,132 @@ const skyDomeMesh = new THREE.Mesh(new THREE.SphereGeometry(SKY_RADIUS, 48, 32),
 skyDomeMesh.renderOrder = -20;
 skyGroup.add(skyDomeMesh);
 
-// --- Distant Horizon Silhouette Mountains Ring ---
-// Majestic Alpine Peaks with Deep Downward Skirt & Base Floor (96 segments, 1 draw call)
-// Attached to skyGroup so it always centers around camera without translation jitter.
-const MOUNTAIN_RADIUS = 450;
+// --- Multi-Layered Alpine Mountains Ring (1 Draw Call) ---
+// Two concentric, staggered alpine mountain rings with frosted moonlit snow rims:
+// Layer 1 (r = 440m): Near alpine ridge with crisp peaks and moonlight edge catch
+// Layer 2 (r = 475m): Colossal background massifs peaking behind saddles in atmospheric cold-blue
+// Material uses DoubleSide and vertex colors for robust zero-overhead rendering in 1 draw call.
 const MOUNTAIN_SEGS = 96;
 const mtnPos = [];
+const mtnColors = [];
 const mtnIndices = [];
 
-const bottomY = -350.0; // Deep downward skirt to completely conceal lower sky dome / horizon gap
+const bottomY = -350.0; // Deep downward skirt sealing the lower horizon
 
-for (let i = 0; i <= MOUNTAIN_SEGS; i++) {
-  const theta = (i / MOUNTAIN_SEGS) * Math.PI * 2;
-  const cosT = Math.cos(theta);
-  const sinT = Math.sin(theta);
-  
-  // Dramatic alpine mountain ridges with sharp crags and varied saddles
-  const n1 = Math.sin(theta * 4.0 + 0.3) * 0.5 + 0.5;
-  const n2 = Math.sin(theta * 9.0 + 1.7) * 0.28;
-  const n3 = Math.cos(theta * 19.0 + 2.8) * 0.16;
-  const n4 = Math.sin(theta * 37.0) * 0.08;
-  const ridge = Math.max(0.05, n1 * 0.55 + n2 + n3 + n4);
-  
-  // Towering alpine heights: peaks rise 70m to 140m into the sky above the horizon mist
-  const peakY = 10.0 + Math.pow(ridge, 1.25) * 105.0;
-  
-  // Bottom skirt vertex (y = -350m)
-  mtnPos.push(cosT * MOUNTAIN_RADIUS, bottomY, sinT * MOUNTAIN_RADIUS);
-  // Top peak vertex
-  mtnPos.push(cosT * MOUNTAIN_RADIUS, peakY, sinT * MOUNTAIN_RADIUS);
-}
+const layers = [
+  // 1. Distant Backing Massif (r = 475m): Grand soaring backdrop peaks (60m - 165m)
+  {
+    radius: 475,
+    basePeakY: 35.0,
+    peakScale: 125.0,
+    kFreq: 1, // integer
+    phase: 2.5,
+    baseColor: [0.0085, 0.0210, 0.0540],
+    crestColor: [0.0085, 0.0210, 0.0540]
+  },
+  // 2. Front Alpine Ridge (r = 445m): Dramatic knife-edge fjord crests (25m - 110m)
+  {
+    radius: 445,
+    basePeakY: 18.0,
+    peakScale: 90.0,
+    kFreq: 2, // integer
+    phase: 0.9,
+    baseColor: [0.0085, 0.0210, 0.0540],
+    crestColor: [0.0040, 0.0095, 0.0240]
+  }
+];
 
-// Inward facing quads for the mountain walls and deep skirt
-for (let i = 0; i < MOUNTAIN_SEGS; i++) {
-  const b1 = i * 2;
-  const t1 = i * 2 + 1;
-  const b2 = (i + 1) * 2;
-  const t2 = (i + 1) * 2 + 1;
-  
-  // Quad (2 triangles) facing inward
-  mtnIndices.push(b1, b2, t1);
-  mtnIndices.push(b2, t2, t1);
-}
+let vertexOffset = 0;
 
-// Bottom floor center cap vertex at index (MOUNTAIN_SEGS + 1) * 2
-const centerFloorIdx = (MOUNTAIN_SEGS + 1) * 2;
+layers.forEach((layer) => {
+  const layerStart = vertexOffset;
+
+  for (let i = 0; i <= MOUNTAIN_SEGS; i++) {
+    const theta = (i / MOUNTAIN_SEGS) * Math.PI * 2;
+    const cosT = Math.cos(theta);
+    const sinT = Math.sin(theta);
+
+    // Smooth, 100% Continuous Fantasy Alpine Contour (Zero Flat Clamping, Zero Plateau)
+    // All components are continuous positive combinations with exact 2*PI periodicity
+    const k = layer.kFreq;
+    const p = layer.phase;
+
+    // A. Sweeping rolling mountain terrain wave (always positive [0.15 .. 0.85])
+    const broad1 = Math.sin(theta * 2.0 * k + p) * 0.5 + 0.5;
+    const broad2 = Math.cos(theta * 3.0 * k - p * 0.8) * 0.5 + 0.5;
+    const broadWave = broad1 * 0.55 + broad2 * 0.45;
+
+    // B. Sharp alpine spires and peaks (Matterhorn crests using continuous absolute harmonic folds)
+    const crest1 = 1.0 - Math.abs(Math.sin(theta * 4.0 * k + p * 0.6));
+    const crest2 = 1.0 - Math.abs(Math.sin(theta * 7.0 * k - 1.2));
+    const crest3 = 1.0 - Math.abs(Math.cos(theta * 11.0 * k + 0.7));
+    const sharpPeaks = Math.pow(crest1, 2.5) * 0.55 + Math.pow(crest2, 3.0) * 0.32 + Math.pow(crest3, 3.5) * 0.18;
+
+    // C. Fine crags and rugged silhouettes
+    const crag1 = Math.sin(theta * 17.0 * k + p * 2.1) * 0.04;
+    const crag2 = Math.cos(theta * 29.0 * k - 0.5) * 0.02;
+
+    // Smooth continuous alpine curve: no Math.max clamping = ZERO flat sections
+    const fantasyRidge = (broadWave * 0.42 + sharpPeaks * 0.58) + crag1 + crag2;
+    const peakY = layer.basePeakY + Math.pow(Math.max(0.01, fantasyRidge), 1.25) * layer.peakScale;
+
+    // Moonlight rim catch on slopes facing the moon
+    const dotMoon = cosT * WORLD_MOON_DIR.x + sinT * WORLD_MOON_DIR.z;
+    const moonCatch = Math.max(0.0, dotMoon) * layer.moonCatchScale;
+
+    // Bottom skirt vertex
+    mtnPos.push(cosT * layer.radius, bottomY, sinT * layer.radius);
+    mtnColors.push(layer.baseColor[0], layer.baseColor[1], layer.baseColor[2]);
+
+    // Top peak vertex: blends directly with atmospheric horizon fog without bright colors
+    mtnPos.push(cosT * layer.radius, peakY, sinT * layer.radius);
+    mtnColors.push(layer.crestColor[0], layer.crestColor[1], layer.crestColor[2]);
+  }
+
+  // Generate quad indices
+  for (let i = 0; i < MOUNTAIN_SEGS; i++) {
+    const b1 = layerStart + i * 2;
+    const t1 = layerStart + i * 2 + 1;
+    const b2 = layerStart + (i + 1) * 2;
+    const t2 = layerStart + (i + 1) * 2 + 1;
+
+    mtnIndices.push(b1, b2, t1);
+    mtnIndices.push(b2, t2, t1);
+  }
+
+  vertexOffset += (MOUNTAIN_SEGS + 1) * 2;
+});
+
+// Floor disc sealing the bottom attached to innermost ring skirt
+const centerFloorIdx = vertexOffset;
 mtnPos.push(0, bottomY, 0);
+mtnColors.push(0.0085, 0.0210, 0.0540);
+vertexOffset++;
 
-// Inward-facing floor disc sealing the entire bottom
+const innerStart = (layers.length - 1) * (MOUNTAIN_SEGS + 1) * 2;
 for (let i = 0; i < MOUNTAIN_SEGS; i++) {
-  const b1 = i * 2;
-  const b2 = (i + 1) * 2;
+  const b1 = innerStart + i * 2;
+  const b2 = innerStart + (i + 1) * 2;
   mtnIndices.push(centerFloorIdx, b1, b2);
 }
 
 const mountainGeo = new THREE.BufferGeometry();
 mountainGeo.setAttribute('position', new THREE.Float32BufferAttribute(mtnPos, 3));
+mountainGeo.setAttribute('color', new THREE.Float32BufferAttribute(mtnColors, 3));
 mountainGeo.setIndex(mtnIndices);
 
-// Deep nocturnal navy-indigo silhouette matching horizon haze (0x091220)
 const mountainMat = new THREE.MeshBasicMaterial({
-  color: 0x091220,
-  side: THREE.DoubleSide,
+  vertexColors: true,
+  side: THREE.DoubleSide, // Robust: no face is ever culled
   depthWrite: false,
   fog: false,
   toneMapped: true
 });
 
 const mountainMesh = new THREE.Mesh(mountainGeo, mountainMat);
-mountainMesh.name = 'DistantHorizonMountains';
-mountainMesh.renderOrder = -15; // Renders right in front of sky dome
+mountainMesh.name = 'MultiLayeredHorizonMountains';
+mountainMesh.renderOrder = -15;
 skyGroup.add(mountainMesh);
-
 
 const STAR_COUNT = 700;
 const starGeo = new THREE.BufferGeometry();

@@ -30,18 +30,19 @@ export class SleighController {
     this.speed = 1.8;
 
     // Movement & Non-Linear Aerodynamics Parameters (Smooth, natural, magical flight)
-    this.baseCruiseSpeed = 2.5;   // m/s: fast, engaging arcade flight cruise
-    this.minSpeed        = 1.4;   // m/s: lowest speed during steep climbs
-    this.maxSpeed        = 4.6;   // m/s: top speed during steep dives & boost surges
-    this.boostSpeed      = 4.4;   // m/s: speed surge when flying through golden boost rings
-    this.boostTimer      = 0.0;   // remaining boost duration (seconds)
-    this.accelRate       = 4.2;   // fast, punchy acceleration surge
-    this.decelRate       = 2.2;   // natural drag deceleration
-    this.turnSpeed       = 1.75;  // agile, responsive turning rate
-    this.turnVelocity    = 0.0;   // smoothed rotational velocity for natural yaw inertia
+    // Mobile player movement is tuned gentler and more controllable
+    this.baseCruiseSpeed = this.isMobile ? 1.85 : 2.5;
+    this.minSpeed        = this.isMobile ? 1.15 : 1.4;
+    this.maxSpeed        = this.isMobile ? 3.40 : 4.6;
+    this.boostSpeed      = this.isMobile ? 3.20 : 4.4;
+    this.boostTimer      = 0.0;
+    this.accelRate       = this.isMobile ? 3.2 : 4.2;
+    this.decelRate       = this.isMobile ? 2.0 : 2.2;
+    this.turnSpeed       = this.isMobile ? 1.45 : 1.75;
+    this.turnVelocity    = 0.0;
     this.smoothTurnInput = 0.0;
-    this.bankMax         = 0.42;  // stylish, majestic sleigh banking (radians)
-    this.climbSpeed      = 3.2;
+    this.bankMax         = 0.42;
+    this.climbSpeed      = this.isMobile ? 2.5 : 3.2;
 
     // Controls input state (pure flight: no boost)
     this.inputs = {
@@ -898,7 +899,7 @@ export class SleighController {
     }
 
     // Smooth responsive turning with natural rotational momentum
-    const targetTurnVel = turnInput * (this.isMobile ? this.turnSpeed * 1.15 : this.turnSpeed);
+    const targetTurnVel = turnInput * this.turnSpeed;
     const turnResponsiveness = (turnInput !== 0.0) ? (this.isMobile ? 6.8 : 5.6) : 4.5;
     this.turnVelocity += (targetTurnVel - this.turnVelocity) * (1.0 - Math.exp(-turnResponsiveness * delta));
     this.rotationY += this.turnVelocity * delta;

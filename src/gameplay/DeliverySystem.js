@@ -114,35 +114,35 @@ export class DeliverySystem {
     // Inner glowing core diamond octahedron
     this._starCoreGeo = new THREE.OctahedronGeometry(0.052, 1);
 
-    // Radiant, self-illuminating golden star material (immune to dark night fog blackout)
+    // Restrained, crisp golden star material with subtle bloom
     this._starMat = new THREE.MeshStandardMaterial({
-      color: 0xffe680,
-      emissive: 0xffa500,
-      emissiveIntensity: 1.85,
+      color: 0xffdf66,
+      emissive: 0xcc8800,
+      emissiveIntensity: 0.65,
       metalness: 0.85,
-      roughness: 0.15,
+      roughness: 0.25,
       fog: false,
-      toneMapped: false
+      toneMapped: true
     });
 
-    // Brilliant diamond star core material with warm core glow
+    // Clean diamond star core (toneMapped prevents over-bright blowout)
     this._starCoreMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
+      color: 0xfff5cc,
       fog: false,
-      toneMapped: false
+      toneMapped: true
     });
 
-    // Soft celestial golden halo flare texture (centered bloom + cross glint)
+    // Soft celestial golden halo flare texture (subtle, non-glaring)
     this._starHaloTexture = this._createStarHaloTexture();
     this._starHaloMat = new THREE.SpriteMaterial({
       map: this._starHaloTexture,
-      color: 0xffcc33,
+      color: 0xffc433,
       blending: THREE.AdditiveBlending,
       transparent: true,
-      opacity: 0.70,
+      opacity: 0.28,
       depthWrite: false,
       fog: false,
-      toneMapped: false
+      toneMapped: true
     });
 
     this.deliveredMat = new THREE.MeshBasicMaterial({
@@ -1066,10 +1066,12 @@ export class DeliverySystem {
   // Clean up visual markers when a chunk unloads while preserving delivery progress
   unloadChunkTargets(chunkKey) {
     this.trackedHouses.forEach((houseData) => {
-      // Keep the active target's beacon alive even if its chunk streams out, so
-      // the player can always find their way back to the highlighted chimney.
-      if (this.activeTarget && houseData.houseId === this.activeTarget.houseId) return;
+      // If this house is currently holding a marker, only remove it if it's NOT the active drop marker group
       if (houseData.chunkKey === chunkKey && houseData.marker) {
+        if (this.giftDropMarker && houseData.marker === this.giftDropMarker.group) {
+          // Never detach the active gift drop marker during chunk streaming!
+          return;
+        }
         this.markersGroup.remove(houseData.marker);
         houseData.marker = null;
       }
@@ -1586,15 +1588,21 @@ export class DeliverySystem {
       this.guidanceFlow.clear();
     }
 
-    // Reset every registered house and remove all markers
+    // Reset every registered house and remove legacy markers
     this.trackedHouses.forEach((houseData) => {
       houseData.delivered = false;
-      if (houseData.marker) {
+      if (houseData.marker && houseData.marker !== this.giftDropMarker?.group) {
         this.markersGroup.remove(houseData.marker);
-        houseData.marker = null;
       }
+      houseData.marker = null;
     });
-    this.markersGroup.clear();
+    // Remove any children except the permanent giftDropMarker
+    for (let i = this.markersGroup.children.length - 1; i >= 0; i--) {
+      const child = this.markersGroup.children[i];
+      if (child !== this.giftDropMarker?.group) {
+        this.markersGroup.remove(child);
+      }
+    }
 
     this._clearStars();
 
@@ -1667,7 +1675,7 @@ export class DeliverySystem {
     const usedIds = new Set();
     let cursor = origin;
     const minDistance = 6.0;  // Comfortable separation in meters
-    const maxDistance = 18.0; // Visible within fog distance (32m)
+    const maxDistance = 12.0; // Snappy pacing: reachable in 3-5s, clearly visible in fog
 
     while (route.length < this.deliveriesRequired) {
       // Find all unused houses within the ideal distance band (7.5m - 14.0m)
@@ -1722,10 +1730,10 @@ export class DeliverySystem {
       let candidates = Array.from(this.trackedHouses.values())
         .filter((house) => !house.delivered && !usedIds.has(house.houseId));
 
-      // Prefer houses at comfortable distance (7.5m - 14.0m away)
+      // Prefer houses at comfortable distance (6.0m - 12.0m away)
       const distantCandidates = candidates.filter((h) => {
         const d = Math.hypot(h.worldPos.x - sleighPos.x, h.worldPos.z - sleighPos.z);
-        return d >= 6.0 && d <= 18.0;
+        return d >= 6.0 && d <= 12.0;
       });
 
       const pool = distantCandidates.length > 0 ? distantCandidates : candidates;
@@ -1965,9 +1973,9 @@ export class DeliverySystem {
         // T-parameter along the flight path corridor (between 0.28 and 0.72)
         const t = starsOnLeg === 1 ? 0.50 : (s === 0 ? 0.36 : 0.64);
         
-        // Gentle lateral offset: alternate sides along the route to reward intentional steering
+        // Streamlined flight path alignment: keep stars/rings directly on the flight corridor
         const lateralDir = (leg + s) % 2 === 0 ? 1.0 : -1.0;
-        const lateralOffset = Math.min(1.6, Math.max(1.0, legDist * 0.28)) * lateralDir;
+        const lateralOffset = Math.min(0.55, legDist * 0.08) * lateralDir;
 
         const posX = a.x + dx * t + nx * lateralOffset;
         const posZ = a.z + dz * t + nz * lateralOffset;
@@ -2004,69 +2012,53 @@ export class DeliverySystem {
         }
         if (tooCloseToHouse) continue;
 
-        const isBoostRing = (starId % 2 === 1);
         const group = new THREE.Group();
-        group.name = isBoostRing ? `BoostRing_${starId}` : `RouteStar_${starId}`;
+        group.name = `RouteStar_${starId}`;
         group.position.set(posX, finalY, posZ);
 
-        let starMesh, coreMesh = null, halo = null, motesMesh = null;
+        // 1. Faceted 3D diamond star
+        const starMesh = new THREE.Mesh(this._starGeo, this._starMat);
+        starMesh.rotation.z = (starId * 0.65) % Math.PI;
+        group.add(starMesh);
 
-        if (isBoostRing) {
-          // Radiant Speed Hoop (aligned facing oncoming flight path dx, dz)
-          starMesh = new THREE.Mesh(this._ringGeo, this._ringMat);
-          const flightAngle = Math.atan2(dx, dz);
-          starMesh.rotation.y = flightAngle;
-          group.add(starMesh);
+        // 2. Diamond sparkling core
+        const coreMesh = new THREE.Mesh(this._starCoreGeo, this._starCoreMat);
+        group.add(coreMesh);
 
-          // Subtle halo flare centered on hoop
-          halo = new THREE.Sprite(this._starHaloMat);
-          halo.scale.set(0.70, 0.70, 0.70);
-          group.add(halo);
-        } else {
-          // 1. Faceted 3D diamond star
-          starMesh = new THREE.Mesh(this._starGeo, this._starMat);
-          starMesh.rotation.z = (starId * 0.65) % Math.PI;
-          group.add(starMesh);
+        // 3. Radiant celestial golden halo flare
+        const halo = new THREE.Sprite(this._starHaloMat);
+        halo.scale.set(0.32, 0.32, 0.32);
+        group.add(halo);
 
-          // 2. Diamond sparkling core
-          coreMesh = new THREE.Mesh(this._starCoreGeo, this._starCoreMat);
-          group.add(coreMesh);
-
-          // 3. Radiant celestial golden halo flare
-          halo = new THREE.Sprite(this._starHaloMat);
-          halo.scale.set(0.55, 0.55, 0.55);
-          group.add(halo);
-
-          // 4. Subtle orbiting golden stardust sparkles
-          const motesGeo = new THREE.BufferGeometry();
-          const moteCount = 4;
-          const motePositions = new Float32Array(moteCount * 3);
-          for (let m = 0; m < moteCount; m++) {
-            const mAngle = (m / moteCount) * Math.PI * 2;
-            const mR = 0.22;
-            motePositions[m * 3]     = Math.cos(mAngle) * mR;
-            motePositions[m * 3 + 1] = (Math.random() - 0.5) * 0.08;
-            motePositions[m * 3 + 2] = Math.sin(mAngle) * mR;
-          }
-          motesGeo.setAttribute('position', new THREE.BufferAttribute(motePositions, 3));
-          const motesMat = new THREE.PointsMaterial({
-            map: this._starGlintTexture,
-            color: 0xfffae0,
-            size: 0.12,
-            transparent: true,
-            opacity: 0.85,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false,
-            fog: false
-          });
-          motesMesh = new THREE.Points(motesGeo, motesMat);
-          group.add(motesMesh);
+        // 4. Subtle orbiting golden stardust sparkles
+        const motesGeo = new THREE.BufferGeometry();
+        const moteCount = 4;
+        const motePositions = new Float32Array(moteCount * 3);
+        for (let m = 0; m < moteCount; m++) {
+          const mAngle = (m / moteCount) * Math.PI * 2;
+          const mR = 0.22;
+          motePositions[m * 3]     = Math.cos(mAngle) * mR;
+          motePositions[m * 3 + 1] = (Math.random() - 0.5) * 0.08;
+          motePositions[m * 3 + 2] = Math.sin(mAngle) * mR;
         }
+        motesGeo.setAttribute('position', new THREE.BufferAttribute(motePositions, 3));
+        const motesMat = new THREE.PointsMaterial({
+          map: this._starGlintTexture,
+          color: 0xfffae0,
+          size: 0.12,
+          transparent: true,
+          opacity: 0.85,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          fog: false
+        });
+        const motesMesh = new THREE.Points(motesGeo, motesMat);
+        group.add(motesMesh);
 
         this.starsGroup.add(group);
         this.activeStars.push({
           id: starId,
-          isBoostRing,
+          isBoostRing: false,
           group,
           mesh: starMesh,
           core: coreMesh,
@@ -2119,9 +2111,9 @@ export class DeliverySystem {
       const distSq = dx * dx + dy * dy + dz * dz;
       const dist = Math.sqrt(distSq);
 
-      // Smooth Magnetic Attraction ("Coin Magnet" within 1.6m range)
-      if (dist < 1.6 && dist > 0.001) {
-        const pullSpeed = THREE.MathUtils.clamp((1.6 - dist) * 7.5, 2.0, 10.0);
+      // Forgiving Magnetic Attraction ("Coin Magnet" within 2.2m range)
+      if (dist < 2.2 && dist > 0.001) {
+        const pullSpeed = THREE.MathUtils.clamp((2.2 - dist) * 8.5, 2.5, 12.0);
         star.group.position.x += (dx / dist) * pullSpeed * delta;
         star.group.position.y += (dy / dist) * pullSpeed * delta;
         star.group.position.z += (dz / dist) * pullSpeed * delta;
@@ -2130,8 +2122,9 @@ export class DeliverySystem {
         star.group.position.y += (targetBaseY - star.group.position.y) * Math.min(delta * 4.0, 1.0);
       }
 
-      // Pickup trigger (0.60m spherical proximity)
-      if (dist <= 0.60) {
+      // Pickup trigger: 0.95m for diamond stars
+      const pickupThreshold = 0.95;
+      if (dist <= pickupThreshold) {
         this._collectStar(star, i);
       }
     }
@@ -2153,31 +2146,20 @@ export class DeliverySystem {
     this.starsGroup.remove(star.group);
     this.activeStars.splice(index, 1);
 
-    const isRing = star.isBoostRing;
     this.starsCollected++;
-    this.starScore += isRing ? 75 : 50;
+    this.starScore += 50;
     this.score = this.deliveryScore + this.starScore;
 
-    // Spectacular, multi-layered celebratory collection effects:
+    // Celebratory collection effects:
     // 1. Expanding golden planar shockwave ring
     this._spawnShockwaveRing(worldPos);
 
-    // 2. Multi-tiered sparkling stardust & diamond ember burst
+    // 2. Sparkling stardust & diamond ember burst
     this._spawnStarSparkleBurst(worldPos);
 
-    if (isRing) {
-      // Trigger exhilarating speed boost
-      if (this.sleighController && this.sleighController.triggerBoost) {
-        this.sleighController.triggerBoost(2.2);
-      }
-      this._spawnWorldScorePopup(worldPos, '⚡ BOOST! +75');
-      soundManager.playBoost();
-      this.showBanner('⚡ SPEED BOOST! +75 PTS', 'star');
-    } else {
-      this._spawnWorldScorePopup(worldPos, '+50 🌟');
-      soundManager.playStar();
-      this.showBanner(`STAR COLLECTED! +50 • ${this.starsCollected}/${this.starsTotal}`, 'star');
-    }
+    this._spawnWorldScorePopup(worldPos, '+50 🌟');
+    soundManager.playStar();
+    this.showBanner(`STAR COLLECTED! +50 • ${this.starsCollected}/${this.starsTotal}`, 'star');
 
     this._updateHUD();
     this._triggerHUDStarPulse();

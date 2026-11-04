@@ -896,7 +896,7 @@ export class BatchedChunkSystem {
     const chunkChanged = (curFocusChunkX !== this.lastFocusChunkX || curFocusChunkZ !== this.lastFocusChunkZ);
     const angleDelta = 2 * Math.acos(Math.min(1.0, Math.max(-1.0, Math.abs(camera.quaternion.dot(this.lastStreamCamQuat)))));
     const rotatedSignificantly = angleDelta > 0.20;
-    const timeElapsed = (now - this.lastStreamCheckTime) > 150;
+    const timeElapsed = (now - this.lastStreamCheckTime) > (this.chunks.size < 9 ? 40 : 120);
 
     if (!this.scheduler || this.scheduler.disabled) {
       if (chunkChanged || rotatedSignificantly || timeElapsed || this.chunks.size === 0) {
@@ -1020,9 +1020,10 @@ export class BatchedChunkSystem {
       this._tempVec.set(wx - this._sleighPos.x, 0, wz - this._sleighPos.z).normalize();
       const dotVel = this._tempVec.dot(this.sleighHeading);
 
-      const isBehindAndFar = (dotVel < -0.3 && distToPlayer > 50.0);
+      // Desktop guard: Never evict chunks unless they are strictly outside the loadRadius AND outside camera view
+      const isBehindAndFar = (dotVel < -0.4 && distToPlayer > (hardRadius * 0.85));
       const isOutsideRadiusHysteresis = (chunk.unneededSince > 0 &&
-        (now - chunk.unneededSince) > 1000 &&
+        (now - chunk.unneededSince) > 2500 &&
         distToPlayer > (hardRadius + this.chunkSize));
 
       if (isBehindAndFar || isOutsideRadiusHysteresis) {

@@ -36,6 +36,15 @@ export class GiftDropMarker {
     this._buildBeams();
     this._buildIcon();
     this._buildSparkles();
+
+    // Prevent frustum culling on all child elements so marker never flickers off when looking down or grazing
+    this.group.traverse((obj) => {
+      if (obj.isMesh || obj.isSprite || obj.isPoints) {
+        obj.frustumCulled = false;
+        obj.renderOrder = 10;
+      }
+    });
+
     this.setState('default');
     this.color.copy(this.targetColor);
   }
