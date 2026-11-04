@@ -7,7 +7,7 @@ export const USE_LEGACY = typeof window !== 'undefined' && window.location.searc
 const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
 const chunkParam = parseInt(urlParams.get('chunks'), 10);
 export const MOBILE_MAX_CHUNKS = (!isNaN(chunkParam) && chunkParam > 0) ? Math.min(6, chunkParam) : 5;
-export const DESKTOP_MAX_CHUNKS = (!isNaN(chunkParam) && chunkParam > 0) ? chunkParam : 16;
+export const DESKTOP_MAX_CHUNKS = (!isNaN(chunkParam) && chunkParam > 0) ? chunkParam : 36;
 
 /**
  * PriorityQueue — High-performance binary min-heap for candidate chunk scheduling
@@ -411,6 +411,20 @@ export class BatchedChunkSystem {
 
       const triCount = Math.round(child.geometry.index ? child.geometry.index.count / 3 : child.geometry.attributes.position.count / 3);
 
+      // Enhance texture clarity with 4x anisotropic filtering for crisp rendering at perspective angles
+      if (child.material) {
+        const matList = Array.isArray(child.material) ? child.material : [child.material];
+        matList.forEach(m => {
+          for (const key in m) {
+            const prop = m[key];
+            if (prop && prop.isTexture) {
+              prop.anisotropy = Math.min(4, 16);
+              prop.needsUpdate = true;
+            }
+          }
+        });
+      }
+
       const refInstMesh = new THREE.InstancedMesh(child.geometry, child.material, matrices.length);
       refInstMesh.name = 'Ref_' + (child.name || 'Mesh');
       refInstMesh.visible = false;
@@ -719,6 +733,11 @@ export class BatchedChunkSystem {
       }
     }
 
+    // On desktop, if max buffer slots are reached, evict the chunk furthest behind player
+    if (!this.isMobile && this.activeChunkCount >= this.maxLoadedChunks) {
+      this._evictFurthestChunk();
+    }
+
     const tStart = performance.now();
     const slot = this.activeChunkCount;
     if (slot >= this.maxLoadedChunks) {
@@ -753,6 +772,31 @@ export class BatchedChunkSystem {
 
     this._updateBoundsAndStats();
     this.telemetry.lastGenDurationMs = performance.now() - tStart;
+  }
+
+  _evictFurthestChunk() {
+    let worstKey = null;
+    let worstScore = -Infinity; // Higher score = better candidate to evict
+
+    for (const [key, chunk] of this.chunks.entries()) {
+      const wx = chunk.cx * this.chunkSize;
+      const wz = chunk.cz * this.chunkSize;
+      const dist = Math.hypot(wx - this._sleighPos.x, wz - this._sleighPos.z);
+
+      this._tempVec.set(wx - this._sleighPos.x, 0, wz - this._sleighPos.z).normalize();
+      const dot = this._tempVec.dot(this.sleighHeading);
+
+      // Score: chunks far away and behind (dot < 0) have highest eviction score
+      const evictionScore = dist * (1.0 - dot);
+      if (evictionScore > worstScore) {
+        worstScore = evictionScore;
+        worstKey = key;
+      }
+    }
+
+    if (worstKey) {
+      this.destroyChunk(worstKey);
+    }
   }
 
   destroyChunk(key) {
@@ -877,7 +921,12 @@ export class BatchedChunkSystem {
     }
 
     // 6. CHUNK GENERATION (only runs when scheduler is disabled or on desktop):
-    if (this.priorityQueue.length > 0) {
+    // Dynamically scale generation budget with speed (up to 2 chunks per frame when boosting/speeding)
+    const speed = this.sleighVelocity.length();
+    const maxGenPerFrame = (!this.isMobile && speed > 2.5) ? 2 : 1;
+
+    for (let g = 0; g < maxGenPerFrame; g++) {
+      if (this.priorityQueue.length === 0) break;
       const candidate = this.priorityQueue.pop();
       if (candidate) {
         this.queuedKeys.delete(candidate.key);
@@ -971,9 +1020,9 @@ export class BatchedChunkSystem {
       this._tempVec.set(wx - this._sleighPos.x, 0, wz - this._sleighPos.z).normalize();
       const dotVel = this._tempVec.dot(this.sleighHeading);
 
-      const isBehindAndFar = (dotVel < -0.5 && distToPlayer > 60.0);
+      const isBehindAndFar = (dotVel < -0.3 && distToPlayer > 50.0);
       const isOutsideRadiusHysteresis = (chunk.unneededSince > 0 &&
-        (now - chunk.unneededSince) > 2000 &&
+        (now - chunk.unneededSince) > 1000 &&
         distToPlayer > (hardRadius + this.chunkSize));
 
       if (isBehindAndFar || isOutsideRadiusHysteresis) {

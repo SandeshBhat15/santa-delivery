@@ -114,7 +114,7 @@ export class HardwareProfiler {
         break;
       case DEVICE_TIER.LOW:
       default:
-        targetDpr = Math.min(window.devicePixelRatio || 1, 1.25);
+        targetDpr = Math.min(window.devicePixelRatio || 1, isMobile ? 1.5 : 1.25);
         shadowMapSize = 1024;
         baseSnowCount = 800;
         largeSnowCount = 90;

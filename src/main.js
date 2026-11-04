@@ -52,6 +52,8 @@ const IS_MOBILE = (new URLSearchParams(window.location.search).get('mobile') ===
                   (window.innerWidth <= 840) ||
                   ('ontouchstart' in window && window.innerWidth <= 1024);
 
+const _maxMobileDpr = 1.5;
+
 // --- Renderer ---
 const renderer = new THREE.WebGLRenderer({
   antialias: true,
@@ -3014,36 +3016,35 @@ window._printScenePolys = function() {
   window._visibleSceneTriangles = Math.round(uniqueTriangles);
 };
 setInterval(() => { if (window._printScenePolys) window._printScenePolys(); }, 1000);
-// 60 FPS is the default on every device. 30/45/60 remain selectable through the
-// debug panel (window.setFpsCap), but nothing silently lowers the target to 30.
-let _targetFpsCap = 60;
+// Frame limiter: On mobile, defaults to 60 FPS cap to preserve battery and thermal headroom.
+// On desktop / high-end GPUs, runs fully uncapped (or at monitor refresh rate) unless an explicit cap is set.
+let _targetFpsCap = IS_MOBILE ? 60 : 0;
 window._targetFpsCap = _targetFpsCap;
 window.setFpsCap = function(cap) {
-  _targetFpsCap = cap;
-  window._targetFpsCap = cap;
-  console.log('[FrameRate] FPS cap set to:', cap);
+  _targetFpsCap = Number(cap) || 0;
+  window._targetFpsCap = _targetFpsCap;
+  console.log('[FrameRate] FPS cap set to:', _targetFpsCap ? `${_targetFpsCap} FPS` : 'Uncapped');
 };
 
-// Frame limiter with jitter tolerance. A frame is allowed to render once the
-// accumulated time reaches the cap interval minus a small tolerance, and the
-// unused remainder is carried forward so timing drift cannot accumulate.
 let _lastRenderTimeMs = 0;
-const FRAME_CAP_TOLERANCE_MS = 1.667; // ~1 frame at 60 Hz of slack for rAF jitter
+const FRAME_CAP_TOLERANCE_MS = 1.667;
 function animate(currentTime) {
   requestAnimationFrame(animate);
 
-  const requestedCap = Math.min(Number(window._targetFpsCap) || 60, 60);
-  const frameInterval = 1000 / requestedCap;
-  if (!_lastRenderTimeMs) {
-    _lastRenderTimeMs = currentTime;
-    return;
+  const requestedCap = Number(window._targetFpsCap) || 0;
+  if (requestedCap > 0) {
+    const frameInterval = 1000 / requestedCap;
+    if (!_lastRenderTimeMs) {
+      _lastRenderTimeMs = currentTime;
+      return;
+    }
+    const elapsed = currentTime - _lastRenderTimeMs;
+    if (elapsed < frameInterval - FRAME_CAP_TOLERANCE_MS) {
+      return;
+    }
+    // Carry the leftover time forward instead of discarding it.
+    _lastRenderTimeMs = currentTime - (elapsed % frameInterval);
   }
-  const elapsed = currentTime - _lastRenderTimeMs;
-  if (elapsed < frameInterval - FRAME_CAP_TOLERANCE_MS) {
-    return;
-  }
-  // Carry the leftover time forward instead of discarding it.
-  _lastRenderTimeMs = currentTime - (elapsed % frameInterval);
 
   if (perfDebugger) {
     perfDebugger.beginFrame();
