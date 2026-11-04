@@ -574,8 +574,8 @@ export class DeliverySystem {
         <div id="joystick-zone">
           <div id="joystick-base">
             <div id="joystick-thumb"></div>
+            <div class="control-label">FLIGHT</div>
           </div>
-          <div class="control-label">FLIGHT</div>
         </div>
 
         <!-- Proximity delivery status badge -->
@@ -684,11 +684,18 @@ export class DeliverySystem {
       this.sleighController.setJoystickInput(0, 0);
     };
 
+    let zoneTouchStartTime = 0;
+    let zoneTouchStartX = 0;
+    let zoneTouchStartY = 0;
+
     zone.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       e.stopPropagation();
       activePointerId = e.pointerId;
       this._joystickPointerId = e.pointerId;
+      zoneTouchStartTime = performance.now();
+      zoneTouchStartX = e.clientX;
+      zoneTouchStartY = e.clientY;
       try {
         zone.setPointerCapture(e.pointerId);
       } catch (_) {}
@@ -712,6 +719,12 @@ export class DeliverySystem {
       if (activePointerId === e.pointerId) {
         e.preventDefault();
         e.stopPropagation();
+        const dist = Math.hypot(e.clientX - zoneTouchStartX, e.clientY - zoneTouchStartY);
+        const duration = performance.now() - zoneTouchStartTime;
+        // If the tap inside joystick area was quick without significant drag (< 25px movement, < 350ms duration), also trigger gift drop!
+        if (dist < 25 && duration < 350) {
+          this.triggerDelivery();
+        }
         try {
           zone.releasePointerCapture(e.pointerId);
         } catch (_) {}
@@ -731,8 +744,12 @@ export class DeliverySystem {
     const handlePointerDown = (e) => {
       // Ignore mouse right click
       if (e.pointerType === 'mouse' && e.button !== 0) return;
-      // Ignore if clicking on game over / restart button
-      if (e.target && (e.target.closest('#results-overlay') || e.target.closest('#btn-replay') || e.target.closest('#quality-toggle'))) return;
+      // Ignore if clicking on game over / restart button safely (checking typeof e.target.closest)
+      if (e.target && typeof e.target.closest === 'function') {
+        if (e.target.closest('#results-overlay') || e.target.closest('#btn-replay') || e.target.closest('#quality-toggle')) {
+          return;
+        }
+      }
       // Ignore pointer if it is currently driving the joystick
       if (this._joystickPointerId !== null && e.pointerId === this._joystickPointerId) return;
 
@@ -756,8 +773,8 @@ export class DeliverySystem {
       const dist = Math.hypot(dx, dy);
       const duration = performance.now() - data.startTime;
 
-      // Clean tap detection: < 14px movement and < 350ms touch duration
-      if (dist < 14 && duration < 350) {
+      // Generous finger tap detection on mobile: < 28px movement and < 450ms touch duration
+      if (dist < 28 && duration < 450) {
         const now = performance.now();
         if (now - lastDropTriggerTime > 220) {
           lastDropTriggerTime = now;

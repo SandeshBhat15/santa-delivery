@@ -341,18 +341,18 @@ canvas {
 #joystick-base {
   width: 110px;
   height: 110px;
-  background: radial-gradient(circle, rgba(14, 25, 45, 0.72) 0%, rgba(10, 18, 32, 0.88) 100%);
-  border: 2px solid rgba(255, 255, 255, 0.38);
+  background: radial-gradient(circle, rgba(14, 25, 45, 0.75) 0%, rgba(10, 18, 32, 0.92) 100%);
+  border: 2px solid rgba(255, 255, 255, 0.45);
   border-radius: 50%;
   position: absolute;
   left: 50%;
-  top: 75%;
-  transform: translate(-50%, -50%);
+  bottom: 60px;
+  transform: translate(-50%, 0);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5), inset 0 0 16px rgba(255, 255, 255, 0.15);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5), inset 0 0 16px rgba(255, 255, 255, 0.18);
   touch-action: none;
-  opacity: 0.65;
+  opacity: 0.75;
   transition: opacity 0.25s ease;
   pointer-events: none;
 }
@@ -380,12 +380,12 @@ canvas {
 
 .control-label {
   position: absolute;
-  bottom: -22px;
+  top: -20px;
   left: 50%;
   transform: translateX(-50%);
   font-size: 10px;
   font-weight: 800;
-  color: rgba(255, 255, 255, 0.75);
+  color: rgba(255, 255, 255, 0.85);
   letter-spacing: 1px;
   text-align: center;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
@@ -658,12 +658,12 @@ canvas {
   }
 }
 
-/* Desktop: show the same DROP GIFT action, hide only the touch joystick */
-@media (min-width: 900px) and (hover: hover) {
-  #mobile-controls-wrapper {
-    justify-content: flex-end;
+/* Desktop (mouse with fine precision): hide touch joystick and show keyboard hint */
+@media (min-width: 900px) and (pointer: fine) and (not (pointer: coarse)) {
+  body:not(.is-mobile) #joystick-zone {
+    display: none;
   }
-  #joystick-zone {
+  body:not(.is-mobile) .control-label {
     display: none;
   }
   .drop-key {

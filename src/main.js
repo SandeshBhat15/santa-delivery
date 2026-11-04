@@ -52,6 +52,8 @@ const IS_MOBILE = (new URLSearchParams(window.location.search).get('mobile') ===
                   (window.innerWidth <= 840) ||
                   ('ontouchstart' in window && window.innerWidth <= 1024);
 
+if (IS_MOBILE) document.body.classList.add('is-mobile');
+
 const _maxMobileDpr = 1.5;
 
 // --- Renderer ---
