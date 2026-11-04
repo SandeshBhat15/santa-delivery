@@ -91,8 +91,8 @@ export class SleighController {
     this._crashGraceUntil = 0;
 
     // Follow camera offset & sensitivity (calibrated close third-person follow camera for mini rig)
-    this.camDistance = isMobile ? 0.82 : 0.65;
-    this.camHeight = isMobile ? 0.33 : 0.25;
+    this.camDistance = isMobile ? 0.72 : 0.65;
+    this.camHeight = isMobile ? 0.28 : 0.25;
 
     // Santa Throw Animation State
     this.santaRigNode = null;
@@ -138,9 +138,9 @@ export class SleighController {
       minDist: 0.035,
       maxPoints: this.isMobile ? 240 : 360,
       widthScale: 0.026,
-      gainScale: this.isMobile ? 0.26 : 0.32,
-      streak: 0.65,
-      glow: 0.95
+      gainScale: this.isMobile ? 0.35 : 0.42,
+      streak: 0.75,
+      glow: 1.25
     });
     this._magicAnchor = new THREE.Vector3();
     this._magicAnchorInit = false;
@@ -1256,13 +1256,15 @@ export class SleighController {
       this._camLookInitialized = true;
     }
 
-    // Natural exponential easing behind the sleigh (5.5 / s) eliminates camera hitching and prevents motion sickness
-    const posEase = 1.0 - Math.exp(-5.5 * delta);
+    // Snappy exponential easing behind the sleigh (8.5 / s on mobile, 5.5 / s on desktop) for immediate steering response
+    const camFollowRate = this.isMobile ? 8.5 : 5.5;
+    const posEase = 1.0 - Math.exp(-camFollowRate * delta);
     this.camera.position.lerp(this.camTargetPos, posEase);
 
-    // Dynamic camera banking roll (camera subtly leans into banked turns)
+    // Dynamic camera banking roll (camera subtly leans into banked turns with responsive tracking)
     const targetCamRoll = -this.bank * 0.35;
-    this.cameraRoll += (targetCamRoll - this.cameraRoll) * (1.0 - Math.exp(-6.0 * delta));
+    const rollRate = this.isMobile ? 8.5 : 6.0;
+    this.cameraRoll += (targetCamRoll - this.cameraRoll) * (1.0 - Math.exp(-rollRate * delta));
     this.camera.up.set(Math.sin(this.cameraRoll), Math.cos(this.cameraRoll), 0);
 
     // Dynamic FOV rush: widen lens by up to +12 degrees when diving or boosting for arcade kinetic rush
@@ -1274,8 +1276,9 @@ export class SleighController {
       this.camera.updateProjectionMatrix();
     }
 
-    // Look-at point eases smoothly with slightly higher responsiveness (7.5 / s) to keep flight direction centered
-    const lookEase = 1.0 - Math.exp(-7.5 * delta);
+    // Look-at point eases smoothly with high responsiveness (10.5 / s on mobile, 7.5 / s on desktop) to stay firmly locked on target
+    const lookRate = this.isMobile ? 10.5 : 7.5;
+    const lookEase = 1.0 - Math.exp(-lookRate * delta);
     this._currentCamLookPos.lerp(this.camLookPos, lookEase);
     this.camera.lookAt(this._currentCamLookPos);
 

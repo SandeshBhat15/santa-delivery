@@ -55,9 +55,9 @@ export class MagicalFlightTrail {
 
     // Rich multi-colored reference palette:
     // Saturated warm ambers, bright sun golds, pale creams, and luminous icy-cyans (no blown-out white)
-    this.colorDeepAmber = new THREE.Color(0.92, 0.48, 0.06);
-    this.colorGold      = new THREE.Color(0.95, 0.68, 0.14);
-    this.colorSunGold   = new THREE.Color(0.96, 0.78, 0.22);
+    this.colorDeepAmber = new THREE.Color(1.05, 0.55, 0.08);
+    this.colorGold      = new THREE.Color(1.10, 0.78, 0.18);
+    this.colorSunGold   = new THREE.Color(1.12, 0.88, 0.28);
     this.colorCream     = new THREE.Color(0.96, 0.88, 0.62);
     this.colorIce       = new THREE.Color(0.22, 0.68, 0.95);
     this.colorPaleBlue  = new THREE.Color(0.45, 0.78, 0.96);
@@ -86,7 +86,7 @@ export class MagicalFlightTrail {
         life: 0.0,
         invLife: 1.0,
         baseSize: 0.007,
-        baseAlpha: 0.6,
+        baseAlpha: 0.75,
         r: 1.0, g: 0.72, b: 0.30,
         type: 0.0,       // 0 = golden dust, 1 = four-point glint, 2 = icy mote
         rotSpeed: 0.0,
