@@ -649,12 +649,20 @@ export class DeliverySystem {
     // Expose active joystick pointer id so tap-to-drop ignores flight touches
     this._joystickPointerId = null;
 
-    // Set base position: permanently stays at (px, py) without snapping back
+    // Moves joystick base dynamically to finger touch position anywhere on screen
     const setBasePosition = (px, py) => {
-      base.style.left = `${px}px`;
-      base.style.top = `${py}px`;
+      base.style.left = px + 'px';
+      base.style.top = py + 'px';
       base.style.bottom = 'auto';
       base.style.transform = 'translate(-50%, -50%)';
+    };
+
+    // Restores default idle anchor when released
+    const resetBasePosition = () => {
+      base.style.left = '50%';
+      base.style.top = 'auto';
+      base.style.bottom = '60px';
+      base.style.transform = 'translate(-50%, 0)';
     };
 
     const updateStick = (clientX, clientY) => {
@@ -680,7 +688,7 @@ export class DeliverySystem {
       this._joystickPointerId = null;
       thumb.style.transform = 'translate(-50%, -50%)';
       base.classList.remove('active');
-      // Free floating: base stays right where it was placed, only stick resets to (0,0)
+      resetBasePosition();
       this.sleighController.setJoystickInput(0, 0);
     };
 
@@ -1837,7 +1845,12 @@ export class DeliverySystem {
   }
 
   handleHouseCrash() {
+    this.handleCrash('house');
+  }
+
+  handleCrash(type = 'house') {
     if (!this.runActive || this.runComplete) return;
+    this._crashType = type; // 'terrain' or 'house'
     this._finishReason = 'crash';
     this._flashCrash();
     this._finishRun(false, 'crash');
@@ -1909,8 +1922,9 @@ export class DeliverySystem {
           : 'RUN OVER';
     }
     if (subtitle) {
+      const crashDesc = this._crashType === 'terrain' ? 'Santa collided with the terrain' : 'Santa clipped a building';
       subtitle.textContent = isCrash
-        ? `Santa clipped a rooftop after ${this.deliveriesMade} of ${this.deliveriesRequired} deliveries.`
+        ? `${crashDesc} after ${this.deliveriesMade} of ${this.deliveriesRequired} deliveries.`
         : success
           ? `You delivered ${this.deliveriesMade} of ${this.deliveriesRequired} gifts before the night was through.`
           : `The gift sack ran dry after ${this.deliveriesMade} of ${this.deliveriesRequired} deliveries.`;
@@ -2111,19 +2125,11 @@ export class DeliverySystem {
       const distSq = dx * dx + dy * dy + dz * dz;
       const dist = Math.sqrt(distSq);
 
-      // Forgiving Magnetic Attraction ("Coin Magnet" within 2.2m range)
-      if (dist < 2.2 && dist > 0.001) {
-        const pullSpeed = THREE.MathUtils.clamp((2.2 - dist) * 8.5, 2.5, 12.0);
-        star.group.position.x += (dx / dist) * pullSpeed * delta;
-        star.group.position.y += (dy / dist) * pullSpeed * delta;
-        star.group.position.z += (dz / dist) * pullSpeed * delta;
-      } else {
-        // Natural return to hover anchor if out of magnetic pull
-        star.group.position.y += (targetBaseY - star.group.position.y) * Math.min(delta * 4.0, 1.0);
-      }
+      // Smooth natural hover bobbing at star's anchor point (no automatic magnet sucking stars from far away)
+      star.group.position.y += (targetBaseY - star.group.position.y) * Math.min(delta * 4.0, 1.0);
 
-      // Pickup trigger: 0.95m for diamond stars
-      const pickupThreshold = 0.95;
+      // Precise flight collection: player must actively fly close to the star (~0.35m radius)
+      const pickupThreshold = 0.35;
       if (dist <= pickupThreshold) {
         this._collectStar(star, i);
       }

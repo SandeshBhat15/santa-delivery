@@ -50,10 +50,12 @@ export class MagicTrail {
       const a = 2 * i;
       idx.set([a, a + 1, a + 2, a + 1, a + 3, a + 2], i * 6);
     }
+    this.envelope = new Float32Array(n * 4); // [headEnvelope, tailEnvelope] for each vertex
     this.geo = new THREE.BufferGeometry();
     this.geo.setAttribute('position', new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
     this.geo.setAttribute('aSide', new THREE.BufferAttribute(this.side, 3).setUsage(THREE.DynamicDrawUsage));
     this.geo.setAttribute('uv', new THREE.BufferAttribute(this.uv, 2).setUsage(THREE.DynamicDrawUsage));
+    this.geo.setAttribute('aEnvelope', new THREE.BufferAttribute(this.envelope, 2).setUsage(THREE.DynamicDrawUsage));
     this.geo.setIndex(new THREE.BufferAttribute(idx, 1));
 
     // Uniforms shared by every layer
@@ -99,26 +101,50 @@ export class MagicTrail {
       vertexShader: `
         uniform float uTime, uWidth, uWob, uPh;
         attribute vec3 aSide;
+        attribute vec2 aEnvelope; // x = head envelope [0..1], y = tail envelope [0..1]
         varying vec2 vUv;
+        varying vec2 vEnvelope;
         void main() {
           vUv = uv;
-          float u = uv.x;                                              // 0 at the head, 1 at the tail
-          float w = uWidth * (.25 + .75 * smoothstep(0., .35, u)) * (1. - .7 * u);
-          float off = sin(u * 18. - uTime * 4. + uPh) * uWob * u;      // ripple along the trail
+          vEnvelope = aEnvelope;
+          float u = uv.x; // continuous time-parameter along the ribbon
+          
+          // Organic double-envelope taper:
+          // Combines continuous temporal age falloff with structural endpoint pinching.
+          // This guarantees 100% mathematical zero-width at the exact head vertex (sleigh)
+          // and at the exact tail vertex (oldest waypoint), regardless of trail length or flight speed!
+          float ageHeadTaper = smoothstep(0.0, 0.12, u);
+          // Strictly ascending edges for 100% standard GLSL compliance across all mobile & desktop GPUs:
+          float ageTailTaper = 1.0 - smoothstep(0.35, 0.85, u);
+          // Pure sinusoidal pinching to exact 0 at structural endpoints (sleigh head and oldest tail waypoint)
+          float taper = ageHeadTaper * ageTailTaper * aEnvelope.x * aEnvelope.y;
+          float w = uWidth * taper * (1.0 - 0.25 * u) * 1.25;
+
+          float off = sin(u * 18. - uTime * 4. + uPh) * uWob * u * aEnvelope.y; // ripple smoothly along the trail
           vec3 p = position + aSide * ((uv.y * 2. - 1.) * w + off);
           gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.);
         }`,
       fragmentShader: `
         uniform float uTime, uGlowG, uGain, uStreak;
         varying vec2 vUv;
+        varying vec2 vEnvelope;
         void main() {
           float u = vUv.x, d = abs(vUv.y * 2. - 1.);
-          float core = exp(-d * d * 30.);
-          float glow = exp(-d * d * 2.8) * smoothstep(1., .7, d);
-          float fade = pow(1. - u, 2.4) * smoothstep(0., .03, u + .03);  // fades out toward the tail
+          float core = exp(-d * d * 28.);
+          float glow = exp(-d * d * 3.2) * (1.0 - d * d);
+
+          // Combined temporal age fading + structural tip pinch fading:
+          float ageHeadFade = smoothstep(0.0, 0.12, u);
+          // Strictly ascending edges for GLSL mobile GPU compatibility:
+          float ageTailFade = 1.0 - smoothstep(0.35, 0.85, u);
+          float fade = ageHeadFade * ageTailFade * vEnvelope.x * vEnvelope.y;
+
+          // Cross-sectional edge feathering so ribbon edges never show rectangular borders:
+          fade *= (1.0 - smoothstep(0.15, 1.0, d));
+
           float st = .55 + .9 * (
             pow(.5 + .5 * sin(vUv.y * 17. + sin(u * 4. + uTime * .6) * 2. + 1.3), 10.) +
-            .8 * pow(.5 + .5 * sin(vUv.y * 31. - sin(u * 3. - uTime * .5) * 2.), 12.));  // light streaks
+            .8 * pow(.5 + .5 * sin(vUv.y * 31. - sin(u * 3. - uTime * .5) * 2.), 12.)); // light streaks
           vec3 gold = vec3(1.0, 0.76, 0.35);
           vec3 warmGold = vec3(1.0, 0.90, 0.60);
           vec3 blue = vec3(0.40, 0.75, 1.0);
@@ -164,6 +190,8 @@ export class MagicTrail {
     const cam = this.camera.position;
     const fb = forward || this._fallback;
     const get = i => pts[pts.length - 1 - i];            // i = 0 is the newest point
+    const oldestAge = Math.max(0.001, time - pts[0].t);
+    const activeSpan = Math.min(life, Math.max(0.20, oldestAge));
 
     for (let i = 0; i < n; i++) {
       const p = get(i), a = get(Math.max(i - 1, 0)), b = get(Math.min(i + 1, n - 1));
@@ -175,7 +203,18 @@ export class MagicTrail {
       if (this._s.lengthSq() < 1e-8) this._s.set(1, 0, 0);
       this._s.normalize();
 
-      const u = Math.min(Math.max((time - p.t) / life, 0), 1);
+      // Age-based continuous u: 0 at anchor, 1 at max lifespan
+      const u = THREE.MathUtils.clamp((time - p.t) / life, 0.0, 1.0);
+
+      // Structural tip envelopes (0 at exact head & tail endpoints, 1 through body):
+      // Head envelope smoothly blooms to 1.0 over initial ~8-10 points (no flat start box at sleigh).
+      // Tail envelope smoothly pinches to exact 0.0 over final ~20-28 points (~25-30% of trail tail),
+      // completely eliminating flat cut-off edges across all speeds, framerates, and devices.
+      const headSpan = Math.min(10, Math.max(3, Math.floor(n * 0.15)));
+      const tailSpan = Math.min(28, Math.max(6, Math.floor(n * 0.30)));
+      const headEnv = n > 1 ? Math.sin(Math.min(i / headSpan, 1.0) * Math.PI * 0.5) : 1.0;
+      const tailEnv = n > 1 ? Math.sin(Math.min((n - 1 - i) / tailSpan, 1.0) * Math.PI * 0.5) : 1.0;
+
       for (let k = 0; k < 2; k++) {
         const o = i * 2 + k;
         this.pos[o * 3]     = p.x;
@@ -186,10 +225,12 @@ export class MagicTrail {
         this.side[o * 3 + 2] = this._s.z;
         this.uv[o * 2]     = u;
         this.uv[o * 2 + 1] = k;
+        this.envelope[o * 2]     = headEnv;
+        this.envelope[o * 2 + 1] = tailEnv;
       }
     }
     const a = this.geo.attributes;
-    a.position.needsUpdate = a.aSide.needsUpdate = a.uv.needsUpdate = true;
+    a.position.needsUpdate = a.aSide.needsUpdate = a.uv.needsUpdate = a.aEnvelope.needsUpdate = true;
     this.geo.setDrawRange(0, Math.max(n - 1, 0) * 6);
   }
 

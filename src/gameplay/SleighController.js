@@ -75,10 +75,10 @@ export class SleighController {
     this.pitchMax = 0.54;     // pronounced, heroic 3D pitch angle (~31 degrees) during climb/dive
 
     // Dynamic Terrain-Relative Altitude Limits (meters above local terrain)
-    this.minAltitudeAboveTerrain = 0.01; // Skims ground level with runners directly in the snow
+    this.minAltitudeAboveTerrain = 0.025; // Skims ground level with runners directly in the snow
     this.targetFlightAltitude = 0.65;    // Comfortable cruising height above terrain
     this.maxAltitudeAboveTerrain = 3.2;  // High, generous vertical ceiling: free 3D flight
-    this.altitudeSoftBuffer = 0.20;      // Distance from boundaries where vertical damping begins
+    this.altitudeSoftBuffer = 0.12;      // Soft damping cushion only right next to snow floor / ceiling
 
     // Dynamic camera banking roll
     this.cameraRoll = 0.0;
@@ -941,11 +941,8 @@ export class SleighController {
       vertCommand += curvedY;
     }
     vertCommand = Math.max(-1.0, Math.min(1.0, vertCommand));
-    // Smooth soft-damping only near upper ceiling and ground limit
+    // Pure unconstrained manual controls (only soft-damp when hitting maximum sky ceiling)
     let descendFactor = 1.0;
-    if (currentAltitude < minAlt + buffer) {
-      descendFactor = Math.max(0.0, (currentAltitude - minAlt) / buffer);
-    }
     let climbFactor = 1.0;
     if (currentAltitude > maxAlt - buffer) {
       climbFactor = Math.max(0.0, (maxAlt - currentAltitude) / buffer);
@@ -970,11 +967,10 @@ export class SleighController {
 
     this.position.y += this.verticalSpeed * delta;
 
-    // Physical ground safety floor: sleigh runners skim atop the snow, never clipping under terrain
-    const absoluteFloor = localGroundH + minAlt;
-    if (this.position.y < absoluteFloor) {
-      this.position.y = absoluteFloor;
-      if (this.verticalSpeed < 0) this.verticalSpeed = 0;
+    // Terrain Collision: No automatic correction. Flying directly into the ground/terrain causes crash game-over.
+    if (this.position.y <= localGroundH + 0.01) {
+      this.position.y = localGroundH + 0.01;
+      this._reportCrash('terrain');
     }
 
     // Natural pitch inclination while climbing or diving (responsive, heroic 3D pitch)
@@ -1136,25 +1132,33 @@ export class SleighController {
     // 9. Dynamic Reindeer Lead Steering, Climb Pitch & Dynamic Reins
     if (this.reindeers && this.reindeers.length > 0) {
       const normVert = THREE.MathUtils.clamp(this.verticalSpeed / Math.max(this.climbRate, this.descendRate), -1.0, 1.0);
-      // Reindeer tilt into climb: negative X in model space raises nose toward sky
-      const climbPitchLead = -normVert * 0.52; 
-      const turnYawLead = -(this.turnInput || 0.0) * 0.30; // Negative Y rotation heads into left turn
+      // MasterSantaRig has rotation.y = Math.PI (model faces +Z, controller flies toward -Z).
+      // In deer model space (+Z forward):
+      // - Positive rotation.y turns head toward +X (world left into turn).
+      // - Negative rotation.x tilts nose upward toward +Y (world climb).
+      // - Negative rotation.z rolls deer left (leaning naturally into the turn with bank).
+      const turnYawLead = (this.turnInput || 0.0) * 0.42; 
+      const climbPitchLead = -normVert * 0.48;
+      const turnRollLead = -(this.turnInput || 0.0) * 0.28;
 
       for (let i = 0; i < this.reindeers.length; i++) {
         const d = this.reindeers[i];
         if (!d.mesh) continue;
-        const leadFactor = d.isLead ? 1.0 : 0.75;
+        const leadFactor = d.isLead ? 1.0 : 0.72;
 
-        // Dynamic 3D orientation: Lead yaw into turns, bold climb/dive pitch, and vertical team arch
+        // Dynamic 3D orientation: Lead deer steer more aggressively than rear pair, creating a natural arc
         const gallopBob = Math.sin(this.animTime * 3.5 + (d.timeOffset || 0) * 8.0) * 0.016;
         const gallopSway = Math.sin(this.animTime * 3.0 + i) * 0.02;
         // Reindeer vertically arc into climbs (lead deer fly slightly higher on climb, lower on dive)
         const teamClimbOffset = normVert * (d.isLead ? 0.045 : 0.018);
+        // Team lateral curvature: lead deer curve further into the turn than rear deer
+        const teamTurnOffsetX = -(this.turnInput || 0.0) * (d.isLead ? 0.028 : 0.010);
 
+        d.mesh.position.x = (d.baseX || 0) + teamTurnOffsetX;
         d.mesh.position.y = (d.baseY || 0) + gallopBob + teamClimbOffset;
         d.mesh.rotation.y = turnYawLead * leadFactor + gallopSway;
         d.mesh.rotation.x = climbPitchLead * leadFactor;
-        d.mesh.rotation.z = -(this.turnInput || 0.0) * 0.18 * leadFactor;
+        d.mesh.rotation.z = turnRollLead * leadFactor;
 
         // Dynamically update harness rein line in the batched InstancedMesh
         if (this.instancedReins && d.hitchPos && this._reinDummy) {
@@ -1345,13 +1349,15 @@ export class SleighController {
     this._crashGraceUntil = (typeof performance !== 'undefined' ? performance.now() : Date.now()) + graceMs;
   }
 
-  _reportHouseCrash() {
+  _reportCrash(reason = 'house') {
     if (this._hasCrashed) return;
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     if (now < this._crashGraceUntil) return;
 
     this._hasCrashed = true;
-    if (window.deliverySystem && typeof window.deliverySystem.handleHouseCrash === 'function') {
+    if (window.deliverySystem && typeof window.deliverySystem.handleCrash === 'function') {
+      window.deliverySystem.handleCrash(reason);
+    } else if (window.deliverySystem && typeof window.deliverySystem.handleHouseCrash === 'function') {
       window.deliverySystem.handleHouseCrash();
     }
   }
@@ -1366,26 +1372,22 @@ export class SleighController {
     const forwardX = -Math.sin(this.rotationY);
     const forwardZ = -Math.cos(this.rotationY);
 
-    // Collision spheres calibrated for the sleigh chassis & reindeer lead team
+    // Collision spheres closely calibrated to actual mini sleigh model dimensions
     const collisionNodes = [
       // Sleigh chassis center
       {
-        offset: new THREE.Vector3(0, 0.05, 0),
-        radius: 0.14
+        offset: new THREE.Vector3(0, 0.035, 0),
+        radius: 0.055
       },
-      // Sleigh rear / sack
+      // Lead reindeer team
       {
-        offset: new THREE.Vector3(-forwardX * 0.15, 0.07, -forwardZ * 0.15),
-        radius: 0.12
-      },
-      // Lead reindeer (Rudolph & team)
-      {
-        offset: new THREE.Vector3(forwardX * 0.35, 0.05, forwardZ * 0.35),
-        radius: 0.12
+        offset: new THREE.Vector3(forwardX * 0.18, 0.035, forwardZ * 0.18),
+        radius: 0.045
       }
     ];
 
     let collidedAny = false;
+    let maxPenetration = 0.0;
 
     for (const houseBox of nearbyHouses) {
       for (const node of collisionNodes) {
@@ -1413,12 +1415,15 @@ export class SleighController {
 
           if (dist > 0.0001) {
             const penetration = r - dist;
+            if (penetration > maxPenetration) maxPenetration = penetration;
             pushX = (dx / dist) * penetration;
             pushY = (dy / dist) * penetration;
             pushZ = (dz / dist) * penetration;
           } else {
             // Sleigh is fully inside: push up towards roof peak
-            pushY = (houseBox.max.y + r) - nodeWorldY;
+            const penetration = (houseBox.max.y + r) - nodeWorldY;
+            if (penetration > maxPenetration) maxPenetration = penetration;
+            pushY = penetration;
           }
 
           // Displace sleigh smoothly out of house volume
@@ -1457,9 +1462,9 @@ export class SleighController {
       }
     }
 
-    // Trigger crash failure if configured
-    if (collidedAny) {
-      this._reportHouseCrash();
+    // Trigger crash failure only on real direct wall/building impact with significant penetration
+    if (collidedAny && maxPenetration > 0.025) {
+      this._reportCrash('house');
     }
   }
 

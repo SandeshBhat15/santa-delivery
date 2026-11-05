@@ -17,6 +17,24 @@ import { runMobileWarmup } from './mobile/MobileWarmup.js';
 import { BatchedChunkSystem, USE_LEGACY } from './world/BatchedChunkSystem.js';
 import { createBakedSky } from './sky/BakedSky.js';
 
+// Global Shadowmap Edge Softening:
+// Smoothly fades directional shadows into ambient light near the edges of the shadow camera frustum.
+// This completely eliminates hard diagonal cutoff lines and dotted border artifacts across all terrain, chunks, and props.
+THREE.ShaderChunk['shadowmap_pars_fragment'] = THREE.ShaderChunk['shadowmap_pars_fragment'].replace(
+  'return mix( 1.0, shadow, shadowIntensity );',
+  `
+  #if NUM_DIR_LIGHT_SHADOWS > 0
+    float edgeDistX = min(shadowCoord.x, 1.0 - shadowCoord.x);
+    float edgeDistY = min(shadowCoord.y, 1.0 - shadowCoord.y);
+    float borderDist = max(0.0, min(edgeDistX, edgeDistY));
+    // Soft feathering starting 16% before the shadowmap border down to 0 at the edge:
+    float borderFade = smoothstep(0.0, 0.16, borderDist);
+    shadow = mix(1.0, shadow, borderFade);
+  #endif
+  return mix( 1.0, shadow, shadowIntensity );
+  `
+);
+
 // --- DOM Elements ---
 const container = document.getElementById('app');
 const fpsElement = document.getElementById('fps-counter');
@@ -2715,7 +2733,7 @@ const modelUrl = '/assets/models/terrain.glb';
             mat.userData.snowShaderApplied = true;
             mat.roughness = 0.80;
             mat.metalness = 0.0;
-            mat.customProgramCacheKey = () => 'terrain_procedural_snow_unified_v11';
+            mat.customProgramCacheKey = () => 'terrain_procedural_snow_unified_v13';
 
             // Unified high-fidelity desktop snow shader across all devices
             mat.onBeforeCompile = (shader) => {
@@ -2734,7 +2752,6 @@ const modelUrl = '/assets/models/terrain.glb';
 
               // 1. Vertex Shader: compute and pass world coordinates & world normal with high precision
               shader.vertexShader = `
-                precision highp float;
                 varying vec3 vTerrainWorldPos;
                 varying vec3 vTerrainWorldNormal;
               ` + shader.vertexShader;
@@ -2755,7 +2772,6 @@ const modelUrl = '/assets/models/terrain.glb';
 
               // 2. Fragment Shader: Inject procedural noise functions with high precision
               shader.fragmentShader = `
-                precision highp float;
                 varying vec3 vTerrainWorldPos;
                 varying vec3 vTerrainWorldNormal;
                 uniform float uTime;
@@ -2771,16 +2787,16 @@ const modelUrl = '/assets/models/terrain.glb';
                 uniform vec3 uAuroraColor;
                 uniform vec3 uAuroraDir;
 
-                float hash21Snow(vec2 p) {
-                  p = fract(p * vec2(233.34, 851.73));
-                  p += dot(p, p + 23.45);
-                  return fract(p.x * p.y);
+                float hash21Snow(highp vec2 p) {
+                  highp vec2 q = fract(p * vec2(233.34, 851.73));
+                  q += dot(q, q + 23.45);
+                  return fract(q.x * q.y);
                 }
 
-                float snowNoise(vec2 p) {
-                  vec2 i = floor(p);
-                  vec2 f = fract(p);
-                  vec2 u = f * f * (3.0 - 2.0 * f);
+                float snowNoise(highp vec2 p) {
+                  highp vec2 i = floor(p);
+                  highp vec2 f = fract(p);
+                  highp vec2 u = f * f * (3.0 - 2.0 * f);
                   return mix(
                     mix(hash21Snow(i + vec2(0.0, 0.0)), hash21Snow(i + vec2(1.0, 0.0)), u.x),
                     mix(hash21Snow(i + vec2(0.0, 1.0)), hash21Snow(i + vec2(1.0, 1.0)), u.x),
@@ -2788,7 +2804,7 @@ const modelUrl = '/assets/models/terrain.glb';
                   );
                 }
 
-                float snowFBM(vec2 p) {
+                float snowFBM(highp vec2 p) {
                   float v = 0.0;
                   float a = 0.5;
                   mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);
@@ -2857,12 +2873,11 @@ const modelUrl = '/assets/models/terrain.glb';
                 vec3 halfVec = normalize(viewDir + moonDir);
                 float specAngle = clamp(dot(sWNorm, halfVec), 0.0, 1.0);
                 float moonSheen = pow(specAngle, 16.0) * (0.28 + 0.72 * sMacroDrift);
-                // Dual-frequency crystalline moonlight sheen and sparkling glint
-                float glitter1 = snowNoise(sWPos.xz * 18.0 + sin(uTime * 0.25) * 0.02);
-                float glitter2 = snowNoise(sWPos.xz * 38.0 - cos(uTime * 0.20) * 0.02);
-                float glitterBase = clamp(glitter1 * glitter2 * specAngle, 0.0, 1.0);
-                float glitter = pow(glitterBase, 3.5) * 1.35;
-                vec3 sparkleColor = vec3(0.92, 0.96, 1.0) * clamp(moonSheen * 0.22 + glitter * 0.28, 0.0, 1.0) * uSparkleIntensity;
+                // Smooth anti-aliased crystalline moonlight sheen without high-frequency noisy glitter
+                float microSparkle = snowNoise(sWPos.xz * 4.5 + sin(uTime * 0.15) * 0.05);
+                float glitterBase = clamp(microSparkle * specAngle, 0.0, 1.0);
+                float glitter = pow(glitterBase, 4.0) * 0.65;
+                vec3 sparkleColor = vec3(0.92, 0.96, 1.0) * clamp(moonSheen * 0.22 + glitter * 0.20, 0.0, 1.0) * uSparkleIntensity;
 
                 // 4. Harmonious Mixing with Existing Terrain Texture
                 // Modulate the snow with the low-poly faceting of the original texture
@@ -2916,33 +2931,16 @@ const modelUrl = '/assets/models/terrain.glb';
                 `
                 #include <normal_fragment_maps>
 
-                // Full analytical derivative of procedural snow drifts for rich 3D surface volume
-                float eps = 0.06;
-                float hC = snowFBM(sWPos.xz * 1.15) * 0.6 + sMacroDrift * 0.4;
-                float hX = snowFBM((sWPos.xz + vec2(eps, 0.0)) * 1.15) * 0.6 + (sin((sDriftUv.x + eps * 0.18) * 1.5 + sin(sDriftUv.y * 1.0) * 0.8) * 0.5 + 0.5) * 0.4;
-                float hZ = snowFBM((sWPos.xz + vec2(0.0, eps)) * 1.15) * 0.6 + (sin(sDriftUv.x * 1.5 + sin((sDriftUv.y + eps * 0.18) * 1.0) * 0.8) * 0.5 + 0.5) * 0.4;
-
-                vec3 worldDriftN = normalize(vec3(-(hX - hC) / eps * 0.38, 1.0, -(hZ - hC) / eps * 0.38));
+                // Analytical drift normal perturbation (zero finite-difference cancellation or mesh artifacts on mobile)
+                float dM_dx = cos(sDriftUv.x * 1.5 + sin(sDriftUv.y * 1.0) * 0.8) * 1.5 * 0.18;
+                float dM_dz = cos(sDriftUv.x * 1.5 + sin(sDriftUv.y * 1.0) * 0.8) * cos(sDriftUv.y * 1.0) * 0.8 * 0.18;
+                vec3 worldDriftN = normalize(vec3(-dM_dx * 0.25, 1.0, -dM_dz * 0.25));
                 vec3 viewDriftN = normalize((viewMatrix * vec4(worldDriftN, 0.0)).xyz);
-                normal = normalize(mix(normal, viewDriftN, sSnowCoverage * 0.50));
+                normal = normalize(mix(normal, viewDriftN, sSnowCoverage * 0.35));
                 `
               );
 
-              // Soften shadow camera frustum border to avoid hard square edge artifacts on terrain
-              shader.fragmentShader = shader.fragmentShader.replace(
-                'return mix( 1.0, shadow, shadowIntensity );',
-                `
-                #if NUM_DIR_LIGHT_SHADOWS > 0
-                  // Smoothly fade shadow to 1.0 near the edges of directional shadow frustum [0.0, 1.0]
-                  float edgeDistX = min(shadowCoord.x, 1.0 - shadowCoord.x);
-                  float edgeDistY = min(shadowCoord.y, 1.0 - shadowCoord.y);
-                  float borderDist = min(edgeDistX, edgeDistY);
-                  float borderFade = smoothstep(0.0, 0.08, borderDist);
-                  shadow = mix(1.0, shadow, borderFade);
-                #endif
-                return mix( 1.0, shadow, shadowIntensity );
-                `
-              );
+              // Uses global ShaderChunk['shadowmap_pars_fragment'] with 16% edge feathering
             };
 
             mat.needsUpdate = true;

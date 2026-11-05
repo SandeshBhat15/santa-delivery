@@ -138,10 +138,12 @@ export function createBakedSky(renderer, fullGLSL, skyUniforms, options = {}) {
     bakeUniforms.uCameraPos.value.copy(cameraPos);
     const prevTarget = renderer.getRenderTarget();
     const prevAutoClear = renderer.autoClear;
+    const prevScissorTest = renderer.getScissorTest();
     renderer.autoClear = false;
     if (all) renderBands(0, bands);
     else { renderBands(band, band + 1); band = (band + 1) % bands; }
     renderer.setRenderTarget(prevTarget);
+    renderer.setScissorTest(prevScissorTest);
     renderer.autoClear = prevAutoClear;
   }
 
