@@ -62,6 +62,8 @@ export class DeliverySystem {
     this.activeSparkles = [];
     this.activeShockwaves = [];
     this.activeWorldPopups = [];
+    this._giftTumbleEuler = new THREE.Euler();
+    this._giftTargetSpot = new THREE.Vector3();
 
     // Next-target guidance: temporary golden particle flow arcing toward destination
     this.guidanceFlow = new TargetGuidanceFlow(this.scene, this.isMobile);
@@ -71,6 +73,9 @@ export class DeliverySystem {
     this.currentChunkTargets = [];
     this.closestTarget = null;
     this.closestDistance = Infinity;
+    this._prevSleighPos = new THREE.Vector3();
+    this._hasPrevSleighPos = false;
+    this._beaconCenter = new THREE.Vector3();
 
     // Delivery is a single, forgiving proximity check. Fly near the highlighted
     // house's golden light beam and press DROP GIFT.
@@ -82,8 +87,8 @@ export class DeliverySystem {
 
     // Gift geometry & materials (reused across drops)
     // Sized to match the miniature village and sleigh scale
-    this.giftBoxGeo = new THREE.BoxGeometry(0.12, 0.12, 0.12);
-    this.giftRibbonGeo = new THREE.BoxGeometry(0.125, 0.125, 0.03);
+    this.giftBoxGeo = new THREE.BoxGeometry(0.09, 0.09, 0.09);
+    this.giftRibbonGeo = new THREE.BoxGeometry(0.094, 0.094, 0.024);
     this.giftColors = [
       { box: 0xe74c3c, ribbon: 0xf1c40f }, // Red & Gold
       { box: 0x27ae60, ribbon: 0xe74c3c }, // Green & Red
@@ -93,6 +98,9 @@ export class DeliverySystem {
 
     // Marker beacon visuals (textures, geometries & materials matching reference image)
     this._initMarkerTemplate();
+
+    // Atmospheric chimney smoke for active cottages (Feature 1)
+    this._initChimneySmoke();
   }
 
   _initMarkerTemplate() {
@@ -558,11 +566,7 @@ export class DeliverySystem {
           <span class="hud-label">ACCURACY</span>
           <span id="hud-accuracy" class="hud-value">--</span>
         </div>
-        <div class="hud-row hud-gift-stock">
-          <span class="hud-icon">🛷</span>
-          <span class="hud-label">GIFTS</span>
-          <span id="hud-gifts-count" class="hud-value">10</span>
-        </div>
+
       </div>
 
       <div id="hud-banner" class="hud-banner hidden">
@@ -580,7 +584,7 @@ export class DeliverySystem {
 
         <!-- Proximity delivery status badge -->
         <div id="drop-zone">
-          <div id="drop-status" class="drop-status far" aria-live="polite">GET CLOSER</div>
+          <div id="drop-status" class="drop-status far" aria-live="polite">FLY THROUGH BEACON</div>
         </div>
       </div>
 
@@ -622,8 +626,7 @@ export class DeliverySystem {
     this._progressPips = Array.from(hud.querySelectorAll('.progress-pip'));
 
     this._setupVirtualJoystick();
-    this._setupTapToDrop();
-    this._setupGuideWind();
+    // Fly-through auto drop active (screen taps disabled)
 
     const replayBtn = document.getElementById('btn-replay');
     if (replayBtn) {
@@ -729,10 +732,7 @@ export class DeliverySystem {
         e.stopPropagation();
         const dist = Math.hypot(e.clientX - zoneTouchStartX, e.clientY - zoneTouchStartY);
         const duration = performance.now() - zoneTouchStartTime;
-        // If the tap inside joystick area was quick without significant drag (< 25px movement, < 350ms duration), also trigger gift drop!
-        if (dist < 25 && duration < 350) {
-          this.triggerDelivery();
-        }
+        // Fly-through auto drop: no tap-to-drop inside joystick
         try {
           zone.releasePointerCapture(e.pointerId);
         } catch (_) {}
@@ -745,59 +745,7 @@ export class DeliverySystem {
   }
 
   _setupTapToDrop() {
-    // Multi-touch tap anywhere on screen outside active joystick touch drops a gift
-    const touchMap = new Map();
-    let lastDropTriggerTime = 0;
-
-    const handlePointerDown = (e) => {
-      // Ignore mouse right click
-      if (e.pointerType === 'mouse' && e.button !== 0) return;
-      // Ignore if clicking on game over / restart button safely (checking typeof e.target.closest)
-      if (e.target && typeof e.target.closest === 'function') {
-        if (e.target.closest('#results-overlay') || e.target.closest('#btn-replay') || e.target.closest('#quality-toggle')) {
-          return;
-        }
-      }
-      // Ignore pointer if it is currently driving the joystick
-      if (this._joystickPointerId !== null && e.pointerId === this._joystickPointerId) return;
-
-      touchMap.set(e.pointerId, {
-        startX: e.clientX,
-        startY: e.clientY,
-        startTime: performance.now()
-      });
-    };
-
-    const handlePointerUp = (e) => {
-      const data = touchMap.get(e.pointerId);
-      if (!data) return;
-      touchMap.delete(e.pointerId);
-
-      // Do not trigger if this was the joystick pointer
-      if (this._joystickPointerId !== null && e.pointerId === this._joystickPointerId) return;
-
-      const dx = e.clientX - data.startX;
-      const dy = e.clientY - data.startY;
-      const dist = Math.hypot(dx, dy);
-      const duration = performance.now() - data.startTime;
-
-      // Generous finger tap detection on mobile: < 28px movement and < 450ms touch duration
-      if (dist < 28 && duration < 450) {
-        const now = performance.now();
-        if (now - lastDropTriggerTime > 220) {
-          lastDropTriggerTime = now;
-          this.triggerDelivery();
-        }
-      }
-    };
-
-    const handlePointerCancel = (e) => {
-      touchMap.delete(e.pointerId);
-    };
-
-    window.addEventListener('pointerdown', handlePointerDown, { passive: true });
-    window.addEventListener('pointerup', handlePointerUp, { passive: true });
-    window.addEventListener('pointercancel', handlePointerCancel, { passive: true });
+    // Fly-through auto drop: tap-to-drop listeners removed so screen touches only control flight
   }
 
   _setupAltitudeControl() {
@@ -865,29 +813,6 @@ export class DeliverySystem {
 
   _setupDropButton() {
     // Replaced by _setupTapToDrop on mobile; keyboard E/Space handled in SleighController
-  }
-
-  _setupGuideWind() {
-    const guideBtn = document.getElementById('btn-guide-wind');
-    const triggerWind = (e) => {
-      if (e) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
-      this.summonGuidingWind();
-    };
-
-    if (guideBtn) {
-      guideBtn.addEventListener('pointerdown', triggerWind);
-      guideBtn.addEventListener('click', triggerWind);
-    }
-
-    // Keyboard 'G' summons the Ghost of Tsushima guiding wind
-    window.addEventListener('keydown', (e) => {
-      if (e.code === 'KeyG' && !e.repeat) {
-        triggerWind();
-      }
-    });
   }
 
   summonGuidingWind() {
@@ -1039,16 +964,10 @@ export class DeliverySystem {
       }
     }
 
-    // Select 4-5 well-spaced houses per chunk for delivery targets
-    allHouses.sort((a, b) =>
-      Math.hypot(a.worldPos.x - chunkOrigin.x, a.worldPos.z - chunkOrigin.z) -
-      Math.hypot(b.worldPos.x - chunkOrigin.x, b.worldPos.z - chunkOrigin.z)
-    );
-
-    const step = Math.max(1, Math.floor(allHouses.length / 5));
-    for (let i = 0; i < 5 && i * step < allHouses.length; i++) {
-      const h = allHouses[i * step];
-      const houseId = `chunk_${chunkKey}_house_${i}`;
+    // Index all valid houses in this chunk into trackedHouses for full random variety
+    for (let i = 0; i < allHouses.length; i++) {
+      const h = allHouses[i];
+      const houseId = `chunk_${chunkKey}_house_${h.defName}_${h.baseIndex}`;
       let houseData = this.trackedHouses.get(houseId);
       if (!houseData) {
         houseData = {
@@ -1128,6 +1047,162 @@ export class DeliverySystem {
     const dy = pos.y - target.worldPos.y;
     const dz = pos.z - target.worldPos.z;
     return dx * dx + dy * dy + dz * dz <= this.deliveryRange * this.deliveryRange;
+  }
+
+  /**
+   * Continuous collision detection: checks if the sleigh's flight segment crosses
+   * through the floating dropper icon/beacon volume (horizontal radius 0.85m, altitude 0.35m - 1.25m above rooftop).
+   */
+  _checkFlyThroughDelivery(currentPos) {
+    if (!this.runActive || this.runComplete || !this.activeTarget || this.activeTarget.delivered) {
+      if (currentPos) {
+        this._prevSleighPos.copy(currentPos);
+        this._hasPrevSleighPos = true;
+      }
+      return;
+    }
+
+    if (!this._hasPrevSleighPos) {
+      this._prevSleighPos.copy(currentPos);
+      this._hasPrevSleighPos = true;
+      return;
+    }
+
+    const target = this.activeTarget;
+    const targetBase = target.worldPos;
+
+    // Beacon center sits at the floating icon height above the roof ridge
+    const iconH = this.giftDropMarker?.iconHeight ?? 0.52;
+    const beaconCenter = this._beaconCenter.set(targetBase.x, targetBase.y + iconH, targetBase.z);
+
+    const p1 = this._prevSleighPos;
+    const p2 = currentPos;
+
+    // Direct distance from sleigh center to beacon center
+    const currDx = p2.x - beaconCenter.x;
+    const currDz = p2.z - beaconCenter.z;
+    const currHorizDist = Math.hypot(currDx, currDz);
+    const currVertDist = Math.abs(p2.y - beaconCenter.y);
+
+    // Continuous segment: check if this frame's step crossed or reached the beacon plane
+    const segX = p2.x - p1.x;
+    const segY = p2.y - p1.y;
+    const segZ = p2.z - p1.z;
+    const segLenSq = segX * segX + segY * segY + segZ * segZ;
+
+    // Guard against teleports or respawns (> 2.0m jump in a single frame)
+    if (segLenSq > 4.0) {
+      this._prevSleighPos.copy(currentPos);
+      return;
+    }
+
+    let reachedBeacon = false;
+    let effectiveDist = currHorizDist;
+
+    // 1. Direct hit: sleigh center is currently inside the exact beacon icon volume
+    if (currHorizDist <= 0.16 && currVertDist <= 0.20) {
+      reachedBeacon = true;
+      effectiveDist = currHorizDist;
+    } else if (segLenSq > 1e-6) {
+      // 2. Exact pass: flight segment in this frame must pierce directly through the beacon
+      const segLenXZSq = segX * segX + segZ * segZ;
+      if (segLenXZSq > 1e-6) {
+        const tXZ = ((beaconCenter.x - p1.x) * segX + (beaconCenter.z - p1.z) * segZ) / segLenXZSq;
+        if (tXZ >= 0.0 && tXZ <= 1.0) {
+          const crossX = p1.x + tXZ * segX;
+          const crossY = p1.y + tXZ * segY;
+          const crossZ = p1.z + tXZ * segZ;
+          const passHorizDist = Math.hypot(crossX - beaconCenter.x, crossZ - beaconCenter.z);
+          const passVertDist = Math.abs(crossY - beaconCenter.y);
+          if (passHorizDist <= 0.16 && passVertDist <= 0.22) {
+            reachedBeacon = true;
+            effectiveDist = passHorizDist;
+          }
+        }
+      }
+    }
+
+    if (reachedBeacon) {
+      this._triggerFlyThroughDelivery(target, effectiveDist);
+    }
+
+    this._prevSleighPos.copy(currentPos);
+  }
+
+  _triggerFlyThroughDelivery(target, horizDist = 0) {
+    if (!target || target.delivered || !this.runActive || this.runComplete) return;
+
+    // Guard against multiple deliveries to the same target while gift is mid-air
+    if (target.isDelivering) return;
+    target.isDelivering = true;
+
+    this.attempts++;
+
+    // 100% accuracy hit
+    const precision = Math.max(0.90, 1.0 - (horizDist / 0.16) * 0.10);
+
+    // Santa throws the gift with an athletic forward sweep toward the chimney
+    if (this.sleighController && this.sleighController.triggerThrow) {
+      this.sleighController.triggerThrow(target.worldPos);
+    }
+
+    // Spawn falling gift touchdown arc from Santa directly to the rooftop
+    const startPos = this.sleighController.getDropOrigin();
+    const giftColorPair = this.giftColors[Math.floor(Math.random() * this.giftColors.length)];
+
+    const giftGroup = new THREE.Group();
+    giftGroup.position.copy(startPos);
+
+    const boxMat = new THREE.MeshStandardMaterial({
+      color: giftColorPair.box,
+      roughness: 0.35,
+      metalness: 0.1
+    });
+    const ribbonMat = new THREE.MeshStandardMaterial({
+      color: giftColorPair.ribbon,
+      roughness: 0.2,
+      metalness: 0.5
+    });
+
+    const box = new THREE.Mesh(this.giftBoxGeo, boxMat);
+    box.castShadow = true;
+    giftGroup.add(box);
+
+    const ribbon1 = new THREE.Mesh(this.giftRibbonGeo, ribbonMat);
+    giftGroup.add(ribbon1);
+    const ribbon2 = new THREE.Mesh(this.giftRibbonGeo, ribbonMat);
+    ribbon2.rotation.y = Math.PI / 2;
+    giftGroup.add(ribbon2);
+
+    this.scene.add(giftGroup);
+    soundManager.playDrop();
+
+    // Beacon ring pulse burst upon fly-through contact
+    if (this.giftDropMarker) {
+      this.giftDropMarker.burst();
+    }
+
+    const targetPos = target.worldPos.clone();
+    const throwDist = startPos.distanceTo(targetPos);
+    // Faster, responsive descent: reaches chimney within 0.28s - 0.38s
+    const dropSpeed = Math.max(2.8, Math.min(3.8, 2.6 / Math.max(0.25, throwDist * 0.30)));
+
+    this.activeGifts.push({
+      mesh: giftGroup,
+      startPos: startPos.clone(),
+      targetHouse: target,
+      isSuccess: true,
+      precision,
+      targetPos,
+      peakHeight: 0.22,
+      progress: 0.0,
+      dropSpeed,
+      rotVel: new THREE.Vector3(
+        (Math.random() - 0.5) * 14,
+        (Math.random() - 0.5) * 16,
+        (Math.random() - 0.5) * 12
+      )
+    });
   }
 
   triggerDelivery() {
@@ -1278,6 +1353,9 @@ export class DeliverySystem {
     const sleighPos = this.sleighController.position;
     const camera = this.sleighController?.camera;
 
+    // Check fly-through trigger across the active house's floating beacon volume
+    this._checkFlyThroughDelivery(sleighPos);
+
     // 1. Animate active upright GiftDropMarker
     if (this.giftDropMarker && this.activeTarget) {
       const camDist = camera ? camera.position.distanceTo(this.activeTarget.worldPos) : 15.0;
@@ -1290,19 +1368,23 @@ export class DeliverySystem {
       const gift = this.activeGifts[i];
       gift.progress += gift.dropSpeed * delta;
 
-      if (Math.random() < 0.75) {
+      if (Math.random() < 0.65) {
         this._spawnTrailSparkle(gift.mesh.position);
       }
 
       if (gift.progress >= 1.0) {
-        // Impact
+        // Impact & Touchdown into chimney
         this.scene.remove(gift.mesh);
         this.activeGifts.splice(i, 1);
 
         if (gift.isSuccess && gift.targetHouse && !gift.targetHouse.delivered) {
+          // Touchdown in chimney: hearth embers & full celebration!
+          this._spawnChimneyTouchdown(gift.targetPos);
           this._handleSuccessfulDelivery(gift.targetHouse, gift.precision || 0);
-        } else {
+        } else if (!gift.isSuccess) {
           this._handleMissedDelivery(gift.targetPos);
+        } else {
+          this._spawnChimneyTouchdown(gift.targetPos);
         }
 
         // Running out of gifts ends the run once every thrown gift has landed
@@ -1314,14 +1396,26 @@ export class DeliverySystem {
         }
       } else {
         const t = gift.progress;
-        gift.mesh.position.lerpVectors(gift.startPos, gift.targetPos, t);
-        // Parabolic gravity arc
-        const arc = Math.sin(t * Math.PI) * (gift.isSuccess ? 1.2 : 0.7);
+        // Non-linear trajectory: fast initial toss easing cleanly into chimney
+        const easeT = t * t * (3.0 - 2.0 * t);
+        gift.mesh.position.lerpVectors(gift.startPos, gift.targetPos, easeT);
+
+        // Smooth parabolic gravity arc: highest mid-throw, dropping straight down into chimney
+        const arc = Math.sin(t * Math.PI) * (gift.isSuccess ? 0.12 : 0.22);
         gift.mesh.position.y += arc;
 
-        gift.mesh.rotation.x += gift.rotVel.x * delta;
-        gift.mesh.rotation.y += gift.rotVel.y * delta;
-        gift.mesh.rotation.z += gift.rotVel.z * delta;
+        // Realistic absorption: gift scales down as it enters the chimney top (from t=0.60 to 1.0)
+        if (gift.isSuccess && t > 0.60) {
+          const shrinkT = (t - 0.60) / 0.40;
+          const currentScale = Math.max(0.15, 1.0 - shrinkT * 0.85);
+          gift.mesh.scale.setScalar(currentScale);
+        }
+
+        // Faster tumbling that damps as gift aligns with chimney
+        const rotDamp = gift.isSuccess && t > 0.70 ? (1.0 - (t - 0.70) / 0.30) : 1.0;
+        gift.mesh.rotation.x += gift.rotVel.x * delta * rotDamp;
+        gift.mesh.rotation.y += gift.rotVel.y * delta * rotDamp;
+        gift.mesh.rotation.z += gift.rotVel.z * delta * rotDamp;
       }
     }
 
@@ -1338,7 +1432,7 @@ export class DeliverySystem {
       this.guidanceFlow.update(delta, sleighPos, forward);
     }
 
-    // 5. Update sparkle particle effects
+    // 5. Update sparkle particle effects & hearth flares
     for (let i = this.activeSparkles.length - 1; i >= 0; i--) {
       const sp = this.activeSparkles[i];
       sp.age += delta;
@@ -1347,6 +1441,14 @@ export class DeliverySystem {
         if (sp.mesh.geometry) sp.mesh.geometry.dispose();
         if (sp.mesh.material) sp.mesh.material.dispose();
         this.activeSparkles.splice(i, 1);
+      } else if (sp.isFlare) {
+        // Delivered house celebration warm rooftop flare (Feature 4)
+        const t = sp.age / sp.maxAge;
+        const scale = 1.0 + t * 0.5;
+        sp.mesh.scale.set(scale, scale, scale);
+        const pulse = 1.0 + 0.12 * Math.sin(sp.age * 9.0);
+        const fade = Math.max(0.0, 1.0 - Math.pow(t, 1.3));
+        sp.mesh.material.opacity = (sp.baseOpacity || 0.85) * pulse * fade;
       } else {
         const t = sp.age / sp.maxAge;
         const posAttr = sp.mesh.geometry.attributes.position;
@@ -1379,6 +1481,9 @@ export class DeliverySystem {
         }
       }
     }
+
+    // 5b. Update atmospheric chimney smoke (Feature 1)
+    this._updateChimneySmoke(delta);
 
     // 6. Update expanding shockwave rings
     for (let i = this.activeShockwaves.length - 1; i >= 0; i--) {
@@ -1445,7 +1550,7 @@ export class DeliverySystem {
     const mat = new THREE.PointsMaterial({
       map: this._starGlintTexture,
       color: 0xffea78,
-      size: this.isMobile ? 0.06 : 0.08,
+      size: this.isMobile ? 0.038 : 0.048,
       transparent: true,
       opacity: 0.95,
       blending: THREE.AdditiveBlending,
@@ -1513,21 +1618,11 @@ export class DeliverySystem {
       this.guidanceFlow.setTarget(sleighPos, forward, nextTarget.worldPos);
     }
 
-    // Multiplier streak bonus
-    const comboMult = this.combo > 1 ? this.combo : 1;
+    // Multiplier streak sound chimes (no text banner or popup on drop for clean view)
     if (this.combo > 1) {
       soundManager.playCombo(this.combo);
-      this._spawnWorldScorePopup(houseData.worldPos, `🔥 ${this.combo}X COMBO!`);
-      this.showBanner(
-        `🔥 ${this.combo}X COMBO! +${points} PTS • ${this.deliveriesMade}/${this.deliveriesRequired}`,
-        'success'
-      );
     } else {
       soundManager.playSuccess();
-      this.showBanner(
-        `GIFT DELIVERED! +${points} PTS • ${this.deliveriesMade}/${this.deliveriesRequired}`,
-        'success'
-      );
     }
 
     this.activeTarget = null;
@@ -1599,6 +1694,7 @@ export class DeliverySystem {
     // Reset every registered house and remove legacy markers
     this.trackedHouses.forEach((houseData) => {
       houseData.delivered = false;
+      houseData.isDelivering = false;
       if (houseData.marker && houseData.marker !== this.giftDropMarker?.group) {
         this.markersGroup.remove(houseData.marker);
       }
@@ -1634,6 +1730,7 @@ export class DeliverySystem {
     this.closestDistance = Infinity;
     this.currentChunkKey = '0,0';
     this._rangeState = null;
+    this._hasPrevSleighPos = false;
 
     if (resetFlight && this.sleighController?.resetFlight) {
       this.sleighController.resetFlight();
@@ -1677,40 +1774,65 @@ export class DeliverySystem {
       return;
     }
 
-    // Balanced random rooftop selection across loaded chunks with enjoyable flight separation
-    // distance (7.5m - 12.5m) so Santa naturally glides between village rooftops in ~4-6 seconds.
     const route = [];
     const usedIds = new Set();
-    let cursor = origin;
-    const minDistance = 6.0;  // Comfortable separation in meters
-    const maxDistance = 12.0; // Snappy pacing: reachable in 3-5s, clearly visible in fog
 
+    // Santa's current forward heading vector
+    const fwdX = -Math.sin(this.sleighController.rotationY || 0);
+    const fwdZ = -Math.cos(this.sleighController.rotationY || 0);
+
+    // Target 1: Pick a random house situated ahead of Santa (forward cone, distance 8m - 25m)
+    const forwardCandidates = all.filter((h) => {
+      const dx = h.worldPos.x - origin.x;
+      const dz = h.worldPos.z - origin.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist < 8.0 || dist > 26.0) return false;
+      const dot = (dx * fwdX + dz * fwdZ) / (dist || 1);
+      return dot > 0.20; // In front of Santa within ~78 degree cone
+    });
+
+    let firstPick = null;
+    if (forwardCandidates.length > 0) {
+      firstPick = forwardCandidates[Math.floor(Math.random() * forwardCandidates.length)];
+    } else {
+      const nearby = all.filter((h) => {
+        const d = Math.hypot(h.worldPos.x - origin.x, h.worldPos.z - origin.z);
+        return d >= 8.0 && d <= 25.0;
+      });
+      firstPick = nearby.length > 0
+        ? nearby[Math.floor(Math.random() * nearby.length)]
+        : all[Math.floor(Math.random() * all.length)];
+    }
+
+    usedIds.add(firstPick.houseId);
+    route.push(firstPick);
+    let cursor = firstPick.worldPos;
+
+    // Targets 2 through 5: Randomly selected with healthy spatial separation (8.0m - 20.0m)
     while (route.length < this.deliveriesRequired) {
-      // Find all unused houses within the ideal distance band (7.5m - 14.0m)
       let candidates = all.filter((h) => {
         if (usedIds.has(h.houseId)) return false;
         const d = Math.hypot(h.worldPos.x - cursor.x, h.worldPos.z - cursor.z);
-        return d >= minDistance && d <= maxDistance;
+        return d >= 8.0 && d <= 20.0;
       });
 
-      // If strict distance band yields no candidates, accept any house at least minDistance away
+      // Relax distance if needed to encompass nearby clusters
       if (candidates.length === 0) {
         candidates = all.filter((h) => {
           if (usedIds.has(h.houseId)) return false;
           const d = Math.hypot(h.worldPos.x - cursor.x, h.worldPos.z - cursor.z);
-          return d >= minDistance;
+          return d >= 6.0 && d <= 28.0;
         });
       }
 
-      // If still empty, accept any unused house
+      // If still empty, accept any unused house across all chunks
       if (candidates.length === 0) {
         candidates = all.filter((h) => !usedIds.has(h.houseId));
       }
 
-      // If all houses have been used, break
       if (candidates.length === 0) break;
 
-      // Pick randomly from the eligible candidates
+      // Pick randomly from eligible candidates
       const randomIndex = Math.floor(Math.random() * candidates.length);
       const picked = candidates[randomIndex];
 
@@ -1798,7 +1920,7 @@ export class DeliverySystem {
   }
 
   _getAccuracy() {
-    return this.attempts > 0 ? this.hits / this.attempts : 0;
+    return this.attempts > 0 ? this.hits / this.attempts : 1.0;
   }
 
   _finishRun(success, reason = null) {
@@ -1867,6 +1989,16 @@ export class DeliverySystem {
   }
 
   _updateHUD() {
+    if (this.uiManager) {
+      this.uiManager.updateHUD({
+        deliveries: this.deliveriesMade,
+        maxDeliveries: this.deliveriesRequired,
+        stars: this.starsCollected,
+        totalStars: this.starsTotal,
+        score: this.score
+      });
+    }
+
     const setText = (id, text) => {
       const el = document.getElementById(id);
       if (el) el.textContent = text;
@@ -1895,10 +2027,22 @@ export class DeliverySystem {
   }
 
   _showResults(success, reason = null) {
+    const isCrash = reason === 'crash';
+    if (this.uiManager) {
+      this.uiManager.showResults({
+        deliveries: this.deliveriesMade,
+        maxDeliveries: this.deliveriesRequired,
+        stars: this.starsCollected,
+        totalStars: this.starsTotal,
+        deliveryScore: this.score,
+        timeRemaining: this.uiManager.timeRemaining || 0,
+        reason: isCrash ? 'crash' : (success ? 'complete' : 'timeout')
+      });
+    }
+
     const overlay = document.getElementById('results-overlay');
     if (!overlay) return;
 
-    const isCrash = reason === 'crash';
     const accuracy = this._getAccuracy();
     const accPct = Math.round(accuracy * 100);
     let rating = 1;
@@ -1948,6 +2092,9 @@ export class DeliverySystem {
   }
 
   _hideResults() {
+    if (this.uiManager && this.uiManager.currentScreen === 'results') {
+      this.uiManager.showScreen('playing');
+    }
     const overlay = document.getElementById('results-overlay');
     if (!overlay) return;
     overlay.classList.remove('visible');
@@ -2289,7 +2436,7 @@ export class DeliverySystem {
 
     const mat = new THREE.PointsMaterial({
       map: this._starGlintTexture || this._haloTexture,
-      size: this.isMobile ? 0.32 : 0.42,
+      size: this.isMobile ? 0.08 : 0.10,
       vertexColors: true,
       transparent: true,
       opacity: 1.0,
@@ -2331,7 +2478,7 @@ export class DeliverySystem {
   }
 
   _spawnSparkleBurst(worldPos, targetPos = null) {
-    const count = this.isMobile ? 24 : 60;
+    const count = this.isMobile ? 18 : 28;
     const geo = new THREE.BufferGeometry();
     const positions = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
@@ -2344,27 +2491,31 @@ export class DeliverySystem {
       const dY = targetPos.y - worldPos.y;
       const dZ = targetPos.z - worldPos.z;
       const len = Math.hypot(dX, dY, dZ) || 1.0;
-      driftX = (dX / len) * 0.9;
-      driftY = Math.max(0.2, (dY / len) * 0.9);
-      driftZ = (dZ / len) * 0.9;
+      driftX = (dX / len) * 0.3;
+      driftY = Math.max(0.1, (dY / len) * 0.3);
+      driftZ = (dZ / len) * 0.3;
     }
 
     for (let i = 0; i < count; i++) {
-      positions[i * 3] = worldPos.x;
-      positions[i * 3 + 1] = worldPos.y;
-      positions[i * 3 + 2] = worldPos.z;
+      positions[i * 3]     = worldPos.x + (Math.random() - 0.5) * 0.08;
+      positions[i * 3 + 1] = worldPos.y + 0.05 + Math.random() * 0.06;
+      positions[i * 3 + 2] = worldPos.z + (Math.random() - 0.5) * 0.08;
 
-      // Golden & emerald star colors
-      const isGold = Math.random() > 0.35;
-      colors[i * 3]     = isGold ? 1.0 : 0.2;
-      colors[i * 3 + 1] = isGold ? 0.85 : 1.0;
-      colors[i * 3 + 2] = isGold ? 0.2 : 0.4;
+      // Radiant festive palette: 24k gold, champagne white, and delicate starry glow
+      const colorRoll = Math.random();
+      if (colorRoll > 0.6) {
+        colors[i * 3] = 1.0; colors[i * 3 + 1] = 0.98; colors[i * 3 + 2] = 0.92; // Diamond Starlight
+      } else if (colorRoll > 0.2) {
+        colors[i * 3] = 1.0; colors[i * 3 + 1] = 0.84; colors[i * 3 + 2] = 0.28; // Pure Gold
+      } else {
+        colors[i * 3] = 1.0; colors[i * 3 + 1] = 0.65; colors[i * 3 + 2] = 0.15; // Warm Honey Amber
+      }
 
       const angle = Math.random() * Math.PI * 2;
-      const speed = 2.5 + Math.random() * 4.5;
+      const speed = 0.45 + Math.random() * 0.65;
       velocities.push({
         x: Math.cos(angle) * speed + driftX,
-        y: 1.5 + Math.random() * 5.0 + driftY,
+        y: 0.45 + Math.random() * 0.65 + driftY,
         z: Math.sin(angle) * speed + driftZ
       });
     }
@@ -2373,10 +2524,11 @@ export class DeliverySystem {
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
     const mat = new THREE.PointsMaterial({
-      size: this.isMobile ? 0.35 : 0.45,
+      map: this._starGlintTexture,
+      size: this.isMobile ? 0.075 : 0.095,
       vertexColors: true,
       transparent: true,
-      opacity: 1.0,
+      opacity: 0.95,
       blending: THREE.AdditiveBlending,
       depthWrite: false
     });
@@ -2388,8 +2540,86 @@ export class DeliverySystem {
       mesh: sparkleMesh,
       velocities: velocities,
       age: 0.0,
-      maxAge: 1.2
+      maxAge: 0.60
     });
+  }
+
+  _spawnChimneyTouchdown(pos) {
+    if (!pos) return;
+    const count = 10;
+    const geo = new THREE.BufferGeometry();
+    const positions = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
+    const velocities = [];
+
+    for (let i = 0; i < count; i++) {
+      positions[i * 3]     = pos.x + (Math.random() - 0.5) * 0.06;
+      positions[i * 3 + 1] = pos.y + 0.02;
+      positions[i * 3 + 2] = pos.z + (Math.random() - 0.5) * 0.06;
+
+      colors[i * 3]     = 1.0;
+      colors[i * 3 + 1] = 0.68 + Math.random() * 0.25;
+      colors[i * 3 + 2] = 0.18;
+
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 0.15 + Math.random() * 0.25;
+      velocities.push({
+        x: Math.cos(angle) * speed,
+        y: 0.35 + Math.random() * 0.40,
+        z: Math.sin(angle) * speed
+      });
+    }
+
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    const mat = new THREE.PointsMaterial({
+      map: this._starGlintTexture,
+      size: this.isMobile ? 0.05 : 0.065,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+
+    const emberMesh = new THREE.Points(geo, mat);
+    this.scene.add(emberMesh);
+
+    this.activeSparkles.push({
+      mesh: emberMesh,
+      velocities,
+      age: 0.0,
+      maxAge: 0.45
+    });
+
+    // Delivered house celebration warm hearth flare / ember halo (Feature 4)
+    const flareGeo = new THREE.PlaneGeometry(0.38, 0.38);
+    const flareMat = new THREE.MeshBasicMaterial({
+      map: this._starGlintTexture,
+      color: 0xffaa33,
+      transparent: true,
+      opacity: 0.85,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    const flareMesh = new THREE.Mesh(flareGeo, flareMat);
+    flareMesh.position.set(pos.x, pos.y + 0.04, pos.z);
+    flareMesh.rotation.x = -Math.PI / 2;
+    this.scene.add(flareMesh);
+
+    this.activeSparkles.push({
+      mesh: flareMesh,
+      isFlare: true,
+      baseOpacity: 0.85,
+      age: 0.0,
+      maxAge: 1.8
+    });
+
+    if (this.uiManager) {
+      this.uiManager.showDeliveryToast(500);
+    }
   }
 
   /**
@@ -2467,7 +2697,7 @@ export class DeliverySystem {
 
     const mat = new THREE.PointsMaterial({
       map: this._starGlintTexture || null,
-      size: this.isMobile ? 0.18 : 0.24,
+      size: this.isMobile ? 0.06 : 0.08,
       vertexColors: true,
       transparent: true,
       opacity: 0.95,
@@ -2511,9 +2741,9 @@ export class DeliverySystem {
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     const mat = new THREE.PointsMaterial({
       color: 0xc8d6e5,
-      size: 0.5,
+      size: this.isMobile ? 0.10 : 0.13,
       transparent: true,
-      opacity: 0.7,
+      opacity: 0.6,
       depthWrite: false
     });
 
@@ -2557,18 +2787,145 @@ export class DeliverySystem {
     if (state === this._rangeState) return;
     this._rangeState = state;
 
+    const guidanceText =
+      state === 'ready' ? 'FLY THROUGH BEACON!' :
+      state === 'far' ? 'APPROACH BEACON' :
+      this.runComplete ? 'RUN COMPLETE' : 'NEXT HOUSE...';
+
+    if (this.uiManager) {
+      this.uiManager.setGuidance(guidanceText, state);
+    }
+
     const statusEl = document.getElementById('drop-status');
     const dropBtn = document.getElementById('btn-drop-gift');
 
     if (statusEl) {
-      statusEl.textContent =
-        state === 'ready' ? 'READY TO DROP' :
-        state === 'far' ? 'GET CLOSER' :
-        this.runComplete ? 'RUN COMPLETE' : 'NEXT HOUSE...';
+      statusEl.textContent = guidanceText;
       statusEl.classList.toggle('ready', state === 'ready');
       statusEl.classList.toggle('far', state === 'far');
     }
 
     if (dropBtn) dropBtn.classList.toggle('ready', state === 'ready');
+  }
+
+  _initChimneySmoke() {
+    const maxSmoke = 24;
+    this._smokeCount = maxSmoke;
+    this._smokeIndex = 0;
+    this._smokeLife = new Float32Array(maxSmoke);
+    this._smokeMaxLife = new Float32Array(maxSmoke);
+    this._smokeVel = new Float32Array(maxSmoke * 3);
+
+    const positions = new Float32Array(maxSmoke * 3);
+    const colors = new Float32Array(maxSmoke * 3);
+    for (let i = 0; i < maxSmoke; i++) {
+      positions[i * 3 + 1] = -9999;
+      colors[i * 3 + 0] = 0.85;
+      colors[i * 3 + 1] = 0.90;
+      colors[i * 3 + 2] = 0.95;
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 16;
+    canvas.height = 16;
+    const ctx = canvas.getContext('2d');
+    const grad = ctx.createRadialGradient(8, 8, 0, 8, 8, 8);
+    grad.addColorStop(0.0, 'rgba(235, 245, 255, 0.7)');
+    grad.addColorStop(0.4, 'rgba(205, 225, 245, 0.35)');
+    grad.addColorStop(1.0, 'rgba(180, 205, 230, 0.0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 16, 16);
+    const smokeTex = new THREE.CanvasTexture(canvas);
+
+    const mat = new THREE.PointsMaterial({
+      size: this.isMobile ? 0.055 : 0.075,
+      map: smokeTex,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      vertexColors: true
+    });
+
+    this._chimneySmokePoints = new THREE.Points(geo, mat);
+    this._chimneySmokePoints.frustumCulled = false;
+    this.scene.add(this._chimneySmokePoints);
+    this._smokeSpawnAccum = 0;
+  }
+
+  _updateChimneySmoke(delta) {
+    if (!this._chimneySmokePoints) return;
+
+    const dt = Math.min(delta, 0.1);
+    const posAttr = this._chimneySmokePoints.geometry.attributes.position;
+    const colAttr = this._chimneySmokePoints.geometry.attributes.color;
+    const posArr = posAttr.array;
+    const colArr = colAttr.array;
+
+    let hasActive = false;
+    for (let i = 0; i < this._smokeCount; i++) {
+      if (this._smokeLife[i] > 0) {
+        hasActive = true;
+        this._smokeLife[i] -= dt;
+        const lifeT = Math.max(0, this._smokeLife[i] / (this._smokeMaxLife[i] || 1));
+        const idx3 = i * 3;
+
+        if (lifeT <= 0) {
+          posArr[idx3 + 1] = -9999;
+          this._smokeLife[i] = 0;
+        } else {
+          posArr[idx3 + 0] += this._smokeVel[idx3 + 0] * dt;
+          posArr[idx3 + 1] += this._smokeVel[idx3 + 1] * dt;
+          posArr[idx3 + 2] += this._smokeVel[idx3 + 2] * dt;
+
+          // Natural arctic drift
+          this._smokeVel[idx3 + 0] += 0.015 * dt;
+          this._smokeVel[idx3 + 2] -= 0.01 * dt;
+
+          const opacity = Math.sin(lifeT * Math.PI) * 0.40;
+          colArr[idx3 + 0] = opacity * 0.85;
+          colArr[idx3 + 1] = opacity * 0.90;
+          colArr[idx3 + 2] = opacity * 0.95;
+        }
+      }
+    }
+
+    // Spawn puff from activeTarget chimney
+    if (this.activeTarget && this.activeTarget.worldPos) {
+      this._smokeSpawnAccum += dt;
+      if (this._smokeSpawnAccum >= 0.18) {
+        this._smokeSpawnAccum = 0;
+
+        const sIdx = this._smokeIndex;
+        this._smokeIndex = (this._smokeIndex + 1) % this._smokeCount;
+
+        const maxLife = 1.8 + Math.random() * 0.5;
+        this._smokeLife[sIdx] = maxLife;
+        this._smokeMaxLife[sIdx] = maxLife;
+
+        const idx3 = sIdx * 3;
+        const p = this.activeTarget.worldPos;
+        posArr[idx3 + 0] = p.x + (Math.random() - 0.5) * 0.04;
+        posArr[idx3 + 1] = p.y + 0.04;
+        posArr[idx3 + 2] = p.z + (Math.random() - 0.5) * 0.04;
+
+        this._smokeVel[idx3 + 0] = (Math.random() - 0.5) * 0.02;
+        this._smokeVel[idx3 + 1] = 0.16 + Math.random() * 0.08;
+        this._smokeVel[idx3 + 2] = (Math.random() - 0.5) * 0.02;
+
+        colArr[idx3 + 0] = 0.0;
+        colArr[idx3 + 1] = 0.0;
+        colArr[idx3 + 2] = 0.0;
+        hasActive = true;
+      }
+    }
+
+    if (hasActive) {
+      posAttr.needsUpdate = true;
+      colAttr.needsUpdate = true;
+    }
   }
 }

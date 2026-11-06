@@ -127,7 +127,9 @@ try {
       composer.setSize(w, h);
     }
     if (bloomPass && bloomPass.setSize) {
-      bloomPass.setSize(Math.round(w * dpr), Math.round(h * dpr));
+      const isMob = (window.IS_MOBILE ?? (window.innerWidth <= 840));
+      const bScale = isMob ? 0.65 : 1.0;
+      bloomPass.setSize(Math.round(w * dpr * bScale), Math.round(h * dpr * bScale));
     }
     this._onToggle();
   }

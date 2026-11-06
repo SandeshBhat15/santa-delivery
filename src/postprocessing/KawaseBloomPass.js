@@ -173,14 +173,14 @@ const CompositeShader = {
 };
 
 export class KawaseBloomPass extends Pass {
-  constructor(resolution, intensity = 1.35, threshold = 0.30, radius = 1.1) {
+  constructor(resolution, intensity = 1.35, threshold = 0.30, radius = 1.1, numLevels = 4) {
     super();
 
     this.resolution = resolution ? resolution.clone() : new THREE.Vector2(window.innerWidth, window.innerHeight);
     this.intensity = intensity;
     this.threshold = threshold;
     this.radius = radius;
-    this.numLevels = 4; // Down to 1/16 resolution for rich broad soft falloff
+    this.numLevels = Math.max(2, Math.min(6, Number(numLevels) || 4)); // Down to 1/16 resolution for rich broad soft falloff
 
     this.renderTargetsHorizontal = [];
     this.renderTargetsVertical = [];

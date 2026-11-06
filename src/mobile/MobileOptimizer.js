@@ -139,8 +139,9 @@ export class MobileOptimizer {
       this.ctx.composer.setPixelRatio(targetDpr);
     }
     if (this.ctx.bloomPass) {
-      const w = Math.round(window.innerWidth * targetDpr);
-      const h = Math.round(window.innerHeight * targetDpr);
+      const scale = this.enabled ? 0.65 : 1.0;
+      const w = Math.round(window.innerWidth * targetDpr * scale);
+      const h = Math.round(window.innerHeight * targetDpr * scale);
       this.ctx.bloomPass.setSize(w, h);
     }
 

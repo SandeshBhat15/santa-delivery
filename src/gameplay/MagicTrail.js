@@ -24,6 +24,12 @@ import * as THREE from 'three';
  * - `widthScale` shrinks the original file's world units (built for a ~4 m
  *   sleigh) down to this scene's ~0.28 m sled footprint.
  *
+ * TAIL FIX
+ * - The old version removed points one at a time and pinched the last N *points* to zero width, so the
+ *   visible end of the ribbon jumped back by one point spacing each time a point expired (a hard, stepping cut).
+ * - Now: the anchor is sampled at a fixed TIME step, the oldest vertex is interpolated at exactly `life`
+ *   seconds old, and tapering depends only on continuous age. The end slides smoothly and always fades to 0.
+ *
  * Usage:
  *   const trail = new MagicTrail(scene, camera, { life: 1.0, widthScale: 0.05, gainScale: 0.5 });
  *   trail.update(elapsedTime, anchorWorldPos, forwardVector);
@@ -33,15 +39,34 @@ export class MagicTrail {
     this.scene = scene;
     this.camera = camera;
     this.life = opts.life ?? 2;            // seconds the trail stays visible
-    this.minDist = opts.minDist ?? 0.45;   // distance between stored trail points
+    this.minDist = opts.minDist ?? 0.45;   // kept for API compatibility; the trail is now sampled by TIME, not distance
     this.maxPoints = opts.maxPoints ?? 420;
     this.widthScale = opts.widthScale ?? 1;
     this.gainScale = opts.gainScale ?? 1; // keeps the additive stack gold instead of clipping to white
     this.streak = opts.streak ?? 1;       // light-streak amplitude in the ribbon (shimmer when < 1)
-    this.points = [];                      // stored samples, oldest first: {x, y, z, t}
-    this._lastAnchor = null;               // records where the last waypoint was stored
 
-    const n = this.maxPoints;
+    // --- time-sampled history (ring buffer, zero allocations per frame) ---
+    // The anchor is sampled at a fixed time step (life / samples) instead of every `minDist` metres.
+    // That keeps the ribbon dense at any speed and, together with the interpolated tail below,
+    // makes the visible end of the trail move continuously instead of jumping one point at a time.
+    this.samples = Math.max(8, Math.min(opts.samples ?? 48, this.maxPoints - 8));
+    this._cap = this.samples + 8;
+    this._sx = new Float32Array(this._cap);
+    this._sy = new Float32Array(this._cap);
+    this._sz = new Float32Array(this._cap);
+    this._st = new Float64Array(this._cap);   // sample times (seconds)
+    this._head = 0;                           // ring index of the OLDEST sample
+    this._count = 0;
+    this._sampleDt = this.life / this.samples;
+
+    const n = this._cap + 2;                  // stored samples + live head + interpolated tail
+    this._maxN = n;
+    this._ax = new Float32Array(n);           // scratch: ribbon vertices, newest first
+    this._ay = new Float32Array(n);
+    this._az = new Float32Array(n);
+    this._aage = new Float32Array(n);
+    this._aarc = new Float32Array(n);         // scratch: cumulative arc length from the head
+
     this.pos = new Float32Array(n * 6);
     this.side = new Float32Array(n * 6);
     this.uv = new Float32Array(n * 4);
@@ -50,12 +75,12 @@ export class MagicTrail {
       const a = 2 * i;
       idx.set([a, a + 1, a + 2, a + 1, a + 3, a + 2], i * 6);
     }
-    this.envelope = new Float32Array(n * 4); // [headEnvelope, tailEnvelope] for each vertex
+    this.envelope = new Float32Array(n * 4).fill(1); // constant: tapering is now driven only by continuous age (u)
     this.geo = new THREE.BufferGeometry();
     this.geo.setAttribute('position', new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
     this.geo.setAttribute('aSide', new THREE.BufferAttribute(this.side, 3).setUsage(THREE.DynamicDrawUsage));
     this.geo.setAttribute('uv', new THREE.BufferAttribute(this.uv, 2).setUsage(THREE.DynamicDrawUsage));
-    this.geo.setAttribute('aEnvelope', new THREE.BufferAttribute(this.envelope, 2).setUsage(THREE.DynamicDrawUsage));
+    this.geo.setAttribute('aEnvelope', new THREE.BufferAttribute(this.envelope, 2));
     this.geo.setIndex(new THREE.BufferAttribute(idx, 1));
 
     // Uniforms shared by every layer
@@ -155,90 +180,132 @@ export class MagicTrail {
     });
   }
 
+  _idx(k) { return (this._head + k) % this._cap; }   // k = 0 oldest ... count-1 newest
+
+  _push(time, p) {
+    if (this._count >= this._cap) { this._head = (this._head + 1) % this._cap; this._count--; }
+    const i = this._idx(this._count);
+    this._sx[i] = p.x; this._sy[i] = p.y; this._sz[i] = p.z; this._st[i] = time;
+    this._count++;
+  }
+
   /** Call once per frame. time = seconds, position = world-space trail start, forward = optional direction hint. */
   update(time, position, forward) {
     this.uTime.value = time;
-    const pts = this.points, life = this.life;
-    while (pts.length && time - pts[0].t > life) pts.shift();
+    const life = this.life;
 
-    if (!this._lastAnchor) {
-      pts.push({ x: position.x, y: position.y, z: position.z, t: time });
-      this._lastAnchor = { x: position.x, y: position.y, z: position.z };
-    } else {
-      const dist = Math.hypot(position.x - this._lastAnchor.x, position.y - this._lastAnchor.y, position.z - this._lastAnchor.z);
-      if (dist >= this.minDist) {
-        pts.push({ x: position.x, y: position.y, z: position.z, t: time });
-        this._lastAnchor.x = position.x;
-        this._lastAnchor.y = position.y;
-        this._lastAnchor.z = position.z;
-      } else if (pts.length > 0) {
-        // Pin current head vertex directly to the moving anchor so there is 0 gap
-        const head = pts[pts.length - 1];
-        head.x = position.x;
-        head.y = position.y;
-        head.z = position.z;
-        head.t = time;
-      }
+    // Time went backwards (scene restart): start over.
+    if (this._count && time < this._st[this._idx(this._count - 1)] - 0.001) this.clear();
+
+    // 1. Sample the anchor at a fixed time step (independent of speed and frame rate).
+    if (this._count === 0 || time - this._st[this._idx(this._count - 1)] >= this._sampleDt) {
+      this._push(time, position);
     }
 
-    const n = Math.min(pts.length, this.maxPoints);
+    // 2. Prune. Keep ONE sample older than `life` so the tail can be interpolated at exactly `life`.
+    while (this._count > 1 && time - this._st[this._idx(1)] >= life) {
+      this._head = (this._head + 1) % this._cap;
+      this._count--;
+    }
+
+    // 3. Build the ribbon, newest first: live head -> stored samples -> interpolated tail.
+    const ax = this._ax, ay = this._ay, az = this._az, aage = this._aage;
+    let n = 0;
+    ax[0] = position.x; ay[0] = position.y; az[0] = position.z; aage[0] = 0; n = 1;
+
+    for (let k = this._count - 1; k >= 0; k--) {
+      const i = this._idx(k);
+      const age = time - this._st[i];
+      if (age <= 1e-4) continue;                                   // same instant as the live head
+      const pAge = aage[n - 1];
+      if (age >= life) {
+        // This sample is older than the window: put the tail vertex at exactly age == life,
+        // sliding along the path between this sample and the next newer vertex.
+        const f = (life - pAge) / Math.max(age - pAge, 1e-6);
+        ax[n] = ax[n - 1] + (this._sx[i] - ax[n - 1]) * f;
+        ay[n] = ay[n - 1] + (this._sy[i] - ay[n - 1]) * f;
+        az[n] = az[n - 1] + (this._sz[i] - az[n - 1]) * f;
+        aage[n] = life; n++;
+        break;
+      }
+      ax[n] = this._sx[i]; ay[n] = this._sy[i]; az[n] = this._sz[i]; aage[n] = age; n++;
+    }
+
     if (n < 2) {
       this.geo.setDrawRange(0, 0);
       return;
     }
 
+    // While the trail is still growing (just spawned / after reset) the oldest vertex is younger than `life`.
+    // Normalise by the real span so the ribbon ALWAYS fades to nothing at its oldest vertex (no hard end).
+    const span = Math.min(life, Math.max(aage[n - 1], 0.002));
+
+    // Arc length from the head, so the ribbon also tapers to nothing at the end of its DRAWN length
+    // (e.g. after the sleigh stops and restarts, when older samples are stacked on one spot).
+    const aarc = this._aarc;
+    aarc[0] = 0;
+    for (let i = 1; i < n; i++) {
+      aarc[i] = aarc[i - 1] + Math.hypot(ax[i] - ax[i - 1], ay[i] - ay[i - 1], az[i] - az[i - 1]);
+    }
+    const totalArc = aarc[n - 1];
+
     const cam = this.camera.position;
     const fb = forward || this._fallback;
-    const get = i => pts[pts.length - 1 - i];            // i = 0 is the newest point
-    const oldestAge = Math.max(0.001, time - pts[0].t);
-    const activeSpan = Math.min(life, Math.max(0.20, oldestAge));
 
     for (let i = 0; i < n; i++) {
-      const p = get(i), a = get(Math.max(i - 1, 0)), b = get(Math.min(i + 1, n - 1));
-      this._t.set(a.x - b.x, a.y - b.y, a.z - b.z);      // tangent along the trail
+      const a = Math.max(i - 1, 0), b = Math.min(i + 1, n - 1);
+      this._t.set(ax[a] - ax[b], ay[a] - ay[b], az[a] - az[b]);   // tangent along the trail
       if (this._t.lengthSq() < 1e-6) this._t.copy(fb);
       this._t.normalize();
-      this._c.set(cam.x - p.x, cam.y - p.y, cam.z - p.z);
-      this._s.crossVectors(this._t, this._c);            // sideways, so the ribbon faces the camera
+      this._c.set(cam.x - ax[i], cam.y - ay[i], cam.z - az[i]);
+      this._s.crossVectors(this._t, this._c);                      // sideways, so the ribbon faces the camera
       if (this._s.lengthSq() < 1e-8) this._s.set(1, 0, 0);
       this._s.normalize();
 
-      // Age-based continuous u: 0 at anchor, 1 at max lifespan
-      const u = THREE.MathUtils.clamp((time - p.t) / life, 0.0, 1.0);
-
-      // Structural tip envelopes (0 at exact head & tail endpoints, 1 through body):
-      // Head envelope smoothly blooms to 1.0 over initial ~8-10 points (no flat start box at sleigh).
-      // Tail envelope smoothly pinches to exact 0.0 over final ~20-28 points (~25-30% of trail tail),
-      // completely eliminating flat cut-off edges across all speeds, framerates, and devices.
-      const headSpan = Math.min(10, Math.max(3, Math.floor(n * 0.15)));
-      const tailSpan = Math.min(28, Math.max(6, Math.floor(n * 0.30)));
-      const headEnv = n > 1 ? Math.sin(Math.min(i / headSpan, 1.0) * Math.PI * 0.5) : 1.0;
-      const tailEnv = n > 1 ? Math.sin(Math.min((n - 1 - i) / tailSpan, 1.0) * Math.PI * 0.5) : 1.0;
+      // continuous: 0 at the sleigh, 1 at the tail. At constant speed age and arc length agree;
+      // taking the larger one guarantees the visible end always reaches 1 (fully faded).
+      const uAge = aage[i] / span;
+      const uArc = totalArc > 0.02 ? aarc[i] / totalArc : 0.0;
+      const u = THREE.MathUtils.clamp(Math.max(uAge, uArc), 0.0, 1.0);
 
       for (let k = 0; k < 2; k++) {
         const o = i * 2 + k;
-        this.pos[o * 3]     = p.x;
-        this.pos[o * 3 + 1] = p.y;
-        this.pos[o * 3 + 2] = p.z;
+        this.pos[o * 3]     = ax[i];
+        this.pos[o * 3 + 1] = ay[i];
+        this.pos[o * 3 + 2] = az[i];
         this.side[o * 3]     = this._s.x;
         this.side[o * 3 + 1] = this._s.y;
         this.side[o * 3 + 2] = this._s.z;
         this.uv[o * 2]     = u;
         this.uv[o * 2 + 1] = k;
-        this.envelope[o * 2]     = headEnv;
-        this.envelope[o * 2 + 1] = tailEnv;
       }
     }
-    const a = this.geo.attributes;
-    a.position.needsUpdate = a.aSide.needsUpdate = a.uv.needsUpdate = a.aEnvelope.needsUpdate = true;
-    this.geo.setDrawRange(0, Math.max(n - 1, 0) * 6);
+    const at = this.geo.attributes;
+    at.position.needsUpdate = at.aSide.needsUpdate = at.uv.needsUpdate = true;
+    this.geo.setDrawRange(0, (n - 1) * 6);
+  }
+
+  get trailType() {
+    return 'ribbon';
+  }
+
+  get drawnTriangles() {
+    const count = this.geo?.drawRange?.count || 0;
+    // 4 meshes render the same geometry -> total triangles across trail meshes
+    return count > 0 ? (count / 3) * (this.meshes?.length || 4) : 0;
+  }
+
+  get drawnVertices() {
+    const count = this.geo?.drawRange?.count || 0;
+    return count > 0 ? (count / 6 + 1) * 2 : 0;
   }
 
   setGlow(v) { this.uGlow.value = v; }
-  setLife(seconds) { this.life = seconds; }
+  setLife(seconds) { this.life = seconds; this._sampleDt = seconds / this.samples; }
   clear() {
-    this.points.length = 0;
-    this._lastAnchor = null;
+    this._head = 0;
+    this._count = 0;
+    this.geo.setDrawRange(0, 0);
   }
   /** Alias so call sites that reset every trail (`reset()`) work uniformly. */
   reset() { this.clear(); }
@@ -250,7 +317,7 @@ export class MagicTrail {
     });
     this.meshes.length = 0;
     this.geo.dispose();
-    this.points.length = 0;
+    this._count = 0;
   }
 }
 

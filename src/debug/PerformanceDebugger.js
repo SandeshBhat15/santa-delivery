@@ -943,6 +943,7 @@ export class PerformanceDebugger {
         </div>
       ` : ''}
       <div style="color:#a5f3fc; font-size:10px;">• <strong>santa aseet:</strong> ${this._getSantaAseetInfo()}</div>
+      <div style="color:#fcd34d; font-size:10px;">• <strong>Trail [${this.ctx.sleighController?.magicTrail?.trailType || (this.ctx.sleighController?.magicTrail?.constructor?.name === 'MagicTrailTube' ? 'tube' : 'ribbon')}]:</strong> Verts: ${this.ctx.sleighController?.magicTrail?.drawnVertices ?? 0} | Tris: ${this.ctx.sleighController?.magicTrail?.drawnTriangles ?? 0} | Draw Calls: ${this.ctx.sleighController?.magicTrail?.meshes?.length ?? 1} (ribbon was 4, -${4 - (this.ctx.sleighController?.magicTrail?.meshes?.length ?? 1)}) | Life: ${(this.ctx.sleighController?.magicTrail?.life ?? 0).toFixed(2)}s</div>
       <div><strong>DPR:</strong> ${dpr}x | <strong>Buffer:</strong> ${drawSize.x}x${drawSize.y} px | <strong>Cap:</strong> ${window._targetFpsCap || 60} FPS</div>
       <div><strong>Composer:</strong> ${composerState} | <strong>Bloom:</strong> ${bloomName} | <strong>Sky:</strong> ${window.bakedSky ? "baked" : "direct"}</div>
       <div><strong>ShadowMap:</strong> ${this.ctx.renderer.shadowMap.enabled ? (this.ctx.moonLight?.shadow?.mapSize?.width || 2048) + 'px' : 'OFF'} | <strong>Model:</strong> ${window._loadedModelName || 'terrain.glb'} (${Math.round((this.ctx.chunkSystem?.trianglesPerChunk || 0) / 1000)}k/chunk) | <strong>Lights:</strong> ${lights.totalLights}</div>

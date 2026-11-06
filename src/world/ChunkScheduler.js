@@ -359,25 +359,49 @@ export class ChunkScheduler {
       this._desiredKeySet.clear();
 
       // On mobile:
-      // ONLY schedule chunks that are strictly within the camera frustum and within fog reach.
+      // Always guarantee the sleigh's current chunk is desired so ground underneath Santa never vanishes.
+      // Schedule candidate chunks with hysteresis: generous frustum margin and buffer so turning doesn't rapidly cycle chunks.
       const camPos = camera.position;
-      const maxDistFromCam = (this.isMobile ? (fogFar + cs.chunkSize * 0.4) : 100.0);
+      const maxDistFromCam = (this.isMobile ? (fogFar + cs.chunkSize * 0.9) : 100.0);
 
+      // 1. Ensure current sleigh chunk is always in the desired set
+      const sleighCand = this._candidateLookup.get(currentSleighKey);
+      if (sleighCand && !this._desiredKeySet.has(currentSleighKey)) {
+        this._desiredChunks.push(sleighCand);
+        this._desiredKeySet.add(currentSleighKey);
+      }
+
+      // 2. Retain currently loaded chunks that are still reasonably close / in neighborhood
+      // to avoid destroying a chunk right at the screen edge only to immediately regenerate it when turning back
+      for (const [key, chunk] of cs.chunks.entries()) {
+        if (this._desiredChunks.length >= this.maxChunks) break;
+        if (this._desiredKeySet.has(key)) continue;
+        const cand = this._candidateLookup.get(key);
+        if (!cand) continue;
+
+        const inFrustumGenerous = this._isBoxInFrustum(chunk.cx, chunk.cz, 1.35);
+        const distToCam = this._nearestPointDistanceToCamera(chunk.cx, chunk.cz, camPos);
+        if (inFrustumGenerous && distToCam <= maxDistFromCam) {
+          this._desiredChunks.push(cand);
+          this._desiredKeySet.add(key);
+        }
+      }
+
+      // 3. Fill remaining available chunk slots from top-priority candidates
       for (let i = 0; i < this._cachedCandidates.length; i++) {
         if (this._desiredChunks.length >= this.maxChunks) break;
         const c = this._cachedCandidates[i];
 
         if (this.isMobile) {
-          // Frustum check: chunk must intersect the camera frustum
-          const inFrustum = this._isBoxInFrustum(c.cx, c.cz, 1.05);
-          if (!inFrustum) {
-            continue; // Not visible on camera!
+          // Generous frustum margin (1.25x) so chunks prepare before crossing into screen
+          const inFrustum = this._isBoxInFrustum(c.cx, c.cz, 1.25);
+          if (!inFrustum && !c.isSleighChunk) {
+            continue;
           }
 
-          // Check distance to camera (must be within visible fog distance)
           const distToCam = this._nearestPointDistanceToCamera(c.cx, c.cz, camPos);
-          if (distToCam > maxDistFromCam) {
-            continue; // Beyond fog reach!
+          if (distToCam > maxDistFromCam && !c.isSleighChunk) {
+            continue;
           }
         }
 
@@ -424,13 +448,18 @@ export class ChunkScheduler {
       this.sleighChunkMissingSince = null;
     }
 
-    // 5. Eviction: On mobile, promptly evict any loaded chunk that is no longer desired (exited frustum or beyond fog)
-    // On desktop: evict lowest priority when slots are needed or outside bounds
+    // 5. Eviction: On mobile, apply age guard and distance guard before evicting to prevent rapid flashing/thrashing
     for (const [key, chunk] of cs.chunks.entries()) {
       if (this.isMobile) {
+        if (key === currentSleighKey) continue; // NEVER evict the chunk under Santa!
         if (!neededKeySet.has(key)) {
-          cs.destroyChunk(key);
-          loadedKeys.delete(key);
+          const ageMs = now - (chunk.createdAt || 0);
+          // Only evict if chunk has existed for at least 1000ms OR slots are full and needed
+          const isCompletelyOutside = !this._isBoxInFrustum(chunk.cx, chunk.cz, 1.30);
+          if (ageMs >= 1000 || (cs.chunks.size >= this.maxChunks && isCompletelyOutside)) {
+            cs.destroyChunk(key);
+            loadedKeys.delete(key);
+          }
         }
       }
     }

@@ -3,7 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { MagicalFlightTrail } from './MagicalFlightTrail.js';
-import { MagicTrail } from './MagicTrail.js';
+import { createTrail } from './createTrail.js';
 
 // World-space anchor for the golden light ribbon: just behind the sleigh's
 // rear rail and level with it (same convention as the dust plume).
@@ -59,7 +59,7 @@ export class SleighController {
       right: ['KeyD', 'ArrowRight'],
       climb: ['KeyW', 'ArrowUp'],
       descend: ['KeyS', 'ArrowDown'],
-      drop: ['KeyE', 'Space']
+      drop: []
     };
 
     // Virtual analog joystick control: x = steering (yaw + banking roll), y = altitude (pitch + climb/dive)
@@ -131,10 +131,10 @@ export class SleighController {
     // Sparse enchanted dust plume that follows the sleigh's world-space path
     this.flightTrail = new MagicalFlightTrail(this.scene, this.camera, this.isMobile);
 
-    // Additive golden light ribbon layered over the dust, sampling the same
+    // Additive golden light trail layered over the dust, sampling the same
     // rear anchor. Tuned for this scene's mini rig (sleigh is ~0.28 m wide,
     // cruises 1.8-2.8 m/s), hence the widthScale down from the source file.
-    this.magicTrail = new MagicTrail(this.scene, this.camera, {
+    this.magicTrail = createTrail(this.scene, this.camera, {
       life: 1.25,
       minDist: 0.035,
       maxPoints: this.isMobile ? 240 : 360,
@@ -143,11 +143,20 @@ export class SleighController {
       streak: 0.75,
       glow: 1.25
     });
+
+    // Zero-overhead sleigh runner snow spray particles pool (12 recycled glint points)
+    this._initRunnerSnowSpray();
     this._magicAnchor = new THREE.Vector3();
     this._magicAnchorInit = false;
     this._magicAnchorSmooth = new THREE.Vector3();
     // Empty object parented to the sleigh rig: the ribbon emits from its rear underside
     this._trailAttach = new THREE.Object3D();
+    this._collisionChassisOffset = new THREE.Vector3(0, 0.035, 0);
+    this._collisionLeadOffset = new THREE.Vector3();
+    this._collisionNodes = [
+      { offset: this._collisionChassisOffset, radius: 0.055 },
+      { offset: this._collisionLeadOffset, radius: 0.045 }
+    ];
     this._trailAttach.name = 'MagicTrailAnchor';
 
     this._setupInputListeners();
@@ -170,10 +179,6 @@ export class SleighController {
       } else if (this.keyMap.descend.includes(code)) {
         e.preventDefault();
         this.inputs.down = true;
-      } else if (this.keyMap.drop.includes(code)) {
-        this.inputs.drop = true;
-        if (window.deliverySystem) window.deliverySystem.triggerDelivery();
-
       }
     });
 
@@ -273,9 +278,9 @@ export class SleighController {
     masterGroup.add(sleighGroup);
     this.sleighMeshGroup = sleighGroup;
 
-    // Golden ribbon anchor: just behind/below the sleigh's rear (sledge-node space:
-    // the artist's rear lanterns sit at x ±0.07, y 0.06, z ≈ -0.15).
-    this._trailAttach.position.set(0, 0.015, -0.165);
+    // Golden ribbon anchor: sits directly at the sleigh's rear underside runner crossbar
+    // (brought forward to z: -0.10, y: 0.040 so the ribbon connects seamlessly with zero gap).
+    this._trailAttach.position.set(0, 0.040, -0.100);
     (sledgeNode || sleighGroup).add(this._trailAttach);
 
     // 2. 4-Reindeer Team (2 Front Leads + 2 Behind)
@@ -666,8 +671,8 @@ export class SleighController {
     this.group.add(sleighMeshGroup);
     this.sleighMeshGroup = sleighMeshGroup;
 
-    // Golden ribbon anchor at the fallback sleigh's rear underside
-    this._trailAttach.position.set(0, 0.10, 0.85);
+    // Golden ribbon anchor at the fallback sleigh's rear underside (flush with rear crossbar)
+    this._trailAttach.position.set(0, 0.12, 0.62);
     sleighMeshGroup.add(this._trailAttach);
 
     // Build Stylized Santa
@@ -1216,6 +1221,9 @@ export class SleighController {
       this.magicTrail.update(elapsedTime, this._magicAnchor, heading);
     }
 
+    // 10c. Update sleigh runner snow spray glints when skimming close to the terrain (0 GC allocations)
+    this._updateRunnerSnowSpray(delta, heading);
+
     // 5. Update Follow Camera
     this._updateFollowCamera(delta);
   }
@@ -1372,19 +1380,9 @@ export class SleighController {
     const forwardX = -Math.sin(this.rotationY);
     const forwardZ = -Math.cos(this.rotationY);
 
-    // Collision spheres closely calibrated to actual mini sleigh model dimensions
-    const collisionNodes = [
-      // Sleigh chassis center
-      {
-        offset: new THREE.Vector3(0, 0.035, 0),
-        radius: 0.055
-      },
-      // Lead reindeer team
-      {
-        offset: new THREE.Vector3(forwardX * 0.18, 0.035, forwardZ * 0.18),
-        radius: 0.045
-      }
-    ];
+    // Update lead reindeer collision sphere node without per-frame object allocation
+    this._collisionLeadOffset.set(forwardX * 0.18, 0.035, forwardZ * 0.18);
+    const collisionNodes = this._collisionNodes;
 
     let collidedAny = false;
     let maxPenetration = 0.0;
@@ -1555,7 +1553,161 @@ export class SleighController {
     return p;
   }
 
+  _initRunnerSnowSpray() {
+    const maxGlints = 24;
+    this._runnerGlintsCount = maxGlints;
+    this._runnerGlintIndex = 0;
+    this._runnerGlintsLife = new Float32Array(maxGlints);
+    this._runnerGlintsMaxLife = new Float32Array(maxGlints);
+    this._runnerGlintsVel = new Float32Array(maxGlints * 3);
+
+    const positions = new Float32Array(maxGlints * 3);
+    const colors = new Float32Array(maxGlints * 3);
+    for (let i = 0; i < maxGlints; i++) {
+      positions[i * 3 + 1] = -9999;
+      colors[i * 3 + 0] = 0.85;
+      colors[i * 3 + 1] = 0.95;
+      colors[i * 3 + 2] = 1.0;
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 16;
+    canvas.height = 16;
+    const ctx = canvas.getContext('2d');
+    const grad = ctx.createRadialGradient(8, 8, 0, 8, 8, 8);
+    grad.addColorStop(0.0, 'rgba(255, 255, 255, 0.85)');
+    grad.addColorStop(0.3, 'rgba(215, 235, 255, 0.40)');
+    grad.addColorStop(1.0, 'rgba(180, 210, 255, 0.0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 16, 16);
+    const glintTex = new THREE.CanvasTexture(canvas);
+
+    const mat = new THREE.PointsMaterial({
+      size: this.isMobile ? 0.026 : 0.034,
+      map: glintTex,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      vertexColors: true
+    });
+
+    this._runnerPoints = new THREE.Points(geo, mat);
+    this._runnerPoints.frustumCulled = false;
+    this.scene.add(this._runnerPoints);
+    this._runnerSpawnAccum = 0;
+    this._tempRunnerLeft = new THREE.Vector3();
+  }
+
+  _updateRunnerSnowSpray(delta, heading) {
+    if (!this._runnerPoints) return;
+
+    const dt = Math.min(delta, 0.1);
+    const posAttr = this._runnerPoints.geometry.attributes.position;
+    const colAttr = this._runnerPoints.geometry.attributes.color;
+    const posArr = posAttr.array;
+    const colArr = colAttr.array;
+
+    // 1. Advance existing glints
+    let hasActive = false;
+    for (let i = 0; i < this._runnerGlintsCount; i++) {
+      if (this._runnerGlintsLife[i] > 0) {
+        hasActive = true;
+        this._runnerGlintsLife[i] -= dt;
+        const lifeT = Math.max(0, this._runnerGlintsLife[i] / (this._runnerGlintsMaxLife[i] || 1));
+        const idx3 = i * 3;
+
+        if (lifeT <= 0) {
+          posArr[idx3 + 1] = -9999;
+          this._runnerGlintsLife[i] = 0;
+        } else {
+          posArr[idx3 + 0] += this._runnerGlintsVel[idx3 + 0] * dt;
+          posArr[idx3 + 1] += this._runnerGlintsVel[idx3 + 1] * dt;
+          posArr[idx3 + 2] += this._runnerGlintsVel[idx3 + 2] * dt;
+          this._runnerGlintsVel[idx3 + 1] -= 0.6 * dt;
+
+          const brightness = lifeT * 0.60;
+          colArr[idx3 + 0] = brightness * 0.85;
+          colArr[idx3 + 1] = brightness * 0.95;
+          colArr[idx3 + 2] = brightness * 1.0;
+        }
+      }
+    }
+
+    // 2. Check if Santa is skimming snow terrain or rooftops
+    const groundY = (this.chunkSystem && typeof this.chunkSystem.getHeight === 'function')
+      ? this.chunkSystem.getHeight(this.position.x, this.position.z)
+      : 0.16;
+    const distToGround = this.position.y - groundY;
+    const isSkimmingGround = distToGround < 0.38 && distToGround > -0.15;
+
+    let isSkimmingRoof = false;
+    if (!isSkimmingGround && this.chunkSystem && typeof this.chunkSystem.getHouseCollidersNear === 'function') {
+      const nearBoxes = this.chunkSystem.getHouseCollidersNear(this.position.x, this.position.z, 2.5);
+      for (let b = 0; b < nearBoxes.length; b++) {
+        const box = nearBoxes[b];
+        if (this.position.x >= box.min.x - 0.2 && this.position.x <= box.max.x + 0.2 &&
+            this.position.z >= box.min.z - 0.2 && this.position.z <= box.max.z + 0.2) {
+          const distToRoof = this.position.y - box.max.y;
+          if (distToRoof < 0.28 && distToRoof > -0.15) {
+            isSkimmingRoof = true;
+            break;
+          }
+        }
+      }
+    }
+
+    // 3. Spawn fresh runner snow glints when skimming
+    if (isSkimmingGround || isSkimmingRoof) {
+      this._runnerSpawnAccum += dt;
+      if (this._runnerSpawnAccum >= 0.035) {
+        this._runnerSpawnAccum = 0;
+
+        const isLeft = (this._runnerGlintIndex % 2 === 0);
+        const runnerOffset = isLeft ? -0.12 : 0.12;
+        this.group.localToWorld(this._tempRunnerLeft.set(runnerOffset, -0.04, -0.06));
+
+        const gIdx = this._runnerGlintIndex;
+        this._runnerGlintIndex = (this._runnerGlintIndex + 1) % this._runnerGlintsCount;
+
+        const maxLife = 0.22 + Math.random() * 0.15;
+        this._runnerGlintsLife[gIdx] = maxLife;
+        this._runnerGlintsMaxLife[gIdx] = maxLife;
+
+        const idx3 = gIdx * 3;
+        posArr[idx3 + 0] = this._tempRunnerLeft.x + (Math.random() - 0.5) * 0.03;
+        posArr[idx3 + 1] = this._tempRunnerLeft.y + Math.random() * 0.02;
+        posArr[idx3 + 2] = this._tempRunnerLeft.z + (Math.random() - 0.5) * 0.03;
+
+        const kickSpeed = (this.speed || 3.0) * 0.25;
+        this._runnerGlintsVel[idx3 + 0] = Math.sin(this.rotationY) * kickSpeed + (Math.random() - 0.5) * 0.2;
+        this._runnerGlintsVel[idx3 + 1] = 0.25 + Math.random() * 0.35;
+        this._runnerGlintsVel[idx3 + 2] = Math.cos(this.rotationY) * kickSpeed + (Math.random() - 0.5) * 0.2;
+
+        colArr[idx3 + 0] = 0.85;
+        colArr[idx3 + 1] = 0.95;
+        colArr[idx3 + 2] = 1.0;
+        hasActive = true;
+      }
+    }
+
+    if (hasActive) {
+      posAttr.needsUpdate = true;
+      colAttr.needsUpdate = true;
+    }
+  }
+
   dispose() {
+    if (this._runnerPoints) {
+      this.scene.remove(this._runnerPoints);
+      this._runnerPoints.geometry.dispose();
+      this._runnerPoints.material.map?.dispose();
+      this._runnerPoints.material.dispose();
+      this._runnerPoints = null;
+    }
     if (this.flightTrail) {
       this.flightTrail.dispose();
       this.flightTrail = null;

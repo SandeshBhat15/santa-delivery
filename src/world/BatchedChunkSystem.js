@@ -240,7 +240,14 @@ export class BatchedChunkSystem {
     this.heightGrid = new Float32Array(N * N);
     const terrainMeshes = [];
     group.traverse((c) => {
-      if (c.isMesh && !c.name.includes('Lake') && !(c.material?.name || '').includes('ice')) {
+      if (!c.isMesh) return;
+      const name = (c.name || '').toLowerCase();
+      const matName = (c.material?.name || '').toLowerCase();
+      const isHouse = matName.includes('building') || matName.includes('house') || name.startsWith('cube') || name.includes('house');
+      const isFoliage = name.includes('tree') || name.includes('shrub') || matName.includes('tree');
+      const isLake = name.includes('lake') || matName.includes('ice');
+      // Only raycast against actual terrain geometry (snow ground, plateaus, cliffs, rocks)
+      if (!isHouse && !isFoliage && !isLake) {
         terrainMeshes.push(c);
       }
     });
@@ -333,6 +340,53 @@ export class BatchedChunkSystem {
 
     gltfRoot.updateMatrixWorld(true);
 
+    // Build elevation height grid first so we can check house terrain intersection
+    this.buildHeightGrid(gltfRoot);
+
+    // Pre-collect cliff/rock volumes so we can detect and remove any houses placed inside cliffs
+    const cliffVolumes = [];
+    gltfRoot.traverse((c) => {
+      if (!c.isMesh) return;
+      const cName = (c.name || '').toLowerCase();
+      const cMat = (c.material?.name || '').toLowerCase();
+      const isCliffMesh = cName.includes('cliff') || cMat.includes('cliff') || cMat.includes('rock');
+      if (!isCliffMesh) return;
+
+      if (c.geometry && !c.geometry.boundingBox) c.geometry.computeBoundingBox();
+      if (!c.geometry?.boundingBox) return;
+
+      if (c.isInstancedMesh) {
+        const mat = new THREE.Matrix4();
+        for (let idx = 0; idx < c.count; idx++) {
+          c.getMatrixAt(idx, mat);
+          const box = c.geometry.boundingBox.clone().applyMatrix4(mat);
+          cliffVolumes.push(box);
+        }
+      } else {
+        const box = c.geometry.boundingBox.clone().applyMatrix4(c.matrixWorld);
+        cliffVolumes.push(box);
+      }
+    });
+
+    const isInsideCliff = (houseBox, housePos) => {
+      for (let cIdx = 0; cIdx < cliffVolumes.length; cIdx++) {
+        const cb = cliffVolumes[cIdx];
+        // Check 3D bounding intersection with margin
+        const margin = 0.15;
+        const xOverlap = houseBox.min.x <= cb.max.x + margin && houseBox.max.x >= cb.min.x - margin;
+        const zOverlap = houseBox.min.z <= cb.max.z + margin && houseBox.max.z >= cb.min.z - margin;
+        // The house is inside the cliff if it overlaps horizontally and is below or embedded in the cliff body
+        if (xOverlap && zOverlap && houseBox.min.y <= cb.max.y - 0.05 && houseBox.max.y >= cb.min.y) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    const _vHouse = new THREE.Vector3();
+    const _qHouse = new THREE.Quaternion();
+    const _sHouse = new THREE.Vector3();
+
     gltfRoot.traverse((child) => {
       if (!child.isMesh) return;
 
@@ -353,33 +407,67 @@ export class BatchedChunkSystem {
       else if (isFoliage) category = 'foliage';
       else if (isCliff) category = 'cliff';
 
+      if (child.geometry && !child.geometry.boundingBox) child.geometry.computeBoundingBox();
+
       const matrices = [];
       if (child.isInstancedMesh) {
         const m = new THREE.Matrix4();
         for (let i = 0; i < child.count; i++) {
           if (this.isMobile && isHouse && (i % 2 === 1)) continue;
           child.getMatrixAt(i, m);
+
+          // Remove houses that are buried or sunken inside the terrain, or embedded inside cliffs
+          if (isHouse && child.geometry?.boundingBox) {
+            m.decompose(_vHouse, _qHouse, _sHouse);
+            const bWorld = child.geometry.boundingBox.clone().applyMatrix4(m);
+            const groundH = this.getHeight(_vHouse.x, _vHouse.z);
+            const roofAboveGround = bWorld.max.y - groundH;
+            const baseDiff = groundH - bWorld.min.y;
+            if (roofAboveGround < 0.18 || baseDiff > 0.20 || bWorld.max.y <= groundH || isInsideCliff(bWorld, _vHouse)) {
+              continue; // Exclude buried or inside-cliff house instance
+            }
+          }
+
           matrices.push(m.clone());
         }
       } else {
-        matrices.push(child.matrix.clone());
+        if (isHouse && child.geometry?.boundingBox) {
+          child.matrix.decompose(_vHouse, _qHouse, _sHouse);
+          const bWorld = child.geometry.boundingBox.clone().applyMatrix4(child.matrix);
+          const groundH = this.getHeight(_vHouse.x, _vHouse.z);
+          const roofAboveGround = bWorld.max.y - groundH;
+          const baseDiff = groundH - bWorld.min.y;
+          if (roofAboveGround >= 0.18 && baseDiff <= 0.20 && bWorld.max.y > groundH && !isInsideCliff(bWorld, _vHouse)) {
+            matrices.push(child.matrix.clone());
+          }
+        } else {
+          matrices.push(child.matrix.clone());
+        }
       }
 
-      // Vertex boundary stitching for ground geometry to guarantee 100% gap-free chunk tiling
-      if (isGround && child.geometry && child.geometry.attributes && child.geometry.attributes.position) {
+      if (matrices.length === 0) return;
+
+      // Vertex boundary stitching and micro-overlap for ground & plateau geometry to guarantee 100% gap-free chunk tiling
+      // Micro-overlap (10.025m vs 10.000m) completely eliminates sub-pixel rasterization cracks and T-junction bleed between adjacent chunks.
+      const isBoundaryMesh = isGround || name.includes('plateau') || name.includes('plane');
+      if (isBoundaryMesh && child.geometry && child.geometry.attributes && child.geometry.attributes.position) {
         const pAttr = child.geometry.attributes.position;
         const baseM = matrices[0] || child.matrix;
         const invM = baseM.clone().invert();
         const v = new THREE.Vector3();
+        const boundSnap = 10.025;
+        const isTerrainPlane = name.includes('plane') && !name.includes('plane002');
         for (let i = 0; i < pAttr.count; i++) {
           v.fromBufferAttribute(pAttr, i).applyMatrix4(baseM);
           let isBoundary = false;
-          if (v.x <= -9.85) { v.x = -10.0; isBoundary = true; }
-          if (v.x >= 9.85)  { v.x = 10.0;  isBoundary = true; }
-          if (v.z <= -9.85) { v.z = -10.0; isBoundary = true; }
-          if (v.z >= 9.85)  { v.z = 10.0;  isBoundary = true; }
+          if (v.x <= -9.85) { v.x = -boundSnap; isBoundary = true; }
+          if (v.x >= 9.85)  { v.x = boundSnap;  isBoundary = true; }
+          if (v.z <= -9.85) { v.z = -boundSnap; isBoundary = true; }
+          if (v.z >= 9.85)  { v.z = boundSnap;  isBoundary = true; }
           if (isBoundary) {
-            v.y = 0.160;
+            if (isTerrainPlane) {
+              v.y = 0.160;
+            }
             v.applyMatrix4(invM);
             pAttr.setXYZ(i, v.x, v.y, v.z);
           }
@@ -454,8 +542,6 @@ export class BatchedChunkSystem {
       this.templateBounds.min.y = Math.min(this.templateBounds.min.y, -2.0);
       this.templateBounds.max.y = Math.max(this.templateBounds.max.y, 18.0);
     }
-
-    this.buildHeightGrid(gltfRoot);
 
     // Build the InstancedMeshes
     this.createGlobalInstancedMeshes();

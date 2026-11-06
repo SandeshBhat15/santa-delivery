@@ -27,10 +27,12 @@ export class TargetGuidanceFlow {
     this.isActive = false;
     this.isGusting = false;
     this.gustTimer = 0;
-    this.gustDuration = 4.8;        // Duration of active streaming wind wave
+    this.gustDuration = 2.4;        // Swift, elegant guiding gust
     this.restTimer = 0;
-    this.restDuration = 1.6;        // Calm lull between automatic gusts
+    this.restDuration = 5.0;        // Calm interval between reminders so it's not non-stop
     this.emissionAccumulator = 0;
+    this.lostTimer = 0;             // Tracks how long player has been heading away from target
+    this.lostThreshold = 3.5;       // Seconds of flying away before auto-summoning guiding gust
 
     // Tracking Vectors
     this.sleighPos = new THREE.Vector3();
@@ -135,9 +137,9 @@ export class TargetGuidanceFlow {
           vAlpha = alpha;
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
           float eyeDist = max(-mvPosition.z, 0.1);
-          // Delicate fine stardust size: 1.5px to 9.5px (never giant glowing balls)
-          float ptSize = (size * 175.0) / eyeDist;
-          gl_PointSize = clamp(ptSize, 1.5, 9.5);
+          // Graceful, delicate stardust motes (soft on bloom pass)
+          float ptSize = (size * 220.0) / eyeDist;
+          gl_PointSize = clamp(ptSize, 2.0, 10.0);
           gl_Position = projectionMatrix * mvPosition;
         }
       `,
@@ -149,12 +151,13 @@ export class TargetGuidanceFlow {
         void main() {
           if (vAlpha <= 0.005) discard;
           vec4 tex = texture2D(pointTexture, gl_PointCoord);
-          gl_FragColor = vec4(vColor * tex.rgb * 1.2, vAlpha * tex.a);
+          // Soft luminance (subtle glow, does not blow out bloom pipeline)
+          gl_FragColor = vec4(vColor * tex.rgb * 0.90, vAlpha * tex.a * 0.85);
         }
       `,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
-      depthTest: true,
+      depthTest: false,
       transparent: true,
       fog: false
     });
@@ -203,9 +206,8 @@ export class TargetGuidanceFlow {
 
     this._updateCurve();
 
-    if (!this.isGusting && this.restTimer === 0) {
-      this.summonWind();
-    }
+    // Trigger an initial gentle prompt gust when setting a new target
+    this.summonWind();
   }
 
   summonWind() {
@@ -214,7 +216,43 @@ export class TargetGuidanceFlow {
     this.gustTimer = 0;
     this.restTimer = 0;
     this.emissionAccumulator = 0;
+    this.lostTimer = 0;
     if (this.particleMesh) this.particleMesh.visible = true;
+  }
+
+  _seedInitialStream() {
+    // Populate an initial breadcrumb stream along the curve so user never waits for particles to arrive
+    const initialCount = this.isMobile ? 18 : 30;
+    for (let c = 0; c < initialCount; c++) {
+      for (let i = 0; i < this.maxParticles; i++) {
+        const p = this.pool[i];
+        if (!p.active) {
+          p.active = true;
+          // Distribute along the first 70% of the curve
+          p.u = (c / initialCount) * 0.70 + Math.random() * 0.04;
+          p.speedU = 0.35 + Math.random() * 0.15;
+          p.swirlPhase = Math.random() * Math.PI * 2;
+          p.swirlRadius = 0.05 + Math.random() * 0.12;
+          p.swirlSpeed = (Math.random() - 0.5) * 5.0;
+          p.age = p.u * 1.5;
+          p.maxLife = 3.0;
+
+          p.baseSize = this.isMobile
+            ? (0.012 + Math.random() * 0.010)
+            : (0.015 + Math.random() * 0.012);
+          p.colorIndex = Math.floor(Math.random() * this.palette.length);
+          p.glint = Math.random() < 0.35;
+
+          const col = this.palette[p.colorIndex];
+          this.colorsAttr[i * 3]     = col.r;
+          this.colorsAttr[i * 3 + 1] = col.g;
+          this.colorsAttr[i * 3 + 2] = col.b;
+          this.sizesAttr[i] = p.baseSize;
+          this.alphasAttr[i] = 0.85;
+          break;
+        }
+      }
+    }
   }
 
   _updateCurve() {
@@ -339,8 +377,8 @@ export class TargetGuidanceFlow {
     if (sleighForward) this.sleighForward.copy(sleighForward).normalize();
     this._updateCurve();
 
-    // Proximity fade: smoothly dissolve within 2.5m of the chimney
-    const closeFade = Math.min(1.0, Math.max(0.0, (this.targetDistance - 2.0) / 1.5));
+    // Proximity fade: smoothly dissolve only within very close range (1.2m) of the target chimney
+    const closeFade = Math.min(1.0, Math.max(0.0, (this.targetDistance - 1.2) / 1.0));
     if (closeFade <= 0.05) {
       for (let i = 0; i < this.maxParticles; i++) {
         if (this.pool[i].active) {
@@ -356,12 +394,16 @@ export class TargetGuidanceFlow {
       return;
     }
 
-    // 1. Manage Wind Gust Cycles
+    // 1. Manage Dynamic Guiding Wind (Triggers on intervals or when user is off-heading/lost)
+    // Heading dot product: 1.0 = flying straight towards target, < 0.2 = heading sideways/away
+    const headingDot = this.sleighForward.dot(this.targetDirection);
+    const isHeadingAway = headingDot < 0.25;
+
     if (this.isGusting) {
       this.gustTimer += delta;
 
-      // Continuous emission during active wind gust (spawns flowing stardust currents)
-      const emissionRate = this.isMobile ? 38 : 65; // particles per second
+      // Periodic stream during active gust
+      const emissionRate = this.isMobile ? 32 : 48; // particles per second
       this.emissionAccumulator += emissionRate * delta;
       const spawnCount = Math.floor(this.emissionAccumulator);
       if (spawnCount > 0) {
@@ -372,15 +414,21 @@ export class TargetGuidanceFlow {
       if (this.gustTimer >= this.gustDuration) {
         this.isGusting = false;
         this.restTimer = 0;
+        this.lostTimer = 0;
       }
     } else {
       this.restTimer += delta;
-      if (this.restTimer >= this.restDuration) {
-        // Automatically start next guiding wind gust
-        this.isGusting = true;
-        this.gustTimer = 0;
-        this.restTimer = 0;
-        this.emissionAccumulator = 0;
+
+      // If user is flying away or not able to locate target, accumulate lost timer
+      if (isHeadingAway) {
+        this.lostTimer += delta;
+      } else {
+        this.lostTimer = Math.max(0, this.lostTimer - delta * 0.5);
+      }
+
+      // Trigger guiding wind if user hasn't found the target (lost for 3.5s) or periodic reminder (every 5.0s)
+      if (this.lostTimer >= this.lostThreshold || this.restTimer >= this.restDuration) {
+        this.summonWind();
       }
     }
 

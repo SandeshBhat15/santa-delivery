@@ -124,15 +124,17 @@ composer.setPixelRatio(_initialDpr);
 const renderPass = new RenderPass(scene, camera);
 composer.addPass(renderPass);
 
+const bloomScale = IS_MOBILE ? 0.65 : 1.0;
 const bloomRes = new THREE.Vector2(
-  Math.round(window.innerWidth * _initialDpr),
-  Math.round(window.innerHeight * _initialDpr)
+  Math.round(window.innerWidth * _initialDpr * bloomScale),
+  Math.round(window.innerHeight * _initialDpr * bloomScale)
 );
 const bloomPass = new KawaseBloomPass(
   bloomRes,
   1.4,  // Rich, warm cinematic bloom intensity
   0.32, // Smooth threshold for glowing windows, aurora, and lanterns
-  2.2   // Wide, soft blur scattering radius
+  2.2,  // Wide, soft blur scattering radius
+  IS_MOBILE ? 3 : 4
 );
 if (IS_MOBILE && new URLSearchParams(window.location.search).get('bloom') === '0') {
   bloomPass.enabled = false;
@@ -791,7 +793,7 @@ const layers = [
     kFreq: 1, // integer
     phase: 2.5,
     baseColor: [0.0085, 0.0210, 0.0540],
-    crestColor: [0.0085, 0.0210, 0.0540]
+    crestColor: [0.0055, 0.0145, 0.0420]
   },
   // 2. Front Alpine Ridge (r = 445m): Dramatic knife-edge fjord crests (25m - 110m)
   {
@@ -801,7 +803,7 @@ const layers = [
     kFreq: 2, // integer
     phase: 0.9,
     baseColor: [0.0085, 0.0210, 0.0540],
-    crestColor: [0.0040, 0.0095, 0.0240]
+    crestColor: [0.0035, 0.0085, 0.0260]
   }
 ];
 
@@ -2123,6 +2125,9 @@ const terrainSnowUniforms = {
   uAuroraDir: { value: new THREE.Vector3(-0.35, 0.78, 0.52).normalize() }
 };
 
+// Village cottage glowing windows & lantern materials for hearth light flicker
+const hearthGlowMaterials = new Set();
+
 // =============================================================================
 // SEAMLESS PROCEDURAL OPEN WORLD CHUNK SYSTEM
 // =============================================================================
@@ -2628,6 +2633,7 @@ const modelUrl = '/assets/models/terrain.glb';
             mat.emissiveIntensity = 3.6;
             mat.toneMapped = true;
             mat.needsUpdate = true;
+            hearthGlowMaterials.add(mat);
           }
           // 2. Process stylized lantern/window/house glow materials
           else if (
@@ -2644,6 +2650,7 @@ const modelUrl = '/assets/models/terrain.glb';
             mat.emissiveIntensity = 3.6;
             mat.toneMapped = true;
             mat.needsUpdate = true;
+            hearthGlowMaterials.add(mat);
           }
           // 3. Ground, Cliffs, Lake and Plateau separation
           const isLake = meshName.includes('lake') ||
@@ -3050,7 +3057,8 @@ window.addEventListener('resize', () => {
   composer.setPixelRatio(pRatio);
 
   if (bloomPass) {
-    const bRes = new THREE.Vector2(Math.round(width * pRatio), Math.round(height * pRatio));
+    const bScale = IS_MOBILE ? 0.65 : 1.0;
+    const bRes = new THREE.Vector2(Math.round(width * pRatio * bScale), Math.round(height * pRatio * bScale));
     bloomPass.setSize(bRes.x, bRes.y);
   }
 });
@@ -3090,7 +3098,7 @@ window.setFpsCap = function(cap) {
 };
 
 let _lastRenderTimeMs = 0;
-const FRAME_CAP_TOLERANCE_MS = 1.667;
+const FRAME_CAP_TOLERANCE_MS = 5.2; // Generous 5.2ms tolerance: protects 60Hz from Firefox timer jitter/quantization while capping 90/120Hz
 function animate(currentTime) {
   requestAnimationFrame(animate);
 
@@ -3105,8 +3113,12 @@ function animate(currentTime) {
     if (elapsed < frameInterval - FRAME_CAP_TOLERANCE_MS) {
       return;
     }
-    // Carry the leftover time forward instead of discarding it.
-    _lastRenderTimeMs = currentTime - (elapsed % frameInterval);
+    // Carry the leftover time forward only when elapsed >= frameInterval, otherwise anchor to currentTime
+    if (elapsed >= frameInterval) {
+      _lastRenderTimeMs = currentTime - (elapsed % frameInterval);
+    } else {
+      _lastRenderTimeMs = currentTime;
+    }
   }
 
   if (perfDebugger) {
@@ -3195,6 +3207,14 @@ function animate(currentTime) {
   // Update automatic adaptive village warm-lighting system
   if (lightingSystem && !pauseLogic) {
     lightingSystem.update(delta);
+  }
+
+  // Modulate warm hearth candle-flicker across village cottages (Feature 1)
+  if (hearthGlowMaterials.size > 0 && !pauseLogic) {
+    const flicker = 3.4 + 0.35 * Math.sin(elapsedTime * 2.4) + 0.18 * Math.sin(elapsedTime * 5.7);
+    hearthGlowMaterials.forEach((m) => {
+      m.emissiveIntensity = flicker;
+    });
   }
 
   // Update dynamic procedural weather engine (cycles through Clear -> Flurries -> Blizzard -> Clearing)
