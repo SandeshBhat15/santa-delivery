@@ -706,19 +706,19 @@ export class PerformanceDebugger {
       };
     }
 
-    // 30 / 45 / 60 FPS Cap Cycler
+    // 30 / 60 / Uncapped FPS Cap Cycler
     const fpsCapBtn = this.panel.querySelector('#btn-fps-cap');
     if (fpsCapBtn) {
-      const currentCap = window._targetFpsCap || 60;
-      fpsCapBtn.textContent = `⚡ Cap: ${currentCap} FPS`;
+      const currentCap = window._targetFpsCap ? `${window._targetFpsCap} FPS` : 'Uncapped';
+      fpsCapBtn.textContent = `⚡ Cap: ${currentCap}`;
       fpsCapBtn.onclick = () => {
-        let nextCap = 30;
-        if (window._targetFpsCap === 30) nextCap = 45;
-        else if (window._targetFpsCap === 45) nextCap = 60;
-        else nextCap = 30;
+        let nextCap = 0;
+        if (window._targetFpsCap === 0) nextCap = 60;
+        else if (window._targetFpsCap === 60) nextCap = 30;
+        else nextCap = 0;
 
         if (window.setFpsCap) window.setFpsCap(nextCap);
-        fpsCapBtn.textContent = `⚡ Cap: ${nextCap} FPS`;
+        fpsCapBtn.textContent = `⚡ Cap: ${nextCap ? `${nextCap} FPS` : 'Uncapped'}`;
       };
     }
 

@@ -138,8 +138,9 @@ export class MobileOptimizer {
     if (this.ctx.composer) {
       this.ctx.composer.setPixelRatio(targetDpr);
     }
+    const isLowTier = this.ctx.hardwareProfiler?.profile?.tier === 'low';
     if (this.ctx.bloomPass) {
-      const scale = this.enabled ? 0.65 : 1.0;
+      const scale = this.enabled ? (isLowTier ? 0.65 : 0.75) : 1.0;
       const w = Math.round(window.innerWidth * targetDpr * scale);
       const h = Math.round(window.innerHeight * targetDpr * scale);
       this.ctx.bloomPass.setSize(w, h);
@@ -147,18 +148,20 @@ export class MobileOptimizer {
 
     const moon = this.ctx.moonLight;
     if (moon) {
-      if (this.enabled) {
+      if (this.enabled && isLowTier) {
         this.ctx.renderer.shadowMap.type = THREE.PCFShadowMap;
         moon.shadow.mapSize.width = 1024;
         moon.shadow.mapSize.height = 1024;
+        moon.shadow.radius = 1.2;
         moon.shadow.autoUpdate = true;
       } else {
         this.ctx.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         moon.shadow.mapSize.width = 2048;
         moon.shadow.mapSize.height = 2048;
+        moon.shadow.radius = 1.8;
         moon.shadow.autoUpdate = true;
       }
-      const d = this.enabled ? 20 : 28;
+      const d = (this.enabled && isLowTier) ? 20 : 26;
       moon.shadow.camera.left = -d;
       moon.shadow.camera.right = d;
       moon.shadow.camera.top = d;

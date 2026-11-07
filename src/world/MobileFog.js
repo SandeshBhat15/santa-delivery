@@ -22,8 +22,8 @@ export class MobileFog {
     this.horizonColor = new THREE.Color(0x0e1b2f);
     
     // Target and smoothed values (Dense fog on mobile: 5m near, 26m far)
-    this.fogNear = this.isMobile ? 5.0 : 12.25;
-    this.fogFar = this.isMobile ? 26.0 : 35.0;
+    this.fogNear = this.isMobile ? 12.0 : 12.25;
+    this.fogFar = this.isMobile ? 38.0 : 45.0;
     this.targetFogFar = this.fogFar;
     this.targetFogNear = this.fogNear;
     this._warnedFog = false;
@@ -161,8 +161,8 @@ export class MobileFog {
     // For mobile: dense sky-blended fog capped to 26m max, near at 5m
     let targetFar, targetNear;
     if (this.isMobile) {
-      targetFar = THREE.MathUtils.clamp(rawEdgeDist - 3.0, 22.0, 26.0);
-      targetNear = 5.0;
+      targetFar = THREE.MathUtils.clamp(rawEdgeDist - 3.0, 32.0, 45.0);
+      targetNear = Math.max(targetFar * 0.35, 12.0);
     } else {
       targetFar = THREE.MathUtils.clamp(rawEdgeDist - 4.0, 28.0, 55.0);
       targetNear = Math.max(targetFar * 0.35, 12.0);

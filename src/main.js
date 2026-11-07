@@ -66,6 +66,7 @@ const camera = new THREE.PerspectiveCamera(
 camera.position.set(-6.5, 2.0, -1.5);
 
 // --- Device Capability Detection ---
+const IS_FIREFOX = /Firefox/i.test(navigator.userAgent);
 const IS_MOBILE = (new URLSearchParams(window.location.search).get('mobile') === '1') ||
                   /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
                   (window.innerWidth <= 840) ||
@@ -73,7 +74,7 @@ const IS_MOBILE = (new URLSearchParams(window.location.search).get('mobile') ===
 
 if (IS_MOBILE) document.body.classList.add('is-mobile');
 
-const _maxMobileDpr = 1.5;
+const _maxMobileDpr = IS_FIREFOX ? 1.25 : 1.5;
 
 // --- Renderer ---
 const renderer = new THREE.WebGLRenderer({
@@ -90,14 +91,14 @@ window.hardwareProfiler = hardwareProfiler;
 const _initialDprParam = parseFloat(new URLSearchParams(window.location.search).get('dpr'));
 const _initialDpr = Number.isFinite(_initialDprParam)
   ? _initialDprParam
-  : hardwareProfiler.profile.targetDpr;
+  : (IS_FIREFOX && IS_MOBILE ? Math.min(hardwareProfiler.profile.targetDpr, 1.25) : hardwareProfiler.profile.targetDpr);
 
 renderer.setPixelRatio(_initialDpr);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.95;
 renderer.shadowMap.enabled = new URLSearchParams(window.location.search).get('shadows') !== '0';
-// Soft PCF shadow filtering for smooth anti-aliased shadows across all devices
-renderer.shadowMap.type = THREE.PCFShadowMap;
+// High-fidelity PCFSoft shadow filtering for smooth feathered shadows across all devices
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.shadowMap.autoUpdate = true;
 renderer.info.autoReset = false;
 container.appendChild(renderer.domElement);
@@ -124,7 +125,7 @@ composer.setPixelRatio(_initialDpr);
 const renderPass = new RenderPass(scene, camera);
 composer.addPass(renderPass);
 
-const bloomScale = IS_MOBILE ? 0.65 : 1.0;
+const bloomScale = IS_MOBILE ? (hardwareProfiler.profile.tier === "low" ? 0.65 : 0.75) : 1.0;
 const bloomRes = new THREE.Vector2(
   Math.round(window.innerWidth * _initialDpr * bloomScale),
   Math.round(window.innerHeight * _initialDpr * bloomScale)
@@ -1281,7 +1282,7 @@ const snowVertexShader = `
     // Natural physical size attenuation with smooth clamp
     // Calibrated for crisp, delicate winter snowfall without oversized giant blobs
     float baseScale = (260.0 / depth) * uSize * aSize;
-    gl_PointSize = clamp(baseScale, 1.5, 22.0);
+    gl_PointSize = clamp(baseScale, 2.0, 26.0);
 
     // Near plane camera fade to eliminate harsh near-clip popping
     vDepthFade = smoothstep(0.3, 1.8, depth);
@@ -1363,7 +1364,7 @@ const snowMat = new THREE.ShaderMaterial({
   vertexShader: snowVertexShader,
   fragmentShader: snowFragmentShader,
   uniforms: {
-    uSize: { value: 0.12 },
+    uSize: { value: IS_MOBILE ? 0.17 : 0.12 },
     uOpacity: { value: 0.85 },
     uOvercast: { value: 0.0 }
   },
@@ -1414,7 +1415,7 @@ const largeSnowMat = new THREE.ShaderMaterial({
   vertexShader: snowVertexShader,
   fragmentShader: snowFragmentShader,
   uniforms: {
-    uSize: { value: 0.18 },
+    uSize: { value: IS_MOBILE ? 0.25 : 0.18 },
     uOpacity: { value: 0.85 },
     uOvercast: { value: 0.0 }
   },
@@ -2995,7 +2996,7 @@ const modelUrl = '/assets/models/terrain.glb';
     // Shadow frustum tightened around the ground under Santa for maximum texel density and reduced shadow-pass polygon load.
     // Desktop: 56m across a 2048 map => ~2.7cm per texel (tree/house shadows stay razor sharp).
     // Mobile: 36m across a 1024 map => ~3.5cm per texel.
-    const shadowExtent = 20;
+    const shadowExtent = (hardwareProfiler.profile.tier === "low") ? 20 : 26;
     moonLight.shadow.camera.left = -shadowExtent;
     moonLight.shadow.camera.right = shadowExtent;
     moonLight.shadow.camera.top = shadowExtent;
@@ -3088,7 +3089,7 @@ window._printScenePolys = function() {
 };
 setInterval(() => { if (window._printScenePolys) window._printScenePolys(); }, 1000);
 // Frame limiter: On mobile, defaults to 60 FPS cap to preserve battery and thermal headroom.
-// On desktop / high-end GPUs, runs fully uncapped (or at monitor refresh rate) unless an explicit cap is set.
+// On desktop / high-end GPUs, runs fully uncapped (0) unless an explicit cap is set.
 let _targetFpsCap = IS_MOBILE ? 60 : 0;
 window._targetFpsCap = _targetFpsCap;
 window.setFpsCap = function(cap) {
@@ -3098,7 +3099,10 @@ window.setFpsCap = function(cap) {
 };
 
 let _lastRenderTimeMs = 0;
-const FRAME_CAP_TOLERANCE_MS = 5.2; // Generous 5.2ms tolerance: protects 60Hz from Firefox timer jitter/quantization while capping 90/120Hz
+// Firefox Mobile (GeckoView) timer jitter mitigation:
+// Firefox rounds performance.now() and requestAnimationFrame timestamps to 1-2ms to prevent fingerprinting,
+// and its VSync cadence fluctuates around 16.6ms. A 7.5ms tolerance guarantees stable 60 FPS delivery without artificial frame skips.
+const FRAME_CAP_TOLERANCE_MS = IS_FIREFOX ? 7.5 : 5.2;
 function animate(currentTime) {
   requestAnimationFrame(animate);
 
@@ -3254,8 +3258,9 @@ function animate(currentTime) {
       shadowFocus.y = 0;
 
       // Anti-jitter: snap directional shadow camera in texel increments to completely stop sub-pixel shadow crawling
-      const currentExtent = 20;
-      const worldTexelSize = (currentExtent * 2.0) / shadowMapDim;
+      const currentExtent = Math.abs(moonLight.shadow.camera.left) || 26;
+      const currentShadowDim = moonLight.shadow.mapSize.width || shadowMapDim;
+      const worldTexelSize = (currentExtent * 2.0) / currentShadowDim;
       const snappedFocusX = Math.floor(shadowFocus.x / worldTexelSize) * worldTexelSize;
       const snappedFocusZ = Math.floor(shadowFocus.z / worldTexelSize) * worldTexelSize;
 
@@ -3361,7 +3366,8 @@ function animate(currentTime) {
     const useBloom = !isComposerDisabled
                   && (window.qualityPanel?.bloomEnabled !== false)
                   && (perfDebugger?.state?.postProcessing !== false)
-                  && !(mobileOptimizer?.enabled && mobileOptimizer._bloomDisabled);
+                  && !(mobileOptimizer?.enabled && mobileOptimizer._bloomDisabled)
+                  && !(IS_FIREFOX && IS_MOBILE && new URLSearchParams(window.location.search).get('bloom') === '0');
 
     // Measure shadow pass triangle count by sampling renderer.info before and after shadow pass
     const callsBefore = renderer.info.render.calls;
