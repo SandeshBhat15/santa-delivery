@@ -1270,13 +1270,13 @@ export class SleighController {
     }
 
     // Snappy exponential easing behind the sleigh (8.5 / s on mobile, 5.5 / s on desktop) for immediate steering response
-    const camFollowRate = this.isMobile ? 8.5 : 5.5;
+    const camFollowRate = this.isMobile ? 6.5 : 5.0;
     const posEase = 1.0 - Math.exp(-camFollowRate * delta);
     this.camera.position.lerp(this.camTargetPos, posEase);
 
     // Dynamic camera banking roll (camera subtly leans into banked turns with responsive tracking)
     const targetCamRoll = -this.bank * 0.35;
-    const rollRate = this.isMobile ? 8.5 : 6.0;
+    const rollRate = this.isMobile ? 7.0 : 6.0;
     this.cameraRoll += (targetCamRoll - this.cameraRoll) * (1.0 - Math.exp(-rollRate * delta));
     this.camera.up.set(Math.sin(this.cameraRoll), Math.cos(this.cameraRoll), 0);
 
@@ -1290,7 +1290,7 @@ export class SleighController {
     }
 
     // Look-at point eases smoothly with high responsiveness (10.5 / s on mobile, 7.5 / s on desktop) to stay firmly locked on target
-    const lookRate = this.isMobile ? 10.5 : 7.5;
+    const lookRate = this.isMobile ? 9.0 : 7.5;
     const lookEase = 1.0 - Math.exp(-lookRate * delta);
     this._currentCamLookPos.lerp(this.camLookPos, lookEase);
     this.camera.lookAt(this._currentCamLookPos);
@@ -1460,8 +1460,8 @@ export class SleighController {
       }
     }
 
-    // Trigger crash failure only on real direct wall/building impact with significant penetration
-    if (collidedAny && maxPenetration > 0.025) {
+    // Any collision with a house triggers Game Over immediately
+    if (collidedAny) {
       this._reportCrash('house');
     }
   }
@@ -1697,6 +1697,22 @@ export class SleighController {
     if (hasActive) {
       posAttr.needsUpdate = true;
       colAttr.needsUpdate = true;
+    }
+  }
+
+  setVisible(visible) {
+    this.visible = !!visible;
+    if (this.group) {
+      this.group.visible = this.visible;
+    }
+    if (this.flightTrail && this.flightTrail.particleGroup) {
+      this.flightTrail.particleGroup.visible = this.visible;
+    }
+    if (this.magicTrail && this.magicTrail.mesh) {
+      this.magicTrail.mesh.visible = this.visible;
+    }
+    if (this._runnerPoints) {
+      this._runnerPoints.visible = this.visible;
     }
   }
 

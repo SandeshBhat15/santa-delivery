@@ -5,6 +5,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { SleighController } from './gameplay/SleighController.js';
 import { DeliverySystem } from './gameplay/DeliverySystem.js';
+import { soundManager } from './gameplay/SoundManager.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
@@ -80,9 +81,14 @@ const _maxMobileDpr = IS_FIREFOX ? 1.25 : 1.5;
 const renderer = new THREE.WebGLRenderer({
   antialias: true,
   precision: 'highp',
-  powerPreference: 'high-performance'
+  powerPreference: 'high-performance',
+  alpha: false,
+  stencil: false,
+  depth: true
 });
 renderer.setSize(window.innerWidth, window.innerHeight);
+window.scene = scene;
+window.renderer = renderer;
 
 // Hardware auto-detection & profiling
 const hardwareProfiler = new HardwareProfiler(renderer);
@@ -91,7 +97,7 @@ window.hardwareProfiler = hardwareProfiler;
 const _initialDprParam = parseFloat(new URLSearchParams(window.location.search).get('dpr'));
 const _initialDpr = Number.isFinite(_initialDprParam)
   ? _initialDprParam
-  : (IS_FIREFOX && IS_MOBILE ? Math.min(hardwareProfiler.profile.targetDpr, 1.25) : hardwareProfiler.profile.targetDpr);
+  : (IS_FIREFOX && IS_MOBILE ? Math.min(hardwareProfiler.profile.targetDpr, 1.15) : hardwareProfiler.profile.targetDpr);
 
 renderer.setPixelRatio(_initialDpr);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -121,6 +127,7 @@ window.controls = controls;
 // --- Full Cinematic Unreal Bloom Pipeline with Anti-Black-Square Protection ---
 const composer = new EffectComposer(renderer);
 composer.setPixelRatio(_initialDpr);
+window.composer = composer;
 
 const renderPass = new RenderPass(scene, camera);
 composer.addPass(renderPass);
@@ -135,7 +142,7 @@ const bloomPass = new KawaseBloomPass(
   1.4,  // Rich, warm cinematic bloom intensity
   0.32, // Smooth threshold for glowing windows, aurora, and lanterns
   2.2,  // Wide, soft blur scattering radius
-  IS_MOBILE ? 3 : 4
+  IS_MOBILE ? 2 : 4
 );
 if (IS_MOBILE && new URLSearchParams(window.location.search).get('bloom') === '0') {
   bloomPass.enabled = false;
@@ -175,6 +182,7 @@ const qualityPanel = new QualityPanel({
   camera,
   composer,
   bloomPass,
+  hardwareProfiler,
   get moonLight() { return moonLight; },
   get starlightHemiLight() { return starlightHemiLight; },
   get villageFacadeLight() { return villageFacadeLight; },
@@ -191,6 +199,7 @@ const mobileOptimizer = new MobileOptimizer({
   scene,
   camera,
   composer,
+  hardwareProfiler,
   get chunkSystem() { return chunkSystem; },
   get sleighController() { return sleighController; },
   get deliverySystem() { return deliverySystem; },
@@ -250,26 +259,27 @@ const WINTER_SKY_AND_AURORA_GLSL = `
     );
   }
 
-  // Seamless deep-navy (#040a18) to muted atmospheric cold-blue (#0e1b2f) winter night gradient
+  // Seamless deep nocturnal navy to atmospheric cold-blue with subtle violet-indigo zenith
   // Continuous across the entire sphere (y in [-1, 1]) with zero horizon discontinuity
   vec3 evaluateWinterNightSky(vec3 rd, vec3 moonDir) {
     float y = rd.y;
 
-    // Rich cinematic nocturnal palette:
-    // Zenith deep navy: #040a18 (0.0012, 0.0035, 0.0125 in linear)
-    // Upper midnight blue: #071224 (0.0032, 0.0085, 0.0260 in linear)
-    // Mid cold navy: #0a1832 (0.0055, 0.0145, 0.0420 in linear)
-    // Horizon atmospheric blue: #0e1b2f (0.0085, 0.0210, 0.0540 in linear)
-    vec3 zenithNavy   = vec3(0.0012, 0.0035, 0.0125);
-    vec3 upperNavy    = vec3(0.0032, 0.0085, 0.0260);
-    vec3 midColdBlue  = vec3(0.0055, 0.0145, 0.0420);
-    vec3 horizonHaze  = vec3(0.0085, 0.0210, 0.0540);
-    vec3 nadirAbyss   = vec3(0.0020, 0.0050, 0.0140);
+    // Classic deep winter night palette with a delicate touch of cosmic purple:
+    // - Zenith: deep midnight navy with subtle royal violet undertone (#0a0a20)
+    // - Upper sky: deep midnight navy (#071226)
+    // - Mid sky: cold winter navy (#0a1834)
+    // - Horizon: atmospheric cold-blue haze (#0e1b2f)
+    // - Nadir: velvety deep abyss (#030712)
+    vec3 zenithPurple = vec3(0.0035, 0.0030, 0.0220); // Deep midnight with gentle purple tint
+    vec3 upperNavy    = vec3(0.0030, 0.0075, 0.0260); // Deep midnight navy
+    vec3 midColdBlue  = vec3(0.0055, 0.0145, 0.0420); // Crisp cold navy
+    vec3 horizonHaze  = vec3(0.0085, 0.0210, 0.0540); // Atmospheric horizon blue
+    vec3 nadirAbyss   = vec3(0.0020, 0.0040, 0.0140);
 
     float upperT = clamp(y, 0.0, 1.0);
     vec3 sky = mix(horizonHaze, midColdBlue, smoothstep(0.0, 0.28, upperT));
     sky = mix(sky, upperNavy, smoothstep(0.18, 0.62, upperT));
-    sky = mix(sky, zenithNavy, smoothstep(0.48, 0.98, upperT));
+    sky = mix(sky, zenithPurple, smoothstep(0.48, 0.98, upperT));
 
     // Smooth transition below y = 0 so looking downward from high altitude has zero seam
     float lowerT = 1.0 - smoothstep(-0.45, 0.0, y);
@@ -296,9 +306,9 @@ const WINTER_SKY_AND_AURORA_GLSL = `
     sky += vec3(0.035, 0.070, 0.140) * innerGlow * 0.35;
     sky += vec3(0.080, 0.130, 0.220) * tightCorona * 0.20;
 
-    // Very faint high-altitude blue lift gives the zenith more depth without adding grain.
+    // Subtle high-altitude purple-blue lift: adds rich depth without looking washed out or overly bright
     float upperVeil = smoothstep(0.18, 0.92, y);
-    sky += vec3(0.0010, 0.0030, 0.0090) * upperVeil;
+    sky += vec3(0.0035, 0.0018, 0.0140) * upperVeil;
 
     // Procedural Milky Way: a broad, curved galactic band with smooth cloud structure
     // and dark dust lanes. Built from continuous directional noise, not a texture or plane.
@@ -333,9 +343,9 @@ const WINTER_SKY_AND_AURORA_GLSL = `
       // Slightly dim the galactic band near the brightest aurora-facing upper horizon.
       float galacticIntensity = broadBand * bandEdge * (0.32 + 0.68 * galacticClouds)
                               * dustMask * moonGalaxyFade;
-      vec3 milkyWayTint = vec3(0.045, 0.075, 0.125);
+      vec3 milkyWayTint = vec3(0.045, 0.065, 0.125);
       sky += milkyWayTint * galacticIntensity * 0.32;
-      // A restrained cool core provides depth without turning the Milky Way into a bright cloud.
+      // Cool core depth
       sky += vec3(0.015, 0.028, 0.055) * broadBand * galacticClouds * dustMask * moonGalaxyFade * 0.14;
     }
 
@@ -639,7 +649,7 @@ const WINTER_SKY_AND_AURORA_GLSL = `
     vec3 accumLight = vec3(0.0);
     float transmittance = 1.0;
 
-    // Restrained, atmospheric winter game palette:
+    // Classic winter aurora palette:
     // Soft emerald-green lower edge -> luminous cyan-turquoise core -> muted teal-blue upper rays
     vec3 lowerEmerald  = vec3(0.10, 0.92, 0.55);
     vec3 coreTurquoise = vec3(0.10, 0.84, 0.78);
@@ -772,6 +782,7 @@ const SKY_RADIUS = 1800;
 const skyDomeMesh = new THREE.Mesh(new THREE.SphereGeometry(SKY_RADIUS, 48, 32), skyDomeMat);
 skyDomeMesh.renderOrder = -20;
 skyGroup.add(skyDomeMesh);
+window.skyDomeMesh = skyDomeMesh;
 
 // --- Multi-Layered Alpine Mountains Ring (1 Draw Call) ---
 // Two concentric, staggered alpine mountain rings with frosted moonlit snow rims:
@@ -1199,7 +1210,10 @@ THREE.ShaderChunk.fog_fragment = `
     float groundMistDensity = hMistFalloff * (patchDensity * 0.40 + 0.60) * fgClear * 0.35;
 
     // Atmospheric night sky horizon color blend
-    vec3 cMistColor = fogColor;
+    // In direct render mode, gl_FragColor has already undergone linearToOutputTexel.
+    // Transforming fogColor to the active output color space ensures identical, seamless
+    // horizon blending in both direct rendering and EffectComposer post-processing.
+    vec3 cMistColor = linearToOutputTexel(vec4(fogColor, 1.0)).rgb;
 
     // Final Compositing: seamless atmospheric depth
     float fTotalFog = clamp(fDistFog + groundMistDensity * (1.0 - fDistFog), 0.0, 1.0);
@@ -1213,7 +1227,7 @@ scene.add(starlightHemiLight);
 
 // 2. Moonlight Key: Subtle cool moonlit silver-blue beam casting crisp night shadows
 const moonLight = new THREE.DirectionalLight(0x7ea4e8, 0.95);
-moonLight.position.set(28, 48, -22);
+moonLight.position.set(14, 52, -12);
 moonLight.castShadow = true;
 // Shadow map resolution: 1024 on mobile (perfect for 36m frustum), 2048 on desktop (razor-sharp)
 const shadowMapDim = hardwareProfiler.profile.shadowMapSize;
@@ -1226,9 +1240,9 @@ moonLight.shadow.camera.left = -d;
 moonLight.shadow.camera.right = d;
 moonLight.shadow.camera.top = d;
 moonLight.shadow.camera.bottom = -d;
-moonLight.shadow.normalBias = 0.06;
-moonLight.shadow.bias = -0.0004;
-moonLight.shadow.radius = 1.6;
+moonLight.shadow.normalBias = 0.025;
+moonLight.shadow.bias = -0.00015;
+moonLight.shadow.radius = 2.0;
 scene.add(moonLight);
 scene.add(moonLight.target);
 
@@ -1238,7 +1252,7 @@ scene.add(moonLight.target);
 // the GROUND under Santa (not to the airborne sleigh), which lets us keep the shadow
 // frustum tight and therefore keep the texel density high enough for tree/house
 // shadows to actually read on the snow instead of being averaged away.
-const MOON_OFFSET = new THREE.Vector3(24, 42, -18); // constant light offset => constant light direction
+const MOON_OFFSET = new THREE.Vector3(14, 52, -12); // constant light offset => constant light direction
 const shadowFocus = new THREE.Vector3(0, 0, 0); // ground-projected anchor of the shadow frustum
 const MOON_DIR = new THREE.Vector3(-24, -42, 18).normalize(); // unit vector pointing from the moon into the scene
 
@@ -2280,7 +2294,7 @@ class InfiniteChunkSystem {
 
       const isFlatTerrain = name.includes('plane') || matName.includes('terrain') || matName.includes('ice');
       const isTreeOrFoliage = name.toLowerCase().includes('winter_forest') || name.toLowerCase().includes('tree');
-      const isProminentCaster = isHouse || isTreeOrFoliage || name.includes('cliffbig');
+      const isProminentCaster = isHouse || isTreeOrFoliage;
 
       // Create a reference placeholder instMesh so deliverySystem and external references continue working
       const refInstMesh = new THREE.InstancedMesh(child.geometry, child.material, matrices.length);
@@ -2296,7 +2310,7 @@ class InfiniteChunkSystem {
         category,
         isHouse,
         castShadow: isProminentCaster,
-        receiveShadow: !matName.includes('ice')
+        receiveShadow: !isTreeOrFoliage && !matName.includes('ice')
       });
     });
 
@@ -2975,8 +2989,11 @@ const modelUrl = '/assets/models/terrain.glb';
     // Synchronize initial targets for origin village chunk (0,0)
     deliverySystem.syncChunkTargets('0,0', 0, 0);
 
-    // Begin the first 5-delivery run immediately (seeds every preloaded chunk)
-    deliverySystem.startRun(false);
+    // Initial state: Santa is paused and hidden waiting for player to begin run from How to Play screen
+    sleighController.isPaused = true;
+    sleighController.setVisible(false);
+    const mobileControls = document.getElementById('mobile-controls-wrapper');
+    if (mobileControls) mobileControls.style.display = 'none';
 
     // Disable OrbitControls mouse drag overrides so camera smoothly tracks Santa's sleigh
     controls.enabled = false;
@@ -3090,7 +3107,7 @@ window._printScenePolys = function() {
 setInterval(() => { if (window._printScenePolys) window._printScenePolys(); }, 1000);
 // Frame limiter: On mobile, defaults to 60 FPS cap to preserve battery and thermal headroom.
 // On desktop / high-end GPUs, runs fully uncapped (0) unless an explicit cap is set.
-let _targetFpsCap = IS_MOBILE ? 60 : 0;
+let _targetFpsCap = Number(new URLSearchParams(window.location.search).get('cap')) || 0;
 window._targetFpsCap = _targetFpsCap;
 window.setFpsCap = function(cap) {
   _targetFpsCap = Number(cap) || 0;
@@ -3099,28 +3116,20 @@ window.setFpsCap = function(cap) {
 };
 
 let _lastRenderTimeMs = 0;
-// Firefox Mobile (GeckoView) timer jitter mitigation:
-// Firefox rounds performance.now() and requestAnimationFrame timestamps to 1-2ms to prevent fingerprinting,
-// and its VSync cadence fluctuates around 16.6ms. A 7.5ms tolerance guarantees stable 60 FPS delivery without artificial frame skips.
-const FRAME_CAP_TOLERANCE_MS = IS_FIREFOX ? 7.5 : 5.2;
 function animate(currentTime) {
   requestAnimationFrame(animate);
 
   const requestedCap = Number(window._targetFpsCap) || 0;
   if (requestedCap > 0) {
-    const frameInterval = 1000 / requestedCap;
     if (!_lastRenderTimeMs) {
       _lastRenderTimeMs = currentTime;
-      return;
-    }
-    const elapsed = currentTime - _lastRenderTimeMs;
-    if (elapsed < frameInterval - FRAME_CAP_TOLERANCE_MS) {
-      return;
-    }
-    // Carry the leftover time forward only when elapsed >= frameInterval, otherwise anchor to currentTime
-    if (elapsed >= frameInterval) {
-      _lastRenderTimeMs = currentTime - (elapsed % frameInterval);
     } else {
+      const elapsed = currentTime - _lastRenderTimeMs;
+      // 60 FPS cap: minInterval 11.2ms allows clean 2-frame cadence on 120Hz while NEVER dropping a single 60Hz frame
+      const minInterval = (requestedCap === 60) ? 11.2 : ((1000 / requestedCap) - (IS_FIREFOX ? 6.0 : 4.0));
+      if (elapsed < minInterval) {
+        return;
+      }
       _lastRenderTimeMs = currentTime;
     }
   }
@@ -3171,6 +3180,13 @@ function animate(currentTime) {
   // Update Santa Sleigh Flight & Gift Delivery systems
   if (sleighController && !pauseLogic) {
     sleighController.update(delta, elapsedTime);
+    soundManager.updateFlight(
+      sleighController.speed || 1.8,
+      sleighController.position.y || 0.8,
+      sleighController.pitch || 0.0,
+      !!sleighController.isSkimming,
+      weatherEngine ? (weatherEngine.weatherIntensity || 0.0) : 0.0
+    );
   }
   if (deliverySystem && !pauseLogic) {
     deliverySystem.update(delta, elapsedTime);
@@ -3361,7 +3377,9 @@ function animate(currentTime) {
   const renderStart = performance.now();
   let shadowTrianglesReal = 0;
   if (!perfDebugger?.state?.skipRender) {
+    const isLowMobile = IS_MOBILE && (hardwareProfiler?.profile?.tier === 'low');
     const isComposerDisabled = (window.qualityPanel?.composerEnabled === false)
+                  || isLowMobile
                   || (IS_MOBILE && (new URLSearchParams(window.location.search).get('composer') === '0'));
     const useBloom = !isComposerDisabled
                   && (window.qualityPanel?.bloomEnabled !== false)
@@ -3373,6 +3391,7 @@ function animate(currentTime) {
     const callsBefore = renderer.info.render.calls;
     const trisBefore = renderer.info.render.triangles;
 
+    window._lastUseBloom = useBloom;
     if (useBloom) {
       composer.render();
     } else {
@@ -3406,3 +3425,22 @@ function animate(currentTime) {
 }
 
 requestAnimationFrame(animate);
+
+// --- Audio Toggle Button Wiring ---
+const audioBtn = document.getElementById('btn-audio-toggle');
+if (audioBtn) {
+  const updateAudioBtnIcon = () => {
+    audioBtn.textContent = soundManager.enabled ? '??' : '??';
+    audioBtn.classList.toggle('muted', !soundManager.enabled);
+  };
+  updateAudioBtnIcon();
+
+  audioBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const enabled = soundManager.toggleMute();
+    updateAudioBtnIcon();
+  });
+  audioBtn.addEventListener('touchstart', (e) => {
+    e.stopPropagation();
+  }, { passive: true });
+}

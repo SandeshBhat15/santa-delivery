@@ -22,10 +22,10 @@ export class QualityPanel {
     this.enabled = urlParams.get('debug') === '1';
 
     const initialDpr = this.ctx.renderer ? this.ctx.renderer.getPixelRatio() : 1.75;
-    const pixelRatios = [2.5, 2.25, 2.0, 1.75, 1.5];
+    const pixelRatios = [2.5, 2.25, 2.0, 1.75, 1.5, 1.25, 1.05];
     let dprIdx = pixelRatios.indexOf(initialDpr);
     if (dprIdx === -1) {
-      dprIdx = pixelRatios.indexOf(1.75);
+      dprIdx = pixelRatios.reduce((prev, curr, idx) => Math.abs(curr - initialDpr) < Math.abs(pixelRatios[prev] - initialDpr) ? idx : prev, 0);
     }
 
     let chunkCap = 6;

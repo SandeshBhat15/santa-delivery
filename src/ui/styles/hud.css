@@ -1,0 +1,290 @@
+/* ==========================================================================
+   FESTIVE TOP HUD & TRANSIENT IN-GAME FEEDBACK
+   Santa's Gift Delivery
+   ========================================================================== */
+
+/* Top HUD Container */
+.hud-top-bar {
+  position: absolute;
+  top: 14px;
+  left: 20px;
+  right: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  pointer-events: none; /* Let flight controls pass through gaps */
+  z-index: 50;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.hud-top-bar.hidden {
+  opacity: 0;
+  transform: translateY(-20px);
+  pointer-events: none;
+}
+
+.hud-group-left,
+.hud-group-center,
+.hud-group-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: auto; /* Buttons & pills are clickable / interactive */
+}
+
+/* --- Capsule HUD Pills --- */
+.hud-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 42px;
+  padding: 3px 14px 3px 6px;
+  background: var(--grad-hud-track);
+  border: 2px solid var(--c-gold-core);
+  border-radius: 24px;
+  box-shadow: 0 4px 12px rgba(4, 10, 24, 0.65), inset 0 1px 1px rgba(255, 240, 163, 0.4);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  overflow: hidden;
+  transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275), border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+/* Badge Icon on left of pill */
+.hud-pill .badge-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--grad-btn-red);
+  border: 1.5px solid var(--c-gold-light);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+  flex-shrink: 0;
+  margin-right: 8px;
+  z-index: 2;
+}
+
+.hud-pill .badge-icon svg {
+  display: block;
+}
+
+/* Pill Track & Text */
+.hud-pill .pill-track {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 58px;
+  z-index: 2;
+}
+
+.hud-pill .pill-text {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  color: #FFF8EA;
+  letter-spacing: 0.5px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 6px rgba(0, 0, 0, 0.7);
+  white-space: nowrap;
+  z-index: 3;
+}
+
+.hud-pill .pill-text strong {
+  font-family: var(--font-numerals);
+  font-size: 16px;
+  font-weight: 900;
+  color: var(--c-gold-core);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Background Progress Fills inside Capsule Track */
+.hud-pill .pill-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 20px;
+  opacity: 0.38;
+  transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 1;
+}
+
+/* Candy Cane Stripe Progress Fill for Deliveries */
+.hud-deliveries-pill .pill-fill.candy-cane-fill {
+  background: var(--grad-candy-cane);
+  background-size: 34px 34px;
+  animation: candyCaneScroll 2.5s linear infinite;
+  opacity: 0.45;
+}
+
+@keyframes candyCaneScroll {
+  from { background-position: 0 0; }
+  to { background-position: 34px 0; }
+}
+
+/* Star Fill */
+.hud-stars-pill .pill-fill.gold-fill {
+  background: linear-gradient(90deg, #FFC727, #FFE680);
+}
+
+/* Proximity Readiness Glow on Deliveries Pill */
+.hud-deliveries-pill.in-range {
+  border-color: #2ECC71;
+  box-shadow: 0 0 16px rgba(46, 204, 113, 0.8), inset 0 0 8px rgba(46, 204, 113, 0.4);
+  animation: proximityBeaconPulse 1.0s infinite alternate ease-in-out;
+}
+
+@keyframes proximityBeaconPulse {
+  0% { transform: scale(1.0); }
+  100% { transform: scale(1.05); }
+}
+
+/* --- Countdown Timer Pill & Urgency States --- */
+.hud-timer-pill {
+  border-color: var(--c-gold-light);
+}
+
+.hud-timer-pill .pill-text strong {
+  color: #FFF0A3;
+}
+
+/* Restrained Urgency Feedback when < 15 seconds (Requirement R4) */
+.hud-timer-pill.urgent {
+  border-color: #FF3B30;
+  background: linear-gradient(180deg, #2D050B 0%, #4D0912 50%, #1A0307 100%);
+  box-shadow: 0 0 18px rgba(255, 59, 48, 0.85), inset 0 0 10px rgba(255, 59, 48, 0.5);
+  animation: timerUrgentPulse 0.9s infinite ease-in-out;
+}
+
+.hud-timer-pill.urgent .pill-text strong,
+.hud-timer-pill.urgent .pill-text {
+  color: #FF5A5F;
+  text-shadow: 0 0 10px rgba(255, 59, 48, 0.9);
+}
+
+@keyframes timerUrgentPulse {
+  0% {
+    transform: scale(1.0);
+    box-shadow: 0 0 12px rgba(255, 59, 48, 0.6);
+  }
+  50% {
+    transform: scale(1.08);
+    box-shadow: 0 0 24px rgba(255, 59, 48, 0.95);
+  }
+  100% {
+    transform: scale(1.0);
+    box-shadow: 0 0 12px rgba(255, 59, 48, 0.6);
+  }
+}
+
+/* Star Pickup Pop Animation */
+.hud-stars-pill.star-pop {
+  animation: starPopAnim 0.45s ease-out;
+}
+
+@keyframes starPopAnim {
+  0% { transform: scale(1.0); }
+  45% { transform: scale(1.28); }
+  100% { transform: scale(1.0); }
+}
+
+/* --- Circular Action Buttons (Pause / Sound) --- */
+.btn-circle-red {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--grad-btn-red);
+  border: 2px solid var(--c-gold-core);
+  box-shadow: var(--shadow-btn-red), var(--shadow-gold-bevel);
+  color: #FFEAA7;
+  cursor: pointer;
+  outline: none;
+  transition: transform 0.15s ease, filter 0.15s ease, box-shadow 0.15s ease;
+  pointer-events: auto;
+  user-select: none;
+}
+
+.btn-circle-red:hover {
+  transform: scale(1.08);
+  filter: brightness(1.1);
+  box-shadow: 0 6px 18px rgba(92, 7, 19, 0.75), 0 0 12px rgba(255, 199, 39, 0.5);
+}
+
+.btn-circle-red:active {
+  transform: scale(0.95);
+  background: var(--grad-btn-red-active);
+}
+
+/* --- Transient Celebration Toasts --- */
+.toast-container {
+  position: absolute;
+  top: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  z-index: 60;
+}
+
+/* Ribbon Delivery Celebration Toast */
+.ribbon-toast {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 220px;
+  padding: 8px 24px;
+  background: var(--grad-btn-red);
+  border: 2px solid var(--c-gold-core);
+  border-radius: 20px;
+  box-shadow: 0 8px 24px rgba(92, 7, 19, 0.75), 0 0 16px rgba(255, 199, 39, 0.5);
+  color: #FFF9E8;
+  font-family: var(--font-ribbon);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-shadow: 0 2px 4px rgba(60, 4, 12, 0.9), 0 0 8px rgba(255, 215, 0, 0.5);
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.ribbon-toast.hidden {
+  opacity: 0;
+  transform: translateY(-24px) scale(0.85);
+  pointer-events: none;
+}
+
+/* Bonus Star Pickup Toast */
+.star-toast {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  background: var(--grad-hud-track);
+  border: 1.5px solid var(--c-gold-core);
+  border-radius: 16px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5), 0 0 12px rgba(255, 199, 39, 0.4);
+  color: var(--c-gold-light);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.star-toast.hidden {
+  opacity: 0;
+  transform: translateY(-16px);
+  pointer-events: none;
+}

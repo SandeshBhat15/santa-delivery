@@ -72,12 +72,19 @@ export class HardwareProfiler {
                            gpuLower.includes('adreno 720') || gpuLower.includes('adreno 725') ||
                            gpuLower.includes('adreno 730') || gpuLower.includes('apple');
 
-    const isLowGpu = gpuLower.includes('intel hd') || gpuLower.includes('intel uhd') ||
-                     gpuLower.includes('mali-400') || gpuLower.includes('mali-g52') ||
-                     gpuLower.includes('mali-g57') || gpuLower.includes('adreno 505') ||
-                     gpuLower.includes('adreno 506') || gpuLower.includes('adreno 610') ||
-                     gpuLower.includes('adreno 612') || (ram <= 3 && isMobile) ||
-                     (cores <= 4 && isMobile && !isHighGpu);
+    const isFirefoxSpoofedGpu = gpuLower.includes(', or similar') || gpuLower === 'mozilla' || gpuLower === 'gecko';
+
+    const isLowGpu = !isFirefoxSpoofedGpu && (
+                     gpuLower.includes('intel hd') || gpuLower.includes('intel uhd') ||
+                     gpuLower.includes('mali-400') || gpuLower.includes('mali-450') ||
+                     gpuLower.includes('mali-t') || gpuLower.includes('mali-g51') ||
+                     gpuLower.includes('mali-g52') || gpuLower.includes('mali-g57') ||
+                     gpuLower.includes('adreno 3') || gpuLower.includes('adreno 4') ||
+                     gpuLower.includes('adreno 5') || gpuLower.includes('adreno (tm) 5') ||
+                     gpuLower.includes('adreno 61') || gpuLower.includes('powervr') ||
+                     (ram <= 3 && isMobile) ||
+                     (cores <= 4 && isMobile && !isHighGpu)
+    );
 
     let tier = DEVICE_TIER.MID;
     if (isUltraGpu && !isMobile) {
@@ -88,7 +95,7 @@ export class HardwareProfiler {
       tier = DEVICE_TIER.LOW;
     } else {
       if (isMobile) {
-        tier = (isMidMobileGpu || (cores >= 6 && ram >= 4)) ? DEVICE_TIER.MID : DEVICE_TIER.LOW;
+        tier = (isMidMobileGpu || (cores >= 6 && ram >= 4) || isFirefoxSpoofedGpu) ? DEVICE_TIER.MID : DEVICE_TIER.LOW;
       } else {
         tier = DEVICE_TIER.MID;
       }
@@ -117,18 +124,18 @@ export class HardwareProfiler {
         maxLoadedChunks = isMobile ? 5 : 6;
         break;
       case DEVICE_TIER.MID:
-        targetDpr = Math.min(window.devicePixelRatio || 1, isMobile ? 1.5 : 1.75);
-        shadowMapSize = 2048;
+        targetDpr = Math.min(window.devicePixelRatio || 1, isMobile ? 1.4 : 1.75);
+        shadowMapSize = isMobile ? 1024 : 2048;
         baseSnowCount = 2200;
         largeSnowCount = 240;
         maxLoadedChunks = 5;
         break;
       case DEVICE_TIER.LOW:
       default:
-        targetDpr = Math.min(window.devicePixelRatio || 1, isMobile ? 1.25 : 1.25);
+        targetDpr = Math.min(window.devicePixelRatio || 1, isMobile ? 1.05 : 1.25);
         shadowMapSize = 1024;
-        baseSnowCount = 900;
-        largeSnowCount = 100;
+        baseSnowCount = 850;
+        largeSnowCount = 90;
         maxLoadedChunks = 4;
         break;
     }

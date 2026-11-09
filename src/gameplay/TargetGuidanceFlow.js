@@ -1,22 +1,16 @@
 import * as THREE from 'three';
 
 /**
- * TargetGuidanceFlow — Pure Golden Stardust Stream (Guiding Wind)
+ * TargetGuidanceFlow
+ * ----------------------------------------------------------------------------
+ * A luminous stream of enchanted golden wind and stardust currents
+ * connecting Santa directly to the next active drop point (cottage chimney).
  *
- * 100% pure particle flow guidance inspired by Ghost of Tsushima's guiding wind.
- * NO giant glowing billboard orbs, NO polygon ribbons or solid tubes.
- *
- * Emits directly in front of the lead reindeer (+0.85m ahead of the sleigh)
- * and streams in continuous, fluid traveling waves along the 3D Bézier curve
- * toward the active rooftop chimney marker.
- *
- * Features:
- * - Fluid stream of tiny golden stardust specks (1.5px to 9px), embers, and diamond motes.
- * - Progressive wave flow: motes travel along the curve at natural wind speeds (4-6 m/s).
- * - Sleigh-front anchor: cleanly ahead of Santa and never clipping the camera.
- * - Periodic rhythmic wind gusts (and instant summon with 'G' or HUD button).
- * - Smooth proximity dissolve when approaching within 2.5m of the chimney.
- * - Zero GC / 100% pre-allocated buffer architecture.
+ * Visual Style:
+ *  - Ethereal, shimmering ribbon stream of sparkling golden embers and stardust motes.
+ *  - Arcs gracefully forward from Santa's lead reindeer and sweeps smoothly into
+ *    the active rooftop chimney beacon.
+ *  - Continuous, clear, radiant stream with sparkling glints.
  */
 export class TargetGuidanceFlow {
   constructor(scene, isMobile = false) {
@@ -27,12 +21,12 @@ export class TargetGuidanceFlow {
     this.isActive = false;
     this.isGusting = false;
     this.gustTimer = 0;
-    this.gustDuration = 2.4;        // Swift, elegant guiding gust
+    this.gustDuration = 2.0;        // Periodic guidance pulse length (seconds)
     this.restTimer = 0;
-    this.restDuration = 5.0;        // Calm interval between reminders so it's not non-stop
+    this.restDuration = 4.8;        // Calm interval between guidance streams
     this.emissionAccumulator = 0;
-    this.lostTimer = 0;             // Tracks how long player has been heading away from target
-    this.lostThreshold = 3.5;       // Seconds of flying away before auto-summoning guiding gust
+    this.lostTimer = 0;
+    this.lostThreshold = 3.2;
 
     // Tracking Vectors
     this.sleighPos = new THREE.Vector3();
@@ -47,7 +41,7 @@ export class TargetGuidanceFlow {
     this.p1 = new THREE.Vector3();
     this.p2 = new THREE.Vector3();
     this.p3 = new THREE.Vector3();
-    this.curveLength = 16.0;
+    this.curveLength = 25.0;
 
     // Temporary scratch vectors for curve sampling without GC
     this._vTmp1 = new THREE.Vector3();
@@ -56,19 +50,19 @@ export class TargetGuidanceFlow {
     this._vNormal = new THREE.Vector3(0, 1, 0);
     this._vBinormal = new THREE.Vector3();
 
-    // Palette: Enchanted Christmas Stardust (warm shimmering golds, soft champagne, amber)
+    // Palette: Enchanted Christmas Stardust (glowing warm golds, champagne, bright starlight)
     this.palette = [
-      new THREE.Color(1.0, 0.88, 0.32), // Radiant Christmas Gold
-      new THREE.Color(1.0, 0.96, 0.65), // Luminous Champagne
-      new THREE.Color(1.0, 0.72, 0.16), // Warm Amber
-      new THREE.Color(1.0, 1.0, 0.92),  // Diamond Star Frost
+      new THREE.Color(1.0, 0.90, 0.35), // Radiant Christmas Gold
+      new THREE.Color(1.0, 0.98, 0.70), // Luminous Champagne
+      new THREE.Color(1.0, 0.78, 0.22), // Warm Amber Gold
+      new THREE.Color(1.0, 1.0, 0.95),  // Diamond Star Frost
     ];
 
     this._initParticleSystem();
   }
 
   /* -------------------------------------------------------------------------
-   * PURE STARDUST PARTICLE SYSTEM (Stream of tiny sparkling motes)
+   * PARTICLE SYSTEM & SHADER
    * ------------------------------------------------------------------------- */
   _initParticleTexture() {
     const canvas = document.createElement('canvas');
@@ -76,26 +70,26 @@ export class TargetGuidanceFlow {
     canvas.height = 64;
     const ctx = canvas.getContext('2d');
 
-    // Concentrated sparkling soft radial center (delicate stardust speck)
-    const grad = ctx.createRadialGradient(32, 32, 0, 32, 32, 28);
-    grad.addColorStop(0.0, 'rgba(255, 255, 255, 1.0)');
-    grad.addColorStop(0.2, 'rgba(255, 240, 175, 0.90)');
-    grad.addColorStop(0.5, 'rgba(255, 185, 45, 0.35)');
-    grad.addColorStop(1.0, 'rgba(255, 140, 20, 0.0)');
+    // Soft, delicate golden stardust (restrained bloom profile)
+    const grad = ctx.createRadialGradient(32, 32, 0, 32, 32, 26);
+    grad.addColorStop(0.0, 'rgba(255, 250, 220, 0.90)');
+    grad.addColorStop(0.3, 'rgba(255, 215, 120, 0.65)');
+    grad.addColorStop(0.6, 'rgba(240, 165, 40, 0.25)');
+    grad.addColorStop(1.0, 'rgba(200, 120, 20, 0.0)');
 
     ctx.fillStyle = grad;
     ctx.beginPath();
-    ctx.arc(32, 32, 28, 0, Math.PI * 2);
+    ctx.arc(32, 32, 26, 0, Math.PI * 2);
     ctx.fill();
 
-    // Tiny delicate 4-point cross-glint
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
-    ctx.lineWidth = 1.5;
+    // Subtle 4-point cross-glint with restrained luminance
+    ctx.strokeStyle = 'rgba(255, 245, 210, 0.55)';
+    ctx.lineWidth = 1.2;
     ctx.beginPath();
-    ctx.moveTo(32, 8);
-    ctx.lineTo(32, 56);
-    ctx.moveTo(8, 32);
-    ctx.lineTo(56, 32);
+    ctx.moveTo(32, 6);
+    ctx.lineTo(32, 58);
+    ctx.moveTo(6, 32);
+    ctx.lineTo(58, 32);
     ctx.stroke();
 
     this.particleTexture = new THREE.CanvasTexture(canvas);
@@ -106,8 +100,8 @@ export class TargetGuidanceFlow {
   _initParticleSystem() {
     this._initParticleTexture();
 
-    // High density flow stream (380 desktop / 220 mobile motes)
-    this.maxParticles = this.isMobile ? 220 : 380;
+    // Density: 400 desktop / 240 mobile
+    this.maxParticles = this.isMobile ? 240 : 400;
     this.pool = new Array(this.maxParticles);
 
     this.positions = new Float32Array(this.maxParticles * 3);
@@ -137,9 +131,9 @@ export class TargetGuidanceFlow {
           vAlpha = alpha;
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
           float eyeDist = max(-mvPosition.z, 0.1);
-          // Graceful, delicate stardust motes (soft on bloom pass)
-          float ptSize = (size * 220.0) / eyeDist;
-          gl_PointSize = clamp(ptSize, 2.0, 10.0);
+          // Gentle, refined stardust motes with clean depth-scale
+          float ptSize = (size * 260.0) / eyeDist;
+          gl_PointSize = clamp(ptSize, 2.5, 11.0);
           gl_Position = projectionMatrix * mvPosition;
         }
       `,
@@ -151,8 +145,8 @@ export class TargetGuidanceFlow {
         void main() {
           if (vAlpha <= 0.005) discard;
           vec4 tex = texture2D(pointTexture, gl_PointCoord);
-          // Soft luminance (subtle glow, does not blow out bloom pipeline)
-          gl_FragColor = vec4(vColor * tex.rgb * 0.90, vAlpha * tex.a * 0.85);
+          // Controlled luminance: luminous and clear without over-blooming
+          gl_FragColor = vec4(vColor * tex.rgb * 0.95, vAlpha * tex.a * 0.85);
         }
       `,
       blending: THREE.AdditiveBlending,
@@ -172,14 +166,14 @@ export class TargetGuidanceFlow {
     for (let i = 0; i < this.maxParticles; i++) {
       this.pool[i] = {
         active: false,
-        u: 0.0,            // Parameter t along the Bezier curve (0.0 to 1.0)
-        speedU: 0.35,      // Speed along the curve per second
-        swirlPhase: 0.0,   // Vortex rotation phase
-        swirlRadius: 0.08, // Radial spread around the central flow centerline
-        swirlSpeed: 4.0,   // Angular swirl speed
+        u: 0.0,
+        speedU: 0.35,
+        swirlPhase: 0.0,
+        swirlRadius: 0.08,
+        swirlSpeed: 4.0,
         age: 0,
-        maxLife: 2.5,
-        baseSize: 0.012,
+        maxLife: 2.8,
+        baseSize: 0.018,
         colorIndex: 0,
         glint: false
       };
@@ -206,7 +200,10 @@ export class TargetGuidanceFlow {
 
     this._updateCurve();
 
-    // Trigger an initial gentle prompt gust when setting a new target
+    // Populate initial stream along curve immediately so user never waits
+    this._seedInitialStream();
+
+    // Trigger an initial prompt gust when setting a new target
     this.summonWind();
   }
 
@@ -221,25 +218,25 @@ export class TargetGuidanceFlow {
   }
 
   _seedInitialStream() {
-    // Populate an initial breadcrumb stream along the curve so user never waits for particles to arrive
-    const initialCount = this.isMobile ? 18 : 30;
+    // Populate an initial breadcrumb stream along the entire curve
+    const initialCount = this.isMobile ? 14 : 22;
     for (let c = 0; c < initialCount; c++) {
       for (let i = 0; i < this.maxParticles; i++) {
         const p = this.pool[i];
         if (!p.active) {
           p.active = true;
-          // Distribute along the first 70% of the curve
-          p.u = (c / initialCount) * 0.70 + Math.random() * 0.04;
-          p.speedU = 0.35 + Math.random() * 0.15;
+          // Spawn initial pulse heading out along the first half of the curve
+          p.u = (c / initialCount) * 0.45 + 0.02;
+          p.speedU = 0.38 + Math.random() * 0.12;
           p.swirlPhase = Math.random() * Math.PI * 2;
-          p.swirlRadius = 0.05 + Math.random() * 0.12;
-          p.swirlSpeed = (Math.random() - 0.5) * 5.0;
-          p.age = p.u * 1.5;
-          p.maxLife = 3.0;
+          p.swirlRadius = 0.04 + Math.random() * 0.08;
+          p.swirlSpeed = (Math.random() - 0.5) * 4.0;
+          p.age = p.u * 1.2;
+          p.maxLife = 2.6;
 
           p.baseSize = this.isMobile
-            ? (0.012 + Math.random() * 0.010)
-            : (0.015 + Math.random() * 0.012);
+            ? (0.012 + Math.random() * 0.008)
+            : (0.014 + Math.random() * 0.010);
           p.colorIndex = Math.floor(Math.random() * this.palette.length);
           p.glint = Math.random() < 0.35;
 
@@ -248,15 +245,35 @@ export class TargetGuidanceFlow {
           this.colorsAttr[i * 3 + 1] = col.g;
           this.colorsAttr[i * 3 + 2] = col.b;
           this.sizesAttr[i] = p.baseSize;
-          this.alphasAttr[i] = 0.85;
+
+          // Calculate initial position right away
+          this._sampleCurve(p.u, this._vTmp1);
+          this._sampleCurveTangent(p.u, this._vTang);
+          this._vBinormal.crossVectors(this._vTang, this._vNormal).normalize();
+          const localNormal = this._vTmp2.crossVectors(this._vBinormal, this._vTang).normalize();
+          const cosPhase = Math.cos(p.swirlPhase) * p.swirlRadius;
+          const sinPhase = Math.sin(p.swirlPhase) * p.swirlRadius;
+
+          this.positions[i * 3]     = this._vTmp1.x + this._vBinormal.x * cosPhase + localNormal.x * sinPhase;
+          this.positions[i * 3 + 1] = this._vTmp1.y + this._vBinormal.y * cosPhase + localNormal.y * sinPhase;
+          this.positions[i * 3 + 2] = this._vTmp1.z + this._vBinormal.z * cosPhase + localNormal.z * sinPhase;
+
+          const fadeIn = Math.min(1.0, p.u / 0.10);
+          const fadeOut = Math.max(0.0, (1.0 - p.u) / 0.15);
+          this.alphasAttr[i] = 0.95 * fadeIn * fadeOut;
           break;
         }
       }
     }
+
+    this.particleGeometry.attributes.position.needsUpdate = true;
+    this.particleGeometry.attributes.alpha.needsUpdate = true;
+    this.particleGeometry.attributes.size.needsUpdate = true;
+    this.particleGeometry.attributes.customColor.needsUpdate = true;
   }
 
   _updateCurve() {
-    // Sleigh-front launch anchor: 0.85m directly in front of the lead reindeer
+    // Sleigh-front launch anchor: directly in front of lead reindeer
     this.frontAnchor.copy(this.sleighPos).addScaledVector(this.sleighForward, 0.85);
     this.frontAnchor.y += 0.16;
 
@@ -268,27 +285,23 @@ export class TargetGuidanceFlow {
       this.targetDirection.copy(this.sleighForward);
     }
 
-    // Guidance arc length (14m to 18m reach)
-    const maxPath = 17.0;
-    this.curveLength = Math.min(this.targetDistance, maxPath);
+    // Guidance arc length: connects directly to the target house
+    this.curveLength = this.targetDistance;
 
     this.p0.copy(this.frontAnchor);
+    // Connect into the elevated golden ring / beacon height (0.55m above rooftop)
+    this.p3.copy(this.targetPos);
+    this.p3.y += 0.55;
 
-    if (this.targetDistance > maxPath) {
-      this.p3.copy(this.p0).addScaledVector(this.targetDirection, this.curveLength);
-    } else {
-      this.p3.copy(this.targetPos);
-    }
+    // P1 shoots forward and curves naturally toward the target
+    const lead = Math.min(this.curveLength * 0.35, 7.0);
+    this.p1.copy(this.p0).addScaledVector(this.sleighForward, lead * 0.85);
+    this.p1.addScaledVector(this.targetDirection, lead * 0.15);
+    this.p1.y += 0.28;
 
-    // P1 shoots cleanly forward in reindeer flight heading
-    const forwardLead = Math.min(this.curveLength * 0.35, 3.5);
-    this.p1.copy(this.p0).addScaledVector(this.sleighForward, forwardLead);
-    this.p1.y += 0.22;
-
-    // P2 curves smoothly into the target rooftop chimney
-    const targetLead = Math.min(this.curveLength * 0.35, 3.5);
-    this.p2.copy(this.p3).addScaledVector(this.targetDirection, -targetLead);
-    this.p2.y += 0.30;
+    // P2 descends gracefully into the floating beacon ring
+    this.p2.copy(this.p3).addScaledVector(this.targetDirection, -lead * 0.65);
+    this.p2.y += 0.45;
   }
 
   clear() {
@@ -331,7 +344,7 @@ export class TargetGuidanceFlow {
   }
 
   /* -------------------------------------------------------------------------
-   * PARTICLE FLOW STREAM EMISSION (Traveling currents)
+   * PARTICLE FLOW STREAM EMISSION
    * ------------------------------------------------------------------------- */
   _emitStreamParticles(count = 2) {
     for (let c = 0; c < count; c++) {
@@ -339,21 +352,19 @@ export class TargetGuidanceFlow {
         const p = this.pool[i];
         if (!p.active) {
           p.active = true;
-          // Seed near origin with tiny jitter
-          p.u = Math.random() * 0.03;
-          // Wind travel rate: traverses 15m curve in ~2.5 - 3.2 seconds
+          p.u = Math.random() * 0.02;
           p.speedU = 0.32 + Math.random() * 0.16;
           p.swirlPhase = Math.random() * Math.PI * 2;
-          p.swirlRadius = 0.04 + Math.random() * 0.12; // narrow ribbon-like stream
+          p.swirlRadius = 0.04 + Math.random() * 0.10;
           p.swirlSpeed = (Math.random() - 0.5) * 5.0;
           p.age = 0;
-          p.maxLife = 2.8;
+          p.maxLife = 3.0;
 
           p.baseSize = this.isMobile
-            ? (0.010 + Math.random() * 0.008)
-            : (0.012 + Math.random() * 0.010);
+            ? (0.014 + Math.random() * 0.010)
+            : (0.018 + Math.random() * 0.014);
           p.colorIndex = Math.floor(Math.random() * this.palette.length);
-          p.glint = Math.random() < 0.28;
+          p.glint = Math.random() < 0.30;
 
           const col = this.palette[p.colorIndex];
           this.colorsAttr[i * 3]     = col.r;
@@ -368,7 +379,7 @@ export class TargetGuidanceFlow {
   }
 
   /* -------------------------------------------------------------------------
-   * MAIN UPDATE LOOP (Flow of particles along curve)
+   * MAIN UPDATE LOOP
    * ------------------------------------------------------------------------- */
   update(delta, sleighPos = null, sleighForward = null) {
     if (!this.isActive) return;
@@ -377,9 +388,9 @@ export class TargetGuidanceFlow {
     if (sleighForward) this.sleighForward.copy(sleighForward).normalize();
     this._updateCurve();
 
-    // Proximity fade: smoothly dissolve only within very close range (1.2m) of the target chimney
-    const closeFade = Math.min(1.0, Math.max(0.0, (this.targetDistance - 1.2) / 1.0));
-    if (closeFade <= 0.05) {
+    // Proximity fade: smoothly dissolve only when very close (0.8m) to the chimney
+    const closeFade = Math.min(1.0, Math.max(0.0, (this.targetDistance - 0.8) / 0.8));
+    if (closeFade <= 0.02) {
       for (let i = 0; i < this.maxParticles; i++) {
         if (this.pool[i].active) {
           this.alphasAttr[i] *= (1.0 - 6.0 * delta);
@@ -394,17 +405,15 @@ export class TargetGuidanceFlow {
       return;
     }
 
-    // 1. Manage Dynamic Guiding Wind (Triggers on intervals or when user is off-heading/lost)
-    // Heading dot product: 1.0 = flying straight towards target, < 0.2 = heading sideways/away
+    // Interval guidance flow: emits in graceful pulses rather than continuous solid stream
     const headingDot = this.sleighForward.dot(this.targetDirection);
     const isHeadingAway = headingDot < 0.25;
 
     if (this.isGusting) {
       this.gustTimer += delta;
-
-      // Periodic stream during active gust
-      const emissionRate = this.isMobile ? 32 : 48; // particles per second
-      this.emissionAccumulator += emissionRate * delta;
+      // Active pulse emission rate
+      const pulseRate = this.isMobile ? 26 : 38;
+      this.emissionAccumulator += pulseRate * delta;
       const spawnCount = Math.floor(this.emissionAccumulator);
       if (spawnCount > 0) {
         this._emitStreamParticles(spawnCount);
@@ -418,21 +427,18 @@ export class TargetGuidanceFlow {
       }
     } else {
       this.restTimer += delta;
-
-      // If user is flying away or not able to locate target, accumulate lost timer
       if (isHeadingAway) {
         this.lostTimer += delta;
       } else {
         this.lostTimer = Math.max(0, this.lostTimer - delta * 0.5);
       }
-
-      // Trigger guiding wind if user hasn't found the target (lost for 3.5s) or periodic reminder (every 5.0s)
+      // Re-trigger guiding pulse at configured interval (or when lost/off-heading)
       if (this.lostTimer >= this.lostThreshold || this.restTimer >= this.restDuration) {
         this.summonWind();
       }
     }
 
-    // 2. Update and Advance Stardust Flow along the Bézier Curve
+    // Update particles along Bézier curve
     for (let i = 0; i < this.maxParticles; i++) {
       const p = this.pool[i];
       if (!p.active) continue;
@@ -440,7 +446,6 @@ export class TargetGuidanceFlow {
       p.age += delta;
       p.u += p.speedU * delta;
 
-      // Particle expires when reaching end of curve or exceeding lifespan
       if (p.u >= 1.0 || p.age >= p.maxLife) {
         p.active = false;
         this.alphasAttr[i] = 0.0;
@@ -448,11 +453,9 @@ export class TargetGuidanceFlow {
         continue;
       }
 
-      // Sample central point on Bézier curve at current u
       this._sampleCurve(p.u, this._vTmp1);
       this._sampleCurveTangent(p.u, this._vTang);
 
-      // Compute orthonormal coordinate frame for gentle vortex swirl
       this._vBinormal.crossVectors(this._vTang, this._vNormal).normalize();
       const localNormal = this._vTmp2.crossVectors(this._vBinormal, this._vTang).normalize();
 
@@ -460,7 +463,6 @@ export class TargetGuidanceFlow {
       const cosPhase = Math.cos(p.swirlPhase) * p.swirlRadius;
       const sinPhase = Math.sin(p.swirlPhase) * p.swirlRadius;
 
-      // Displace particle along normal and binormal plane for natural organic stream breadth
       const px = this._vTmp1.x + this._vBinormal.x * cosPhase + localNormal.x * sinPhase;
       const py = this._vTmp1.y + this._vBinormal.y * cosPhase + localNormal.y * sinPhase;
       const pz = this._vTmp1.z + this._vBinormal.z * cosPhase + localNormal.z * sinPhase;
@@ -469,13 +471,12 @@ export class TargetGuidanceFlow {
       this.positions[i * 3 + 1] = py;
       this.positions[i * 3 + 2] = pz;
 
-      // Opacity envelope: gentle fade-in near sleigh, glowing cruise, soft dissipation near target
-      const fadeIn = Math.min(1.0, p.u / 0.12);
-      const fadeOut = Math.max(0.0, (1.0 - p.u) / 0.18);
-      let alpha = 0.90 * fadeIn * fadeOut * closeFade;
+      const fadeIn = Math.min(1.0, p.u / 0.10);
+      const fadeOut = Math.max(0.0, (1.0 - p.u) / 0.15);
+      let alpha = 0.95 * fadeIn * fadeOut * closeFade;
 
       if (p.glint) {
-        alpha *= (0.75 + 0.25 * Math.sin(p.age * 22.0));
+        alpha *= (0.80 + 0.20 * Math.sin(p.age * 22.0));
         this.sizesAttr[i] = p.baseSize * (1.0 + 0.35 * Math.sin(p.age * 18.0));
       } else {
         this.sizesAttr[i] = p.baseSize;

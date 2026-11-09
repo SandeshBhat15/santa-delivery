@@ -1,0 +1,1457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>Santa's Gift Delivery — Casual Game UI</title>
+  
+  <!-- Casual Rounded Game Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600;700;800;900&family=Lilita+One&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ==========================================================================
+       1. DESIGN SYSTEM & CSS VARIABLES
+       Supercell / Clash / Candy Crush 3D Mobile Casual Aesthetic
+       ========================================================================== */
+    :root {
+      /* Palette */
+      --red-crimson: #D61F33;
+      --red-light: #FF3B50;
+      --red-dark: #910D1D;
+      --red-deep: #5E000B;
+
+      --navy-bg: #0A162B;
+      --navy-surface: #10223E;
+      --navy-elevated: #183159;
+      --navy-border: #2A4D80;
+
+      --gold-bright: #FFC727;
+      --gold-light: #FFE272;
+      --gold-dark: #C88E07;
+      --gold-bevel-dark: #7A4E00;
+
+      --white-snow: #FFFFFF;
+      --snow-shadow: #D2E4F6;
+      --cream-frost: #FFF9E6;
+
+      --green-holly: #22A045;
+      --green-dark: #126327;
+
+      /* UI Typography */
+      --font-display: 'Lilita One', 'Fredoka', cursive, sans-serif;
+      --font-body: 'Fredoka', 'Lilita One', sans-serif;
+
+      /* Bevel & Depth Shadows */
+      --gold-3d-border: 
+        0 4px 0 var(--gold-bevel-dark),
+        0 6px 16px rgba(0, 0, 0, 0.45);
+      --red-3d-button: 
+        0 6px 0 var(--red-dark),
+        0 8px 2px var(--red-deep),
+        0 12px 24px rgba(214, 31, 51, 0.45);
+      --navy-3d-button: 
+        0 6px 0 #0C1B33,
+        0 8px 2px #040913,
+        0 12px 24px rgba(10, 22, 43, 0.55);
+      --hud-pill-shadow:
+        0 4px 0 #050C17,
+        0 8px 20px rgba(0, 0, 0, 0.4);
+    }
+
+    /* Reset & Base */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: var(--navy-bg);
+      font-family: var(--font-body);
+      color: var(--white-snow);
+    }
+
+    /* Showcase Viewport Container (Simulates Game Screen) */
+    .game-screen {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      background: radial-gradient(circle at 50% 30%, #17335C 0%, #0D1C34 55%, #050B15 100%);
+    }
+
+    /* Animated Festive Background Backdrop (Starry Sky & Snowy Mountains) */
+    .game-screen::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image: 
+        radial-gradient(circle at 15% 20%, rgba(255, 255, 255, 0.8) 1.5px, transparent 2px),
+        radial-gradient(circle at 75% 15%, rgba(255, 255, 255, 0.7) 2px, transparent 2.5px),
+        radial-gradient(circle at 85% 40%, rgba(255, 255, 255, 0.9) 1.5px, transparent 2px),
+        radial-gradient(circle at 35% 65%, rgba(255, 255, 255, 0.6) 2px, transparent 2.5px),
+        radial-gradient(circle at 60% 80%, rgba(255, 255, 255, 0.8) 1.5px, transparent 2px);
+      background-size: 550px 550px;
+      opacity: 0.6;
+      pointer-events: none;
+    }
+
+    /* Soft winter glow / Northern lights effect */
+    .aurora-glow {
+      position: absolute;
+      top: -100px;
+      left: 10%;
+      right: 10%;
+      height: 350px;
+      background: radial-gradient(ellipse at 50% 50%, rgba(46, 204, 113, 0.15) 0%, rgba(52, 152, 219, 0.08) 45%, transparent 70%);
+      filter: blur(50px);
+      pointer-events: none;
+    }
+
+    /* Developer UI Screen Switcher Tabs (Demo Toolbar) */
+    .dev-toolbar {
+      position: absolute;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1000;
+      display: flex;
+      gap: 8px;
+      background: rgba(10, 22, 43, 0.85);
+      backdrop-filter: blur(12px);
+      border: 2px solid var(--navy-border);
+      border-radius: 999px;
+      padding: 4px 6px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
+    .dev-btn {
+      font-family: var(--font-body);
+      font-weight: 800;
+      font-size: 0.75rem;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      padding: 6px 14px;
+      border-radius: 999px;
+      border: none;
+      cursor: pointer;
+      color: rgba(255, 255, 255, 0.7);
+      background: transparent;
+      transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    .dev-btn:hover {
+      color: #fff;
+    }
+    .dev-btn.active {
+      background: var(--gold-bright);
+      color: var(--navy-bg);
+      box-shadow: 0 2px 8px rgba(255, 199, 39, 0.4);
+    }
+
+    /* ==========================================================================
+       2. REUSABLE ATOMS: CANDY CANES, GOLD BEZELS, GLOSSY PILLS
+       ========================================================================== */
+    /* Golden Bezel Border Frame */
+    .gold-bezel {
+      border: 3.5px solid var(--gold-bright);
+      box-shadow: 
+        inset 0 2px 0 rgba(255, 255, 255, 0.6),
+        inset 0 -2px 0 var(--gold-bevel-dark),
+        0 4px 0 var(--gold-bevel-dark),
+        0 6px 16px rgba(0, 0, 0, 0.5);
+    }
+
+    /* Glossy 3D Pill Button Base */
+    .btn-pill {
+      font-family: var(--font-display);
+      text-transform: uppercase;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      border-radius: 999px;
+      cursor: pointer;
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.1s ease, filter 0.15s ease, box-shadow 0.1s ease;
+      text-decoration: none;
+      letter-spacing: 0.8px;
+    }
+    .btn-pill:active {
+      transform: translateY(4px);
+    }
+
+    /* Specular Reflection Highlight (Glass/Enamel Gloss Arch) */
+    .btn-pill::before {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 10%;
+      right: 10%;
+      height: 48%;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.6) 0%, rgba(255, 255, 255, 0.05) 100%);
+      border-radius: 999px;
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    /* Red Enamel Primary Button */
+    .btn-red {
+      background: linear-gradient(180deg, var(--red-light) 0%, var(--red-crimson) 55%, var(--red-dark) 100%);
+      border: 3px solid #FFE485;
+      box-shadow: var(--red-3d-button);
+      color: var(--white-snow);
+      text-shadow: 0 2px 0 var(--red-deep), 0 3px 6px rgba(0, 0, 0, 0.6);
+    }
+    .btn-red:active {
+      box-shadow: 
+        0 2px 0 var(--red-dark),
+        0 3px 1px var(--red-deep),
+        0 6px 12px rgba(214, 31, 51, 0.3);
+    }
+
+    /* Navy Secondary Pill Button */
+    .btn-navy {
+      background: linear-gradient(180deg, var(--navy-elevated) 0%, var(--navy-surface) 60%, var(--navy-bg) 100%);
+      border: 3px solid #638BC7;
+      box-shadow: var(--navy-3d-button);
+      color: #E6F0FF;
+      text-shadow: 0 2px 0 #050B14;
+    }
+    .btn-navy:active {
+      box-shadow: 
+        0 2px 0 #0C1B33,
+        0 3px 1px #040913,
+        0 6px 12px rgba(10, 22, 43, 0.4);
+    }
+
+    /* Circular Enamel Buttons (Home / Replay) */
+    .btn-circle {
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      position: relative;
+      border: 3.5px solid var(--gold-bright);
+      background: linear-gradient(180deg, var(--red-light) 0%, var(--red-crimson) 60%, var(--red-dark) 100%);
+      box-shadow: 
+        inset 0 2px 0 rgba(255, 255, 255, 0.6),
+        0 6px 0 var(--red-dark),
+        0 8px 1px var(--red-deep),
+        0 10px 20px rgba(0, 0, 0, 0.5);
+      transition: transform 0.1s ease, box-shadow 0.1s ease;
+    }
+    .btn-circle::before {
+      content: "";
+      position: absolute;
+      top: 4px;
+      left: 15%;
+      right: 15%;
+      height: 40%;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.7) 0%, rgba(255, 255, 255, 0) 100%);
+      border-radius: 50px 50px 30px 30px;
+      pointer-events: none;
+    }
+    .btn-circle:active {
+      transform: translateY(4px);
+      box-shadow: 
+        inset 0 2px 0 rgba(255, 255, 255, 0.6),
+        0 2px 0 var(--red-dark),
+        0 3px 1px var(--red-deep),
+        0 4px 10px rgba(0, 0, 0, 0.4);
+    }
+    .btn-circle svg {
+      width: 32px;
+      height: 32px;
+      filter: drop-shadow(0 2px 2px rgba(0,0,0,0.4));
+      fill: var(--cream-frost);
+      z-index: 3;
+    }
+
+    /* ==========================================================================
+       3. SCREEN 1: MAIN MENU
+       Top 3D Title on Curved Snow Ribbon + Bottom Action Group
+       ========================================================================== */
+    .screen-container {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: center;
+      padding: 72px 24px 44px;
+      pointer-events: none;
+      transition: opacity 0.3s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    .screen-container > * {
+      pointer-events: auto;
+    }
+    .screen-container.hidden {
+      opacity: 0;
+      transform: scale(0.96);
+      pointer-events: none;
+    }
+
+    /* Curved Ribbon Banner Title Container */
+    .title-banner-wrapper {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-top: 24px;
+      filter: drop-shadow(0 14px 28px rgba(0, 0, 0, 0.6));
+      animation: gentleFloat 4s ease-in-out infinite alternate;
+    }
+
+    @keyframes gentleFloat {
+      0% { transform: translateY(0px) rotate(-0.5deg); }
+      100% { transform: translateY(-8px) rotate(0.5deg); }
+    }
+
+    /* Curved Snow Drapes on top of Ribbon */
+    .snow-caps {
+      position: absolute;
+      top: -15px;
+      width: 96%;
+      height: 28px;
+      z-index: 10;
+      pointer-events: none;
+    }
+
+    /* The Crimson Arch Ribbon */
+    .ribbon-banner {
+      position: relative;
+      background: linear-gradient(180deg, #E62B40 0%, #BA1426 50%, #7D0915 100%);
+      border: 4px solid var(--gold-bright);
+      border-radius: 28px;
+      padding: 16px 44px 18px;
+      box-shadow: 
+        inset 0 3px 0 rgba(255, 255, 255, 0.6),
+        inset 0 -4px 0 var(--red-deep),
+        0 6px 0 var(--gold-bevel-dark),
+        0 12px 24px rgba(0, 0, 0, 0.5);
+      text-align: center;
+    }
+    .ribbon-banner::before, .ribbon-banner::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      width: 32px;
+      height: 48px;
+      background: linear-gradient(180deg, #BA1426, #5E000B);
+      border: 3.5px solid var(--gold-bright);
+      z-index: -1;
+      transform: translateY(-50%);
+    }
+    .ribbon-banner::before {
+      left: -20px;
+      border-radius: 12px 0 0 12px;
+      box-shadow: -4px 4px 10px rgba(0,0,0,0.4);
+    }
+    .ribbon-banner::after {
+      right: -20px;
+      border-radius: 0 12px 12px 0;
+      box-shadow: 4px 4px 10px rgba(0,0,0,0.4);
+    }
+
+    /* 3D Title Lettering */
+    .title-sub {
+      font-family: var(--font-display);
+      font-size: 1.3rem;
+      letter-spacing: 3px;
+      color: var(--gold-light);
+      text-transform: uppercase;
+      text-shadow: 0 2px 0 var(--gold-bevel-dark), 0 3px 5px rgba(0,0,0,0.8);
+      margin-bottom: -4px;
+    }
+    .title-main {
+      font-family: var(--font-display);
+      font-size: clamp(2.2rem, 5.5vw, 3.8rem);
+      line-height: 1.05;
+      color: #FFFFFF;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      text-shadow: 
+        0 1px 0 #FFF,
+        0 2px 0 #D6D6D6,
+        0 4px 0 #8E0E1C,
+        0 6px 0 #5E000B,
+        0 8px 14px rgba(0, 0, 0, 0.7);
+    }
+    .title-gold-badge {
+      display: inline-block;
+      background: linear-gradient(180deg, #FFE485 0%, #FFC727 60%, #D88E00 100%);
+      color: #552700;
+      padding: 4px 20px;
+      border-radius: 999px;
+      border: 2px solid #FFF;
+      font-size: 0.95rem;
+      font-weight: 900;
+      letter-spacing: 1.5px;
+      box-shadow: 0 3px 0 #854E00, 0 6px 12px rgba(0,0,0,0.3);
+      margin-top: 6px;
+    }
+
+    /* Menu Center Hero Vignette (Decorative Gift Sleigh Silhouette) */
+    .menu-center-hero {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+    .floating-sleigh-art {
+      width: 220px;
+      height: 220px;
+      filter: drop-shadow(0 18px 30px rgba(0,0,0,0.5));
+      animation: floatHero 3s ease-in-out infinite alternate;
+    }
+    @keyframes floatHero {
+      0% { transform: translateY(0px) scale(1); }
+      100% { transform: translateY(-12px) scale(1.02); }
+    }
+
+    /* Bottom Menu Action Group */
+    .menu-actions-group {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      width: 100%;
+      max-width: 360px;
+      margin-bottom: 20px;
+    }
+    .menu-actions-group .btn-pill {
+      width: 100%;
+      padding: 18px 24px;
+      font-size: 1.45rem;
+    }
+    .menu-actions-group .btn-navy {
+      padding: 13px 24px;
+      font-size: 1.1rem;
+      width: 82%;
+    }
+    .play-icon-triangle {
+      width: 0;
+      height: 0;
+      border-top: 11px solid transparent;
+      border-bottom: 11px solid transparent;
+      border-left: 18px solid var(--gold-bright);
+      filter: drop-shadow(0 2px 0 var(--gold-bevel-dark));
+      transform: translateX(2px);
+    }
+
+    /* ==========================================================================
+       4. SCREEN 2: IN-GAME HUD
+       Dark navy capsules: Candy-cane deliveries (0/5), gold watch timer, star counter
+       ========================================================================== */
+    .hud-layer {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 24px 28px;
+      z-index: 50;
+    }
+    .hud-layer > * {
+      pointer-events: auto;
+    }
+
+    /* Top HUD Bar with 3 Capsules */
+    .hud-top-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      max-width: 1100px;
+      margin: 0 auto;
+      gap: 12px;
+    }
+
+    /* HUD Capsule Pill Standard */
+    .hud-pill {
+      height: 52px;
+      background: linear-gradient(180deg, #132746 0%, #0A162B 100%);
+      border: 2.5px solid #2B4E80;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 14px 4px 6px;
+      gap: 10px;
+      box-shadow: var(--hud-pill-shadow);
+      position: relative;
+    }
+
+    /* Icon Badge on Left of Capsule */
+    .hud-badge-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      position: relative;
+    }
+    .hud-badge-icon svg {
+      width: 26px;
+      height: 26px;
+    }
+
+    /* Candy Cane Deliveries Capsule */
+    .hud-pill-deliveries {
+      min-width: 190px;
+    }
+    .badge-gift {
+      background: linear-gradient(180deg, #FF4558 0%, #D61F33 60%, #850A17 100%);
+      border: 2px solid var(--gold-bright);
+      box-shadow: 0 2px 0 var(--gold-bevel-dark);
+    }
+    .delivery-content {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      flex: 1;
+    }
+    .delivery-label-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      font-size: 0.85rem;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #E6F0FF;
+    }
+    .delivery-counter-text {
+      color: var(--gold-light);
+      font-family: var(--font-display);
+      font-size: 1.05rem;
+    }
+    /* Festive Candy-Cane Striped Progress Bar Track */
+    .candy-progress-track {
+      width: 100%;
+      height: 12px;
+      background: #060E1A;
+      border-radius: 999px;
+      border: 1.5px solid #233C62;
+      overflow: hidden;
+      position: relative;
+    }
+    .candy-progress-fill {
+      height: 100%;
+      width: 60%; /* Example: 3 of 5 gifts = 60% */
+      border-radius: 999px;
+      background: repeating-linear-gradient(
+        45deg,
+        #FFFFFF,
+        #FFFFFF 8px,
+        #D61F33 8px,
+        #D61F33 16px
+      );
+      box-shadow: inset 0 2px 2px rgba(255, 255, 255, 0.7);
+      animation: candyStripeMove 1.5s linear infinite;
+      transition: width 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    @keyframes candyStripeMove {
+      0% { background-position: 0 0; }
+      100% { background-position: 22.6px 0; }
+    }
+
+    /* Gold Pocket-Watch Timer Capsule */
+    .hud-pill-timer {
+      min-width: 140px;
+      justify-content: center;
+      border-color: #A0740E;
+    }
+    .badge-watch {
+      background: linear-gradient(180deg, #FFE98D 0%, #FFC727 60%, #B87E00 100%);
+      border: 2px solid #FFF;
+      box-shadow: 0 2px 0 var(--gold-bevel-dark);
+    }
+    .badge-watch svg {
+      fill: #4D2800;
+    }
+    .timer-text-val {
+      font-family: var(--font-display);
+      font-size: 1.55rem;
+      color: #FFF;
+      letter-spacing: 1px;
+      text-shadow: 0 2px 0 #050B14;
+    }
+    .timer-text-val.warning {
+      color: #FF5A6E;
+      animation: pulseTime 1s infinite;
+    }
+    @keyframes pulseTime {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.08); }
+    }
+
+    /* Star Counter Capsule */
+    .hud-pill-stars {
+      min-width: 130px;
+      border-color: #385D96;
+    }
+    .badge-star {
+      background: linear-gradient(180deg, #FFE873 0%, #FFB703 60%, #996200 100%);
+      border: 2px solid #FFF;
+      box-shadow: 0 2px 0 var(--gold-bevel-dark);
+    }
+    .badge-star svg {
+      fill: #4D2800;
+    }
+    .star-value-wrap {
+      display: flex;
+      align-items: baseline;
+      gap: 3px;
+      font-family: var(--font-display);
+    }
+    .star-current {
+      font-size: 1.45rem;
+      color: var(--gold-light);
+      text-shadow: 0 2px 0 #050B14;
+    }
+    .star-total {
+      font-size: 0.95rem;
+      color: #8CA9D3;
+    }
+
+    /* ==========================================================================
+       5. COMPONENT 3: MOBILE FLIGHT JOYSTICK
+       Frosted glass base + gold trim + Star knob
+       ========================================================================== */
+    .joystick-zone {
+      position: absolute;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      z-index: 60;
+      touch-action: none;
+    }
+    .joystick-label {
+      font-size: 0.75rem;
+      font-weight: 800;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.6);
+      text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+      pointer-events: none;
+    }
+    /* Frosted Round Base with Gold Trim */
+    .joystick-base {
+      width: 140px;
+      height: 140px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 50% 50%, rgba(25, 48, 86, 0.45) 0%, rgba(10, 22, 43, 0.75) 100%);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 3.5px solid var(--gold-bright);
+      box-shadow: 
+        inset 0 0 16px rgba(255, 199, 39, 0.35),
+        inset 0 4px 6px rgba(255, 255, 255, 0.3),
+        0 4px 0 var(--gold-bevel-dark),
+        0 10px 24px rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      cursor: grab;
+    }
+    .joystick-base:active {
+      cursor: grabbing;
+    }
+
+    /* Directional Indicator Chevrons */
+    .joystick-base::before {
+      content: "";
+      position: absolute;
+      inset: 16px;
+      border-radius: 50%;
+      border: 1.5px dashed rgba(255, 199, 39, 0.3);
+      pointer-events: none;
+    }
+
+    /* Joystick Star Knob (Draggable thumb pad) */
+    .joystick-knob {
+      width: 68px;
+      height: 68px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 30%, #FFE98D 0%, #FFC727 50%, #B87E00 100%);
+      border: 3px solid #FFFFFF;
+      box-shadow: 
+        0 4px 0 var(--gold-bevel-dark),
+        0 6px 14px rgba(0, 0, 0, 0.5),
+        inset 0 3px 0 rgba(255, 255, 255, 0.8);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: absolute;
+      transform: translate(0px, 0px);
+      transition: transform 0.08s ease-out;
+      pointer-events: none;
+    }
+    .joystick-knob svg {
+      width: 32px;
+      height: 32px;
+      fill: #5E3200;
+      filter: drop-shadow(0 2px 0 rgba(255, 255, 255, 0.4));
+    }
+
+    /* ==========================================================================
+       6. COMPONENT 4: "GIFT DELIVERED!" IN-GAME TOAST
+       Glowing red ribbon pill + 3D gift box + "+500" tag
+       ========================================================================== */
+    .toast-container {
+      position: absolute;
+      top: 96px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-20px);
+      z-index: 120;
+      pointer-events: none;
+      opacity: 0;
+      transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), opacity 0.3s ease;
+    }
+    .toast-container.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    /* Crimson Ribbon Pill */
+    .toast-ribbon-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      background: linear-gradient(180deg, #E6253A 0%, #BA1426 55%, #7D0915 100%);
+      border: 3.5px solid var(--gold-bright);
+      border-radius: 999px;
+      padding: 10px 24px 10px 14px;
+      box-shadow: 
+        inset 0 2px 0 rgba(255, 255, 255, 0.6),
+        0 4px 0 var(--gold-bevel-dark),
+        0 10px 30px rgba(214, 31, 51, 0.65),
+        0 0 40px rgba(255, 199, 39, 0.3);
+      position: relative;
+    }
+
+    /* 3D Gift Box Icon Badge */
+    .toast-gift-badge {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: linear-gradient(180deg, #FFE873 0%, #FFC727 60%, #B87E00 100%);
+      border: 2.5px solid #FFFFFF;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 3px 0 var(--gold-bevel-dark), 0 4px 8px rgba(0,0,0,0.3);
+      animation: bounceGift 0.8s ease infinite alternate;
+    }
+    @keyframes bounceGift {
+      0% { transform: scale(1) rotate(-5deg); }
+      100% { transform: scale(1.1) rotate(5deg); }
+    }
+    .toast-gift-badge svg {
+      width: 28px;
+      height: 28px;
+    }
+
+    /* Toast Headline */
+    .toast-headline {
+      font-family: var(--font-display);
+      font-size: 1.35rem;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: #FFFFFF;
+      text-shadow: 0 2px 0 #5E000B, 0 3px 6px rgba(0, 0, 0, 0.5);
+    }
+
+    /* +500 Points Tag */
+    .points-tag {
+      background: linear-gradient(180deg, #FFE272 0%, #FFC727 100%);
+      color: #4D2600;
+      font-family: var(--font-display);
+      font-size: 1.15rem;
+      padding: 3px 12px;
+      border-radius: 999px;
+      border: 1.5px solid #FFF;
+      box-shadow: 0 2px 0 #854E00, 0 2px 4px rgba(0,0,0,0.3);
+      margin-left: 4px;
+    }
+
+    /* ==========================================================================
+       7. COMPONENT 5: VICTORY / RESULTS MODAL
+       Golden picture-frame card with snow on top, 3 stars, stat rows, circular buttons
+       ========================================================================== */
+    .modal-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(5, 12, 24, 0.82);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 200;
+      padding: 20px;
+      transition: opacity 0.3s ease;
+    }
+    .modal-backdrop.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* Golden Picture Frame Card */
+    .victory-card {
+      width: 100%;
+      max-width: 440px;
+      background: linear-gradient(180deg, #162E52 0%, #0E1F39 50%, #0A162B 100%);
+      border: 6px solid var(--gold-bright);
+      border-radius: 36px;
+      box-shadow: 
+        inset 0 4px 0 rgba(255, 255, 255, 0.6),
+        inset 0 -4px 0 var(--gold-bevel-dark),
+        0 8px 0 var(--gold-bevel-dark),
+        0 24px 60px rgba(0, 0, 0, 0.8),
+        0 0 50px rgba(255, 199, 39, 0.25);
+      position: relative;
+      padding: 36px 28px 30px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      animation: modalPop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    @keyframes modalPop {
+      0% { transform: scale(0.85); opacity: 0; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+
+    /* Snow Pile Drifting on Top of the Frame */
+    .modal-snow-topper {
+      position: absolute;
+      top: -24px;
+      left: -10px;
+      right: -10px;
+      height: 44px;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    /* Ribbon Banner across Top of Modal */
+    .modal-ribbon-title {
+      position: absolute;
+      top: -28px;
+      background: linear-gradient(180deg, #E6253A 0%, #B81324 100%);
+      border: 3.5px solid var(--gold-bright);
+      border-radius: 999px;
+      padding: 8px 36px;
+      box-shadow: 
+        0 4px 0 var(--gold-bevel-dark),
+        0 8px 16px rgba(0, 0, 0, 0.5);
+      z-index: 20;
+    }
+    .modal-ribbon-title h2 {
+      font-family: var(--font-display);
+      font-size: 1.55rem;
+      letter-spacing: 1.5px;
+      color: #FFFFFF;
+      text-transform: uppercase;
+      text-shadow: 0 2px 0 var(--red-deep), 0 3px 6px rgba(0,0,0,0.6);
+    }
+
+    /* Three Golden Stars Rating Container */
+    .stars-rating-shelf {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      margin-top: 18px;
+      margin-bottom: 24px;
+      width: 100%;
+    }
+    .star-item {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.3s ease;
+    }
+    .star-item.middle {
+      transform: translateY(-12px);
+    }
+    .star-item svg {
+      width: 58px;
+      height: 58px;
+      filter: drop-shadow(0 6px 4px rgba(0,0,0,0.4));
+    }
+    .star-item.middle svg {
+      width: 72px;
+      height: 72px;
+    }
+    .star-item.achieved svg {
+      fill: url(#star-gold-gradient);
+      filter: drop-shadow(0 0 16px rgba(255, 199, 39, 0.7)) drop-shadow(0 6px 4px rgba(0,0,0,0.4));
+      animation: starShine 2s infinite ease-in-out;
+    }
+    .star-item.empty svg {
+      fill: #192D4B;
+      stroke: #334E75;
+      stroke-width: 2px;
+      opacity: 0.6;
+    }
+    @keyframes starShine {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.06); }
+    }
+
+    /* Stats Display Container (Frosted Navy Slate) */
+    .stats-card-group {
+      width: 100%;
+      background: rgba(8, 17, 33, 0.7);
+      border: 2px solid #203A62;
+      border-radius: 20px;
+      padding: 14px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.4);
+    }
+    .stat-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 8px;
+      border-bottom: 1.5px solid rgba(255, 255, 255, 0.08);
+    }
+    .stat-row:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
+      padding-top: 4px;
+    }
+    .stat-row.total-score-row {
+      background: rgba(255, 199, 39, 0.1);
+      border-radius: 12px;
+      padding: 8px 12px;
+      border: 1.5px solid rgba(255, 199, 39, 0.3);
+    }
+    .stat-label-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #B4CEF0;
+    }
+    .stat-label-wrap svg {
+      width: 20px;
+      height: 20px;
+      fill: var(--gold-bright);
+    }
+    .stat-value {
+      font-family: var(--font-display);
+      font-size: 1.25rem;
+      color: #FFFFFF;
+      letter-spacing: 0.5px;
+    }
+    .total-score-row .stat-label-wrap {
+      color: var(--gold-light);
+      font-weight: 800;
+      font-size: 1.05rem;
+    }
+    .total-score-row .stat-value {
+      color: var(--gold-bright);
+      font-size: 1.6rem;
+      text-shadow: 0 2px 0 var(--gold-bevel-dark);
+    }
+
+    /* Modal Circular Footer Buttons */
+    .modal-action-footer {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 32px;
+      margin-top: 26px;
+    }
+    .btn-action-label {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn-label-text {
+      font-size: 0.8rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: rgba(255, 255, 255, 0.7);
+    }
+
+    /* ==========================================================================
+       8. RESPONSIVE BREAKPOINTS (Desktop 1920x1080 & Mobile Portrait 412x915)
+       ========================================================================== */
+    @media (max-width: 600px) {
+      /* Mobile Portrait Optimizations */
+      .hud-top-bar {
+        gap: 6px;
+      }
+      .hud-pill {
+        height: 46px;
+        padding: 3px 10px 3px 4px;
+        gap: 6px;
+      }
+      .hud-badge-icon {
+        width: 36px;
+        height: 36px;
+      }
+      .hud-badge-icon svg {
+        width: 20px;
+        height: 20px;
+      }
+      .hud-pill-deliveries {
+        min-width: 140px;
+      }
+      .hud-pill-timer {
+        min-width: 100px;
+      }
+      .hud-pill-stars {
+        min-width: 90px;
+      }
+      .timer-text-val {
+        font-size: 1.25rem;
+      }
+      .star-current {
+        font-size: 1.2rem;
+      }
+
+      .joystick-base {
+        width: 120px;
+        height: 120px;
+      }
+      .joystick-knob {
+        width: 58px;
+        height: 58px;
+      }
+      .joystick-knob svg {
+        width: 26px;
+        height: 26px;
+      }
+
+      .victory-card {
+        padding: 32px 18px 24px;
+      }
+      .modal-ribbon-title {
+        padding: 6px 24px;
+      }
+      .modal-ribbon-title h2 {
+        font-size: 1.3rem;
+      }
+      .star-item svg {
+        width: 46px;
+        height: 46px;
+      }
+      .star-item.middle svg {
+        width: 58px;
+        height: 58px;
+      }
+    }
+
+    @media (min-width: 1024px) {
+      /* Desktop Widescreen Optimizations */
+      .hud-pill {
+        height: 58px;
+        padding: 5px 18px 5px 8px;
+        gap: 14px;
+      }
+      .hud-badge-icon {
+        width: 48px;
+        height: 48px;
+      }
+      .hud-badge-icon svg {
+        width: 28px;
+        height: 28px;
+      }
+      .timer-text-val {
+        font-size: 1.8rem;
+      }
+      .star-current {
+        font-size: 1.6rem;
+      }
+      .candy-progress-track {
+        height: 14px;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Hidden SVG Defs for Golden Gradients & Filters -->
+  <svg style="position: absolute; width: 0; height: 0; overflow: hidden;" aria-hidden="true">
+    <defs>
+      <linearGradient id="star-gold-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
+        <stop offset="0%" stop-color="#FFF3A8" />
+        <stop offset="45%" stop-color="#FFC727" />
+        <stop offset="100%" stop-color="#C28600" />
+      </linearGradient>
+      <linearGradient id="snow-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+        <stop offset="0%" stop-color="#FFFFFF" />
+        <stop offset="100%" stop-color="#D6E8FA" />
+      </linearGradient>
+    </defs>
+  </svg>
+
+  <!-- Dev Screen Toggle Navigation -->
+  <nav class="dev-toolbar">
+    <button class="dev-btn active" onclick="switchView('menu')">1. Main Menu</button>
+    <button class="dev-btn" onclick="switchView('hud')">2. In-Game HUD &amp; Joystick</button>
+    <button class="dev-btn" onclick="triggerToast()">3. Trigger Toast</button>
+    <button class="dev-btn" onclick="switchView('victory')">4. Victory Modal</button>
+  </nav>
+
+  <!-- Main Game Showcase Viewport -->
+  <main class="game-screen">
+    <div class="aurora-glow"></div>
+
+    <!-- ====================================================================
+         SCREEN 1: MAIN MENU
+         ==================================================================== -->
+    <section id="screen-menu" class="screen-container">
+      <!-- 3D Ribbon Banner Title -->
+      <div class="title-banner-wrapper">
+        <!-- SVG Snow Dripping on Top -->
+        <svg class="snow-caps" viewBox="0 0 380 32" preserveAspectRatio="none">
+          <path d="M0,20 Q20,32 40,20 Q60,30 80,18 Q105,32 130,20 Q160,34 190,20 Q220,32 250,18 Q280,32 310,20 Q340,32 380,20 L380,0 L0,0 Z" fill="url(#snow-grad)" filter="drop-shadow(0 2px 2px rgba(0,0,0,0.2))" />
+        </svg>
+        
+        <div class="ribbon-banner">
+          <div class="title-sub">Holiday Flight Quest</div>
+          <h1 class="title-main">Santa's Gift<br/>Delivery</h1>
+          <div class="title-gold-badge">5 DASH CHALLENGE</div>
+        </div>
+      </div>
+
+      <!-- Center Festive Sleigh Icon Art -->
+      <div class="menu-center-hero">
+        <svg class="floating-sleigh-art" viewBox="0 0 200 200">
+          <circle cx="100" cy="100" r="85" fill="#132B4F" stroke="#FFC727" stroke-width="4" />
+          <!-- Sleigh & Reindeer Silhouette Silhouette Motif -->
+          <g transform="translate(32, 45)">
+            <!-- Moon Glow -->
+            <circle cx="105" cy="25" r="28" fill="#FFEAA7" opacity="0.4" />
+            <!-- Gift Box in Sleigh -->
+            <rect x="30" y="55" width="28" height="28" rx="4" fill="#D61F33" stroke="#FFC727" stroke-width="2"/>
+            <path d="M44,55 L44,83 M30,69 L58,69" stroke="#FFC727" stroke-width="3"/>
+            <!-- Sleigh Body -->
+            <path d="M15,65 Q35,88 85,82 Q95,80 98,68 Q100,56 86,58 L25,58 Z" fill="#BA1426" stroke="#FFC727" stroke-width="2.5"/>
+            <!-- Sleigh Runners -->
+            <path d="M10,92 Q50,94 92,92 Q105,92 110,80" fill="none" stroke="#FFC727" stroke-width="4" stroke-linecap="round"/>
+            <line x1="30" y1="80" x2="30" y2="92" stroke="#FFC727" stroke-width="3"/>
+            <line x1="75" y1="80" x2="75" y2="92" stroke="#FFC727" stroke-width="3"/>
+            <!-- Sparkles -->
+            <polygon points="120,40 123,48 131,51 123,54 120,62 117,54 109,51 117,48" fill="#FFC727"/>
+            <polygon points="40,25 42,30 47,32 42,34 40,39 38,34 33,32 38,30" fill="#FFE272"/>
+          </g>
+        </svg>
+      </div>
+
+      <!-- Bottom Button Actions -->
+      <div class="menu-actions-group">
+        <button class="btn-pill btn-red" onclick="switchView('hud')">
+          <span class="play-icon-triangle"></span>
+          <span>Play Now</span>
+        </button>
+        <button class="btn-pill btn-navy" onclick="alert('Control Santa using the Flight Joystick or [W,A,S,D] keys. Drop presents onto chimneys before the clock hits zero!')">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
+          </svg>
+          <span>How to Play</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- ====================================================================
+         SCREEN 2: IN-GAME HUD & FLIGHT JOYSTICK
+         ==================================================================== -->
+    <section id="screen-hud" class="hud-layer hidden">
+      <!-- Top Capsule Bar -->
+      <header class="hud-top-bar">
+        <!-- 1. Deliveries Candy-Cane Progress Capsule -->
+        <div class="hud-pill hud-pill-deliveries">
+          <div class="hud-badge-icon badge-gift">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M20 6h-2.18c.11-.31.18-.65.18-1 0-1.66-1.34-3-3-3-1.05 0-1.96.54-2.5 1.35l-.5.65-.5-.65C10.96 2.54 10.05 2 9 2 7.34 2 6 3.34 6 5c0 .35.07.69.18 1H4c-1.11 0-1.99.89-1.99 2L2 19c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-5-2c.55 0 1 .45 1 1s-.45 1-1 1h-2V5c0-.55.45-1 1-1zM9 4c.55 0 1 .45 1 1v1H8c-.55 0-1-.45-1-1s.45-1 1-1zm11 15H4v-2h16v2zm0-5H4V8h5.08L7 10.83 8.62 12 11 8.76V14h2V8.76L15.38 12 17 10.83 14.92 8H20v6z"/>
+            </svg>
+          </div>
+          <div class="delivery-content">
+            <div class="delivery-label-row">
+              <span>Gifts</span>
+              <span class="delivery-counter-text" id="hud-gifts-text">3 / 5</span>
+            </div>
+            <div class="candy-progress-track">
+              <div class="candy-progress-fill" id="hud-candy-bar" style="width: 60%;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. Gold Pocket-Watch Countdown Timer -->
+        <div class="hud-pill hud-pill-timer">
+          <div class="hud-badge-icon badge-watch">
+            <svg viewBox="0 0 24 24">
+              <path d="M15.07 1.01h-6.14v2h6.14v-2zm-3.07 4c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9-4.03-9-9-9zm0 16c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7zm1-11h-2v5l4.28 2.54.72-1.21-3-1.77V10.01z"/>
+            </svg>
+          </div>
+          <span class="timer-text-val" id="hud-timer">01:15</span>
+        </div>
+
+        <!-- 3. Star Counter Capsule -->
+        <div class="hud-pill hud-pill-stars">
+          <div class="hud-badge-icon badge-star">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
+            </svg>
+          </div>
+          <div class="star-value-wrap">
+            <span class="star-current" id="hud-star-count">4</span>
+            <span class="star-total">/ 6</span>
+          </div>
+        </div>
+      </header>
+
+      <!-- Flight Joystick (Mobile Touch & Mouse Flight Controls) -->
+      <div class="joystick-zone">
+        <div class="joystick-base" id="joystick-track">
+          <div class="joystick-knob" id="joystick-thumb">
+            <!-- 5-Point Golden Star Knob Emblem -->
+            <svg viewBox="0 0 24 24">
+              <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
+            </svg>
+          </div>
+        </div>
+        <span class="joystick-label">Flight Steer</span>
+      </div>
+    </section>
+
+    <!-- ====================================================================
+         COMPONENT 4: "GIFT DELIVERED!" TOAST
+         ==================================================================== -->
+    <div id="toast-delivered" class="toast-container">
+      <div class="toast-ribbon-pill">
+        <div class="toast-gift-badge">
+          <svg viewBox="0 0 24 24" fill="#6A3B00">
+            <path d="M20 6h-2.18c.11-.31.18-.65.18-1 0-1.66-1.34-3-3-3-1.05 0-1.96.54-2.5 1.35l-.5.65-.5-.65C10.96 2.54 10.05 2 9 2 7.34 2 6 3.34 6 5c0 .35.07.69.18 1H4c-1.11 0-1.99.89-1.99 2L2 19c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-5-2c.55 0 1 .45 1 1s-.45 1-1 1h-2V5c0-.55.45-1 1-1zM9 4c.55 0 1 .45 1 1v1H8c-.55 0-1-.45-1-1s.45-1 1-1zm11 15H4v-2h16v2zm0-5H4V8h5.08L7 10.83 8.62 12 11 8.76V14h2V8.76L15.38 12 17 10.83 14.92 8H20v6z"/>
+          </svg>
+        </div>
+        <span class="toast-headline">Gift Delivered!</span>
+        <span class="points-tag">+500</span>
+      </div>
+    </div>
+
+    <!-- ====================================================================
+         SCREEN 3: VICTORY / RESULTS MODAL
+         ==================================================================== -->
+    <div id="modal-victory" class="modal-backdrop hidden">
+      <div class="victory-card">
+        <!-- SVG Snow Dripping Over Card Top Edge -->
+        <svg class="modal-snow-topper" viewBox="0 0 440 44" preserveAspectRatio="none">
+          <path d="M0,24 Q25,44 50,26 Q80,42 110,24 Q140,40 170,22 Q210,44 245,26 Q280,44 320,24 Q360,42 395,24 Q420,38 440,24 L440,0 L0,0 Z" fill="url(#snow-grad)" filter="drop-shadow(0 3px 3px rgba(0,0,0,0.3))"/>
+        </svg>
+
+        <!-- Top Red Ribbon Header -->
+        <div class="modal-ribbon-title">
+          <h2>Mission Complete!</h2>
+        </div>
+
+        <!-- 3 Golden Stars Rating Shelf -->
+        <div class="stars-rating-shelf">
+          <!-- Star 1 -->
+          <div class="star-item achieved">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
+            </svg>
+          </div>
+          <!-- Star 2 (Middle Raised) -->
+          <div class="star-item middle achieved">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
+            </svg>
+          </div>
+          <!-- Star 3 -->
+          <div class="star-item achieved">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
+            </svg>
+          </div>
+        </div>
+
+        <!-- Stats Breakdown Group -->
+        <div class="stats-card-group">
+          <!-- Stat 1: Deliveries -->
+          <div class="stat-row">
+            <div class="stat-label-wrap">
+              <svg viewBox="0 0 24 24">
+                <path d="M20 6h-2.18c.11-.31.18-.65.18-1 0-1.66-1.34-3-3-3-1.05 0-1.96.54-2.5 1.35l-.5.65-.5-.65C10.96 2.54 10.05 2 9 2 7.34 2 6 3.34 6 5c0 .35.07.69.18 1H4c-1.11 0-1.99.89-1.99 2L2 19c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2z"/>
+              </svg>
+              <span>Deliveries</span>
+            </div>
+            <span class="stat-value" id="res-deliveries">5 / 5</span>
+          </div>
+
+          <!-- Stat 2: Time Left -->
+          <div class="stat-row">
+            <div class="stat-label-wrap">
+              <svg viewBox="0 0 24 24">
+                <path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/>
+              </svg>
+              <span>Time Left</span>
+            </div>
+            <span class="stat-value" id="res-time">32s</span>
+          </div>
+
+          <!-- Stat 3: Stars Collected -->
+          <div class="stat-row">
+            <div class="stat-label-wrap">
+              <svg viewBox="0 0 24 24">
+                <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
+              </svg>
+              <span>Stars Found</span>
+            </div>
+            <span class="stat-value" id="res-stars">6 / 6</span>
+          </div>
+
+          <!-- Stat 4: Total Score -->
+          <div class="stat-row total-score-row">
+            <div class="stat-label-wrap">
+              <span>Total Score</span>
+            </div>
+            <span class="stat-value" id="res-score">3,850</span>
+          </div>
+        </div>
+
+        <!-- Footer Circular Buttons: Home & Replay -->
+        <div class="modal-action-footer">
+          <div class="btn-action-label">
+            <button class="btn-circle" onclick="switchView('menu')" title="Main Menu">
+              <svg viewBox="0 0 24 24">
+                <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>
+              </svg>
+            </button>
+            <span class="btn-label-text">Home</span>
+          </div>
+
+          <div class="btn-action-label">
+            <button class="btn-circle" onclick="switchView('hud'); triggerToast();" title="Play Again">
+              <svg viewBox="0 0 24 24">
+                <path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6 0 2.97-2.17 5.43-5 5.91v2.02c3.95-.49 7-3.85 7-7.93 0-4.42-3.58-8-8-8zm-6 8c0-1.65.67-3.15 1.76-4.24L6.34 7.34C4.9 8.79 4 10.79 4 13c0 4.08 3.05 7.44 7 7.93v-2.02C8.17 18.43 6 15.97 6 13z"/>
+              </svg>
+            </button>
+            <span class="btn-label-text">Replay</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Interactive Demo Script -->
+  <script>
+    const screenMenu = document.getElementById('screen-menu');
+    const screenHud = document.getElementById('screen-hud');
+    const modalVictory = document.getElementById('modal-victory');
+    const toast = document.getElementById('toast-delivered');
+    const devBtns = document.querySelectorAll('.dev-btn');
+
+    function switchView(viewName) {
+      devBtns.forEach(b => b.classList.remove('active'));
+
+      if (viewName === 'menu') {
+        screenMenu.classList.remove('hidden');
+        screenHud.classList.add('hidden');
+        modalVictory.classList.add('hidden');
+        devBtns[0].classList.add('active');
+      } else if (viewName === 'hud') {
+        screenMenu.classList.add('hidden');
+        screenHud.classList.remove('hidden');
+        modalVictory.classList.add('hidden');
+        devBtns[1].classList.add('active');
+      } else if (viewName === 'victory') {
+        screenMenu.classList.add('hidden');
+        screenHud.classList.remove('hidden');
+        modalVictory.classList.remove('hidden');
+        devBtns[3].classList.add('active');
+      }
+    }
+
+    function triggerToast() {
+      toast.classList.add('show');
+      setTimeout(() => {
+        toast.classList.remove('show');
+      }, 2600);
+    }
+
+    // Touch & Pointer Drag Implementation for Mobile Flight Joystick
+    const joystickTrack = document.getElementById('joystick-track');
+    const joystickThumb = document.getElementById('joystick-thumb');
+    let isDragging = false;
+    const maxRadius = 42; // Limit thumb drag displacement
+
+    function handlePointerStart(e) {
+      isDragging = true;
+      handlePointerMove(e);
+    }
+
+    function handlePointerMove(e) {
+      if (!isDragging) return;
+      const rect = joystickTrack.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+
+      const clientX = e.clientX || (e.touches && e.touches[0].clientX);
+      const clientY = e.clientY || (e.touches && e.touches[0].clientY);
+
+      let deltaX = clientX - centerX;
+      let deltaY = clientY - centerY;
+      const distance = Math.hypot(deltaX, deltaY);
+
+      if (distance > maxRadius) {
+        deltaX = (deltaX / distance) * maxRadius;
+        deltaY = (deltaY / distance) * maxRadius;
+      }
+
+      joystickThumb.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
+    }
+
+    function handlePointerEnd() {
+      if (!isDragging) return;
+      isDragging = false;
+      joystickThumb.style.transform = 'translate(0px, 0px)';
+    }
+
+    joystickTrack.addEventListener('mousedown', handlePointerStart);
+    window.addEventListener('mousemove', handlePointerMove);
+    window.addEventListener('mouseup', handlePointerEnd);
+
+    joystickTrack.addEventListener('touchstart', handlePointerStart, { passive: false });
+    window.addEventListener('touchmove', handlePointerMove, { passive: false });
+    window.addEventListener('touchend', handlePointerEnd);
+    window.addEventListener('touchcancel', handlePointerEnd);
+  </script>
+</body>
+</html>

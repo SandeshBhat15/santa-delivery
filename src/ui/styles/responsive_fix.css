@@ -1,0 +1,12 @@
+/* ==========================================================================
+   MOBILE SAFE-AREA TUNING
+   Ensures HUD respects device notches and home bars
+   ========================================================================== */
+
+@supports (padding-top: env(safe-area-inset-top)) {
+  .hud-bar {
+    top: max(10px, env(safe-area-inset-top));
+    left: max(12px, env(safe-area-inset-left));
+    right: max(12px, env(safe-area-inset-right));
+  }
+}

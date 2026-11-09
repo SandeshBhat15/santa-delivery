@@ -1,0 +1,103 @@
+/* ==========================================================================
+   FESTIVE HOLIDAY DESIGN SYSTEM — THEME TOKENS
+   Santa's Gift Delivery: 5 Delivery Dash
+   ========================================================================== */
+
+:root {
+  /* --- Festive Crimson Palette --- */
+  --c-red-primary: #D61F33;
+  --c-red-highlight: #E52E42;
+  --c-red-deep: #A31126;
+  --c-red-dark: #5C0713;
+
+  /* --- Multi-Stop Metallic Gold Palette --- */
+  --c-gold-core: #FFC727;
+  --c-gold-light: #FFE680;
+  --c-gold-dark: #B87B08;
+  --c-gold-glow: #FFDF66;
+  --c-gold-deep-shadow: #6B4202;
+
+  /* --- Aged Cream Parchment Palette --- */
+  --c-parchment-base: #FDF1D6;
+  --c-parchment-highlight: #FFF8EA;
+  --c-parchment-edge: #E7C38B;
+  --c-parchment-shadow: #B88B4C;
+  --c-parchment-text: #3E120B;
+  --c-parchment-text-sub: #6A4E32;
+
+  /* --- Midnight Navy & Backdrop Palette --- */
+  --c-navy-deep: #061226;
+  --c-navy-base: #081735;
+  --c-navy-track: #0B1E40;
+  --c-navy-btn: #1A3B7A;
+  --c-navy-light: #2855A6;
+  --c-navy-text-sub: #A0C4E8;
+
+  /* --- Snow & Ice Frost Palette --- */
+  --c-snow-white: #FFFFFF;
+  --c-snow-shadow: #C5DCF4;
+  --c-ice-cyan: #E4F3FF;
+
+  /* --- Candy Cane Accents --- */
+  --c-candy-red: #D61F33;
+  --c-candy-white: #FFF8ED;
+
+  /* --- Gradients --- */
+  --grad-btn-red: linear-gradient(180deg, #E52E42 0%, #D61F33 38%, #A31126 82%, #5C0713 100%);
+  --grad-btn-red-hover: linear-gradient(180deg, #F04558 0%, #E0283E 38%, #B8152D 82%, #6E0A17 100%);
+  --grad-btn-red-active: linear-gradient(180deg, #A31126 0%, #D61F33 60%, #E52E42 100%);
+
+  --grad-btn-navy: linear-gradient(180deg, #2855A6 0%, #1A3B7A 42%, #0F2652 82%, #081735 100%);
+  --grad-btn-navy-hover: linear-gradient(180deg, #3869BF 0%, #224996 42%, #14326B 82%, #0B1E40 100%);
+
+  --grad-gold-trim: linear-gradient(180deg, #FFF0A3 0%, #FFC727 40%, #B87B08 82%, #6B4202 100%);
+  --grad-gold-bevel: linear-gradient(135deg, #FFE680 0%, #FFC727 50%, #B87B08 100%);
+  --grad-parchment: radial-gradient(circle at 50% 30%, #FFF8EA 0%, #FDF1D6 45%, #F4D7A5 85%, #E2BE82 100%);
+  --grad-hud-track: linear-gradient(180deg, #06142E 0%, #0B1E40 50%, #040E20 100%);
+
+  --grad-candy-cane: repeating-linear-gradient(
+    45deg,
+    #D61F33,
+    #D61F33 12px,
+    #FFF8ED 12px,
+    #FFF8ED 24px
+  );
+
+  /* --- Shadows & Bevels --- */
+  --shadow-btn-red: 0 4px 14px rgba(92, 7, 19, 0.65), 0 2px 4px rgba(0, 0, 0, 0.5);
+  --shadow-btn-navy: 0 4px 14px rgba(8, 23, 53, 0.7), 0 2px 4px rgba(0, 0, 0, 0.5);
+  --shadow-gold-bevel: inset 0 1px 2px rgba(255, 240, 163, 0.8), inset 0 -2px 3px rgba(107, 66, 2, 0.75);
+  --shadow-gold-glow: 0 0 16px rgba(255, 199, 39, 0.55), 0 0 32px rgba(255, 223, 102, 0.25);
+  --shadow-card-parchment: 0 18px 48px rgba(4, 10, 24, 0.85), 0 0 0 3px #B87B08, 0 0 28px rgba(255, 199, 39, 0.3);
+
+  /* --- Typography --- */
+  --font-ribbon: 'Berkshire Swash', 'Cinzel Decorative', 'Cinzel', 'Georgia', serif;
+  --font-display: 'Cinzel', 'Trebuchet MS', 'Georgia', serif;
+  --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-numerals: 'Cinzel', 'Trebuchet MS', 'Helvetica Neue', sans-serif;
+
+  /* Tabular Numerals Guarantee across all counter/timer/score elements */
+  --font-numeric-tabular: tabular-nums;
+}
+
+/* Numerals Class Helper */
+.tabular-numerals,
+.hud-value,
+.pill-text strong,
+.stat-value {
+  font-family: var(--font-numerals);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-feature-settings: "tnum";
+  font-feature-settings: "tnum";
+}
+
+/* Editable text guarantee: allow user selection and clear rendering */
+.editable-text,
+.ribbon-title,
+.pill-text,
+.stat-label,
+.stat-value,
+.instruction-row p {
+  -webkit-user-select: text;
+  user-select: text;
+}

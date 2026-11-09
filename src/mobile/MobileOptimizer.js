@@ -28,8 +28,8 @@ export class MobileOptimizer {
 
     // Individual optimization toggles (ALL DEFAULT OFF except light toggles which start ON)
     this.toggles = {
-      chunkFrustumCulling: false,
-      shadowEvery2ndFrame: false,
+      chunkFrustumCulling: true,
+      shadowEvery2ndFrame: this.isMobile,
       debugWireframes: false,
       houseOpaque: true,
       frontSideMaterials: true,
@@ -132,7 +132,8 @@ export class MobileOptimizer {
   syncDesktopQuality() {
     const params = new URLSearchParams(window.location.search);
     const fixedDpr = params.has('dpr') ? parseFloat(params.get('dpr')) : this._fixedDpr;
-    const maxDpr = this.enabled ? 1.5 : 2.5;
+    const profilerDpr = this.ctx.hardwareProfiler?.profile?.targetDpr;
+    const maxDpr = this.enabled ? (profilerDpr || 1.5) : 2.5;
     const targetDpr = Number.isFinite(fixedDpr) ? fixedDpr : Math.min(window.devicePixelRatio || 1, maxDpr);
     this.ctx.renderer.setPixelRatio(targetDpr);
     if (this.ctx.composer) {

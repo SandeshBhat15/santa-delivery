@@ -83,17 +83,19 @@ export class DeliverySystem {
     this._rangeState = null;
 
     // UI elements
-    this._createHUD();
+    // Setup mobile controls while keeping legacy HUD disabled
+    this._setupMobileControls();
 
     // Gift geometry & materials (reused across drops)
     // Sized to match the miniature village and sleigh scale
-    this.giftBoxGeo = new THREE.BoxGeometry(0.09, 0.09, 0.09);
-    this.giftRibbonGeo = new THREE.BoxGeometry(0.094, 0.094, 0.024);
+    // Vibrant, well-scaled gift box with festive glow and clear visibility
+    this.giftBoxGeo = new THREE.BoxGeometry(0.16, 0.16, 0.16);
+    this.giftRibbonGeo = new THREE.BoxGeometry(0.168, 0.168, 0.042);
     this.giftColors = [
-      { box: 0xe74c3c, ribbon: 0xf1c40f }, // Red & Gold
-      { box: 0x27ae60, ribbon: 0xe74c3c }, // Green & Red
-      { box: 0x2980b9, ribbon: 0xf39c12 }, // Blue & Gold
-      { box: 0x8e44ad, ribbon: 0x2ecc71 }  // Purple & Green
+      { box: 0xff2a44, ribbon: 0xffea38, emissive: 0x770a14, ribbonEmissive: 0x665500 }, // Glowing Crimson & Gold
+      { box: 0x2ecc71, ribbon: 0xff2a44, emissive: 0x0a5522, ribbonEmissive: 0x660a14 }, // Emerald Green & Red
+      { box: 0x00c6ff, ribbon: 0xffea38, emissive: 0x004477, ribbonEmissive: 0x665500 }, // Vibrant Cyan & Gold
+      { box: 0xbf30ff, ribbon: 0x2ecc71, emissive: 0x440a66, ribbonEmissive: 0x0a5522 }  // Royal Violet & Mint
     ];
 
     // Marker beacon visuals (textures, geometries & materials matching reference image)
@@ -531,6 +533,28 @@ export class DeliverySystem {
     return new THREE.CanvasTexture(canvas);
   }
 
+  
+  _setupMobileControls() {
+    const container = document.getElementById('ui-container');
+    if (!container || document.getElementById('mobile-controls-wrapper')) return;
+
+    const mobileControls = document.createElement('div');
+    mobileControls.id = 'mobile-controls-wrapper';
+    mobileControls.innerHTML = `
+      <div id="joystick-zone">
+        <div id="joystick-base">
+          <div id="joystick-thumb"></div>
+          <div class="control-label">FLIGHT</div>
+        </div>
+      </div>
+      <div id="drop-zone">
+        <div id="drop-status" class="drop-status far" aria-live="polite">FLY THROUGH BEACON</div>
+      </div>
+    `;
+    container.appendChild(mobileControls);
+    this._setupVirtualJoystick();
+  }
+
   _createHUD() {
     const container = document.getElementById('ui-container');
     if (!container) return;
@@ -573,20 +597,6 @@ export class DeliverySystem {
         <span id="hud-banner-text">GIFT DELIVERED!</span>
       </div>
 
-      <div id="mobile-controls-wrapper">
-        <!-- Free-floating Virtual Flight Joystick -->
-        <div id="joystick-zone">
-          <div id="joystick-base">
-            <div id="joystick-thumb"></div>
-            <div class="control-label">FLIGHT</div>
-          </div>
-        </div>
-
-        <!-- Proximity delivery status badge -->
-        <div id="drop-zone">
-          <div id="drop-status" class="drop-status far" aria-live="polite">FLY THROUGH BEACON</div>
-        </div>
-      </div>
 
       <div id="crash-flash" class="crash-flash" aria-hidden="true"></div>
 
@@ -624,6 +634,22 @@ export class DeliverySystem {
     container.appendChild(hud);
     this.hudElement = hud;
     this._progressPips = Array.from(hud.querySelectorAll('.progress-pip'));
+
+    // Mobile controls (legacy joystick) appended at top level so it stays visible
+    const mobileControls = document.createElement('div');
+    mobileControls.id = 'mobile-controls-wrapper';
+    mobileControls.innerHTML = `
+      <div id="joystick-zone">
+        <div id="joystick-base">
+          <div id="joystick-thumb"></div>
+          <div class="control-label">FLIGHT</div>
+        </div>
+      </div>
+      <div id="drop-zone">
+        <div id="drop-status" class="drop-status far" aria-live="polite">FLY THROUGH BEACON</div>
+      </div>
+    `;
+    container.appendChild(mobileControls);
 
     this._setupVirtualJoystick();
     // Fly-through auto drop active (screen taps disabled)
@@ -1099,12 +1125,18 @@ export class DeliverySystem {
     let reachedBeacon = false;
     let effectiveDist = currHorizDist;
 
-    // 1. Direct hit: sleigh center is currently inside the exact beacon icon volume
-    if (currHorizDist <= 0.16 && currVertDist <= 0.20) {
+    // Calibrated precision fly-through check:
+    // Sleigh must truly reach the beacon drop zone above the rooftop!
+    // Exact bullseye (horiz <= 0.14m, vert <= 0.22m): 1,000 pts (PERFECT!)
+    // Near center / great pass (0.14m < horiz <= 0.28m, vert <= 0.32m): 500 pts (GREAT!)
+    // Close pass (0.28m < horiz <= 0.42m, vert <= 0.40m): 200 pts (NICE!)
+    const maxFlyRadius = 0.42;
+    const maxFlyVert = 0.40;
+
+    if (currHorizDist <= maxFlyRadius && currVertDist <= maxFlyVert) {
       reachedBeacon = true;
       effectiveDist = currHorizDist;
     } else if (segLenSq > 1e-6) {
-      // 2. Exact pass: flight segment in this frame must pierce directly through the beacon
       const segLenXZSq = segX * segX + segZ * segZ;
       if (segLenXZSq > 1e-6) {
         const tXZ = ((beaconCenter.x - p1.x) * segX + (beaconCenter.z - p1.z) * segZ) / segLenXZSq;
@@ -1114,7 +1146,7 @@ export class DeliverySystem {
           const crossZ = p1.z + tXZ * segZ;
           const passHorizDist = Math.hypot(crossX - beaconCenter.x, crossZ - beaconCenter.z);
           const passVertDist = Math.abs(crossY - beaconCenter.y);
-          if (passHorizDist <= 0.16 && passVertDist <= 0.22) {
+          if (passHorizDist <= maxFlyRadius && passVertDist <= maxFlyVert) {
             reachedBeacon = true;
             effectiveDist = passHorizDist;
           }
@@ -1138,8 +1170,18 @@ export class DeliverySystem {
 
     this.attempts++;
 
-    // 100% accuracy hit
-    const precision = Math.max(0.90, 1.0 - (horizDist / 0.16) * 0.10);
+    // Precision tier based on distance to exact center:
+    // <= 0.14m: precision 1.0 (Exact Bullseye) -> 1,000 pts
+    // <= 0.28m: precision 0.5 (Great pass) -> 500 pts
+    // > 0.28m: precision 0.2 (Close pass) -> 200 pts
+    let precision = 0.2;
+    if (horizDist <= 0.14) {
+      precision = 1.0;
+    } else if (horizDist <= 0.28) {
+      precision = 0.5;
+    } else {
+      precision = 0.2;
+    }
 
     // Santa throws the gift with an athletic forward sweep toward the chimney
     if (this.sleighController && this.sleighController.triggerThrow) {
@@ -1155,13 +1197,17 @@ export class DeliverySystem {
 
     const boxMat = new THREE.MeshStandardMaterial({
       color: giftColorPair.box,
-      roughness: 0.35,
-      metalness: 0.1
+      emissive: giftColorPair.emissive || 0x44080e,
+      emissiveIntensity: 0.85,
+      roughness: 0.20,
+      metalness: 0.15
     });
     const ribbonMat = new THREE.MeshStandardMaterial({
       color: giftColorPair.ribbon,
-      roughness: 0.2,
-      metalness: 0.5
+      emissive: giftColorPair.ribbonEmissive || 0x443300,
+      emissiveIntensity: 0.95,
+      roughness: 0.15,
+      metalness: 0.4
     });
 
     const box = new THREE.Mesh(this.giftBoxGeo, boxMat);
@@ -1180,6 +1226,7 @@ export class DeliverySystem {
     // Beacon ring pulse burst upon fly-through contact
     if (this.giftDropMarker) {
       this.giftDropMarker.burst();
+      soundManager.playBeaconBurst();
     }
 
     const targetPos = target.worldPos.clone();
@@ -1238,13 +1285,17 @@ export class DeliverySystem {
 
     const boxMat = new THREE.MeshStandardMaterial({
       color: giftColorPair.box,
-      roughness: 0.35,
-      metalness: 0.1
+      emissive: giftColorPair.emissive || 0x44080e,
+      emissiveIntensity: 0.85,
+      roughness: 0.20,
+      metalness: 0.15
     });
     const ribbonMat = new THREE.MeshStandardMaterial({
       color: giftColorPair.ribbon,
-      roughness: 0.2,
-      metalness: 0.5
+      emissive: giftColorPair.ribbonEmissive || 0x443300,
+      emissiveIntensity: 0.95,
+      roughness: 0.15,
+      metalness: 0.4
     });
 
     const box = new THREE.Mesh(this.giftBoxGeo, boxMat);
@@ -1580,12 +1631,21 @@ export class DeliverySystem {
     this.totalDelivered++;
     this.combo++;
 
-    // Accuracy-based scoring: base + centered-drop precision + perfect bonus.
-    const basePoints = 100;
-    const precisionPoints = Math.round(Math.max(0, Math.min(1, precision)) * 100);
-    const perfect = precision >= 0.85;
-    const perfectBonus = perfect ? 50 : 0;
-    const points = basePoints + precisionPoints + perfectBonus;
+    // Tiered accuracy scoring:
+    // Exact bullseye (precision >= 0.9): 1000 pts (Bullseye bonus!)
+    // Good center hit (0.4 <= precision < 0.9): 500 pts
+    // Glancing / outer drop (precision < 0.4): 200 pts
+    let points = 200;
+    let toastLabel = 'Nice Drop!';
+    if (precision >= 0.9) {
+      points = 1000;
+      toastLabel = 'Bullseye! Perfect!';
+    } else if (precision >= 0.4) {
+      points = 500;
+      toastLabel = 'Great Delivery!';
+    }
+    this.lastDeliveryPoints = points;
+    this.lastDeliveryLabel = toastLabel;
     this.deliveryScore += points;
     this.score = this.deliveryScore + this.starScore;
 
@@ -2004,8 +2064,8 @@ export class DeliverySystem {
       if (el) el.textContent = text;
     };
 
-    setText('hud-deliveries', `${this.deliveriesMade} / ${this.deliveriesRequired}`);
-    setText('hud-stars', `${this.starsCollected} / ${this.starsTotal}`);
+    // setText('hud-deliveries', `${this.deliveriesMade} / ${this.deliveriesRequired}`);
+    // setText('hud-stars', `${this.starsCollected} / ${this.starsTotal}`);
     setText('hud-score', `${this.score}`);
     setText(
       'hud-accuracy',
@@ -2618,7 +2678,9 @@ export class DeliverySystem {
     });
 
     if (this.uiManager) {
-      this.uiManager.showDeliveryToast(500);
+      const pts = this.lastDeliveryPoints || 500;
+      const lbl = this.lastDeliveryLabel || 'Gift Delivered!';
+      this.uiManager.showDeliveryToast(pts, lbl);
     }
   }
 

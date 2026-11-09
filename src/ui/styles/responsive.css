@@ -1,0 +1,129 @@
+/* ==========================================================================
+   RESPONSIVE DESIGN — DESKTOP 16:9 VS MOBILE PORTRAIT SAFE AREAS
+   Santa's Gift Delivery
+   ========================================================================== */
+
+/* --- Mobile Safe Area Inset Support --- */
+.hud-top-bar {
+  padding-top: max(env(safe-area-inset-top, 0px), 12px);
+  padding-left: max(env(safe-area-inset-left, 0px), 16px);
+  padding-right: max(env(safe-area-inset-right, 0px), 16px);
+}
+
+.mobile-controls-wrapper {
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 18px);
+  padding-left: max(env(safe-area-inset-left, 0px), 16px);
+  padding-right: max(env(safe-area-inset-right, 0px), 16px);
+}
+
+/* Ensure Virtual Joystick never overlaps Top HUD */
+#joystick-zone {
+  top: auto !important;
+  bottom: 0 !important;
+  height: 45vh !important;
+  max-height: 380px !important;
+}
+
+/* --- Responsive Scaling for Small Mobile Screens (< 480px) --- */
+@media (max-width: 480px) {
+  .hud-top-bar {
+    top: 6px;
+    left: 8px;
+    right: 8px;
+    gap: 6px;
+  }
+
+  .hud-pill {
+    height: 36px;
+    padding: 2px 8px 2px 4px;
+    border-width: 1.5px;
+  }
+
+  .hud-pill .badge-icon {
+    width: 26px;
+    height: 26px;
+    margin-right: 5px;
+  }
+
+  .hud-pill .pill-text {
+    font-size: 12px;
+  }
+
+  .hud-pill .pill-text strong {
+    font-size: 13px;
+  }
+
+  .btn-circle-red {
+    width: 36px;
+    height: 36px;
+  }
+
+  .ribbon-banner {
+    min-width: 240px;
+    padding: 10px 24px 12px;
+  }
+
+  .ribbon-title {
+    font-size: 20px;
+    letter-spacing: 1px;
+  }
+
+  .btn-pill-red {
+    min-width: 180px;
+    height: 50px;
+    font-size: 19px;
+  }
+
+  .btn-pill-navy {
+    min-width: 160px;
+    height: 42px;
+    font-size: 14px;
+  }
+
+  .card-parchment {
+    padding: 28px 16px 20px;
+  }
+
+  .results-card {
+    padding: 34px 16px 22px;
+  }
+
+  .btn-circle-large {
+    width: 48px;
+    height: 48px;
+  }
+
+  .results-actions {
+    gap: 24px;
+  }
+}
+
+/* --- Desktop Layout (16:9 Landscape & Desktop Pointers) --- */
+@media (min-width: 768px) and (orientation: landscape), (pointer: fine) {
+  /* On desktop, hide virtual touch joysticks & mobile drop status */
+  #mobile-controls-wrapper,
+  #joystick-zone,
+  #drop-zone {
+    display: none !important;
+    pointer-events: none !important;
+  }
+
+  .desktop-only {
+    display: flex !important;
+  }
+
+  .mobile-only {
+    display: none !important;
+  }
+}
+
+/* Mobile-only instruction row toggle */
+@media (max-width: 767px) and (pointer: coarse) {
+  .desktop-only {
+    display: none !important;
+  }
+
+  .mobile-only {
+    display: flex !important;
+  }
+}

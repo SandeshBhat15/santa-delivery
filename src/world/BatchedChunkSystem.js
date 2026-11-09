@@ -490,7 +490,9 @@ export class BatchedChunkSystem {
       }
 
       const isTreeOrFoliage = name.toLowerCase().includes('winter_forest') || name.toLowerCase().includes('tree');
-      const isProminentCaster = isHouse || isTreeOrFoliage || name.includes('cliffbig');
+      const isLowMobile = this.isMobile && (window.hardwareProfiler?.profile?.tier === 'low');
+      const isShrubFoliage = isFoliage && (name.includes('004') || name.includes('002') || name.includes('008') || name.includes('003'));
+      const isProminentCaster = isHouse || (!isLowMobile && isTreeOrFoliage && !isShrubFoliage);
 
       const rawMatrixData = new Float32Array(matrices.length * 16);
       for (let i = 0; i < matrices.length; i++) {
@@ -530,7 +532,7 @@ export class BatchedChunkSystem {
         isFoliage,
         isCliff,
         castShadow: isProminentCaster,
-        receiveShadow: !matName.includes('ice'),
+        receiveShadow: !isFoliage && !isTreeOrFoliage && !matName.includes('ice'),
         triangles: triCount
       });
     });
