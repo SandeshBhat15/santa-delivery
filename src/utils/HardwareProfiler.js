@@ -72,7 +72,8 @@ export class HardwareProfiler {
                            gpuLower.includes('adreno 720') || gpuLower.includes('adreno 725') ||
                            gpuLower.includes('adreno 730') || gpuLower.includes('apple');
 
-    const isFirefoxSpoofedGpu = gpuLower.includes(', or similar') || gpuLower === 'mozilla' || gpuLower === 'gecko';
+    const isFirefox = /Firefox/i.test(navigator.userAgent);
+    const isFirefoxSpoofedGpu = isFirefox || gpuLower.includes(', or similar') || gpuLower === 'mozilla' || gpuLower === 'gecko';
 
     const isLowGpu = !isFirefoxSpoofedGpu && (
                      gpuLower.includes('intel hd') || gpuLower.includes('intel uhd') ||
@@ -90,14 +91,14 @@ export class HardwareProfiler {
     if (isUltraGpu && !isMobile) {
       tier = DEVICE_TIER.ULTRA;
     } else if (isHighGpu) {
-      tier = isMobile ? DEVICE_TIER.HIGH : DEVICE_TIER.HIGH;
+      tier = isMobile ? DEVICE_TIER.MID : DEVICE_TIER.HIGH;
     } else if (isLowGpu) {
       tier = DEVICE_TIER.LOW;
     } else {
       if (isMobile) {
         tier = (isMidMobileGpu || (cores >= 6 && ram >= 4) || isFirefoxSpoofedGpu) ? DEVICE_TIER.MID : DEVICE_TIER.LOW;
       } else {
-        tier = DEVICE_TIER.MID;
+        tier = isFirefoxSpoofedGpu ? DEVICE_TIER.HIGH : DEVICE_TIER.MID;
       }
     }
 
@@ -110,21 +111,21 @@ export class HardwareProfiler {
 
     switch (tier) {
       case DEVICE_TIER.ULTRA:
-        targetDpr = Math.min(window.devicePixelRatio || 1, 2.5);
-        shadowMapSize = 2048;
+        targetDpr = Math.min(window.devicePixelRatio || 1, 2.0);
+        shadowMapSize = 4096;
         baseSnowCount = 3600;
         largeSnowCount = 420;
         maxLoadedChunks = 8;
         break;
       case DEVICE_TIER.HIGH:
-        targetDpr = Math.min(window.devicePixelRatio || 1, isMobile ? 1.6 : 2.0);
-        shadowMapSize = 2048;
+        targetDpr = Math.min(window.devicePixelRatio || 1, isMobile ? 1.5 : 1.75);
+        shadowMapSize = isMobile ? 1024 : 4096;
         baseSnowCount = 2800;
         largeSnowCount = 320;
         maxLoadedChunks = isMobile ? 5 : 6;
         break;
       case DEVICE_TIER.MID:
-        targetDpr = Math.min(window.devicePixelRatio || 1, isMobile ? 1.4 : 1.75);
+        targetDpr = Math.min(window.devicePixelRatio || 1, isMobile ? 1.35 : 1.5);
         shadowMapSize = isMobile ? 1024 : 2048;
         baseSnowCount = 2200;
         largeSnowCount = 240;

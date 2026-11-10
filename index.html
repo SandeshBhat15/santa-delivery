@@ -34,13 +34,34 @@
     </div>
 
     <!-- Loading Screen -->
-    <div id="loader">
+    <div id="loader" class="festive-loader">
+      <div class="loader-bg-overlay"></div>
       <div class="loader-content">
-        <h2>Loading Winter World...</h2>
-        <div class="progress-bar-bg">
-          <div id="progress-bar"></div>
+        <!-- Festive Holiday Game Logo -->
+        <div class="loader-logo-wrapper">
+          <img src="/assets/custom_ui/logo_holiday.png" alt="Santa's Gift Run" class="loader-logo-img" />
         </div>
-        <p id="loader-status">0%</p>
+
+        <!-- Festive Loading Stage -->
+        <div class="loader-card">
+          <h2 class="loader-subheading">DELIVERING THE HOLIDAYS...</h2>
+
+          <!-- Candy Cane Progress Bar Capsule -->
+          <div class="loader-progress-capsule">
+            <div class="progress-snow-trim-left"></div>
+            <div class="progress-bar-bg">
+              <div id="progress-bar" class="candy-stripe-progress">
+                <span class="progress-glow-head"></span>
+              </div>
+            </div>
+            <div class="progress-snow-trim-right"></div>
+          </div>
+
+          <!-- Percentage & Status -->
+          <div class="loader-status-row">
+            <span id="loader-status" class="loader-percentage">0%</span>
+          </div>
+        </div>
       </div>
     </div>
 

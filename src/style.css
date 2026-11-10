@@ -94,58 +94,195 @@ canvas {
   pointer-events: none;
 }
 
+/* ==========================================================================
+   FESTIVE GAME-THEMED LOADING SCREEN
+   Matches nocturnal atmosphere, 3D holiday logo, and candy cane progress bar
+   ========================================================================== */
+
 #loader {
-  position: absolute;
-  top: 0;
-  left: 0;
+  position: fixed;
+  inset: 0;
   width: 100%;
   height: 100%;
-  background: #060b17;
+  background: radial-gradient(circle at 50% 38%, rgba(14, 30, 58, 0.96) 0%, rgba(4, 9, 20, 0.99) 100%);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
-  transition: opacity 0.6s ease;
-  color: #e2f0ff;
+  z-index: 9999;
+  transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.6s ease;
+  user-select: none;
+  -webkit-user-select: none;
+  overflow: hidden;
+}
+
+#loader::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.04;
 }
 
 #loader.hidden {
+  display: none !important;
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
 }
 
 .loader-content {
+  position: relative;
+  z-index: 2;
   text-align: center;
-  max-width: 320px;
-  width: 90%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 90vw;
+  max-width: 460px;
+  gap: 20px;
 }
 
-.loader-content h2 {
-  font-size: 1.25rem;
-  font-weight: 500;
-  letter-spacing: 0.5px;
-  margin-bottom: 6px;
+/* 3D Holiday Logo with gentle float animation */
+.loader-logo-wrapper {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  animation: loaderLogoFloat 3.6s ease-in-out infinite;
 }
 
-.progress-bar-bg {
+@keyframes loaderLogoFloat {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-6px) scale(1.015); }
+}
+
+.loader-logo-img {
+  width: min(85vw, 380px);
+  height: auto;
+  object-fit: contain;
+  filter: drop-shadow(0 14px 28px rgba(0, 0, 0, 0.75)) drop-shadow(0 0 24px rgba(255, 199, 39, 0.35));
+}
+
+.loader-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   width: 100%;
-  height: 6px;
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 3px;
-  margin: 14px 0 8px;
-  overflow: hidden;
 }
 
-#progress-bar {
+.loader-subheading {
+  font-family: 'Lilita One', 'Fredoka', cursive, sans-serif;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: #ffd875;
+  text-transform: uppercase;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8), 0 0 12px rgba(255, 199, 39, 0.4);
+  margin: 0 0 14px 0;
+}
+
+/* Golden Pill Capsule for Candy Cane Progress Bar */
+.loader-progress-capsule {
+  position: relative;
+  width: 100%;
+  max-width: 340px;
+  height: 28px;
+  background: #07101f;
+  border-radius: 999px;
+  border: 2px solid #ffc727;
+  box-shadow:
+    0 0 0 1px rgba(122, 78, 0, 0.8),
+    0 4px 16px rgba(0, 0, 0, 0.65),
+    inset 0 2px 4px rgba(0, 0, 0, 0.7),
+    0 0 16px rgba(255, 199, 39, 0.25);
+  display: flex;
+  align-items: center;
+  padding: 3px;
+  box-sizing: border-box;
+}
+
+.loader-progress-capsule .progress-bar-bg {
+  width: 100%;
+  height: 100%;
+  background: rgba(3, 8, 18, 0.65);
+  border-radius: 999px;
+  margin: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Animated Candy Cane Striped Progress Fill */
+.candy-stripe-progress {
   width: 0%;
   height: 100%;
-  background: linear-gradient(90deg, #ff9922, #ffcc44);
-  transition: width 0.1s linear;
+  border-radius: 999px;
+  background: repeating-linear-gradient(
+    -45deg,
+    #e52535,
+    #e52535 10px,
+    #ffffff 10px,
+    #ffffff 18px,
+    #d11828 18px,
+    #d11828 22px
+  );
+  background-size: 31px 31px;
+  animation: candyStripeScroll 0.8s linear infinite;
+  box-shadow: 0 0 12px rgba(229, 37, 53, 0.6);
+  transition: width 0.15s ease-out;
+  position: relative;
 }
 
-#loader-status {
-  font-size: 13px;
-  color: #8da4c4;
+@keyframes candyStripeScroll {
+  from { background-position: 0 0; }
+  to { background-position: 31px 0; }
+}
+
+/* Bright gold leading light edge */
+.progress-glow-head {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  background: #fff;
+  border-radius: 999px;
+  box-shadow: 0 0 10px 3px rgba(255, 255, 255, 0.85), 0 0 16px 6px rgba(255, 215, 0, 0.6);
+}
+
+.loader-status-row {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.loader-percentage {
+  font-family: 'Lilita One', 'Fredoka', cursive, sans-serif;
+  font-size: 1.15rem;
+  letter-spacing: 1px;
+  color: #fff9e6;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.9), 0 0 10px rgba(255, 199, 39, 0.5);
+  font-weight: 700;
+}
+
+@media (max-width: 600px) {
+  .loader-logo-img {
+    width: min(85vw, 290px);
+  }
+  .loader-subheading {
+    font-size: 0.9rem;
+    letter-spacing: 1.5px;
+    margin-bottom: 12px;
+  }
+  .loader-progress-capsule {
+    max-width: 270px;
+    height: 24px;
+    padding: 2.5px;
+  }
+  .loader-percentage {
+    font-size: 1.05rem;
+  }
 }
 
 

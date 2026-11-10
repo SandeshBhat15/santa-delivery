@@ -61,9 +61,7 @@
   align-items: center;
   justify-content: center;
   z-index: 70;
-  background: radial-gradient(circle at 50% 30%, rgba(24, 49, 89, 0.55) 0%, rgba(10, 22, 43, 0.92) 100%);
-  backdrop-filter: blur(8px) saturate(1.1);
-  -webkit-backdrop-filter: blur(8px) saturate(1.1);
+  background: radial-gradient(circle at 50% 30%, rgba(24, 49, 89, 0.75) 0%, rgba(10, 22, 43, 0.95) 100%);
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
@@ -80,12 +78,10 @@
   pointer-events: none;
   z-index: 0;
   opacity: 0.035;
-  mix-blend-mode: overlay;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-size: 180px 180px;
 }
 
 .screen-overlay.hidden {
+  display: none !important;
   opacity: 0 !important;
   visibility: hidden !important;
   pointer-events: none !important;
@@ -1668,70 +1664,76 @@
 .instructions-actions-bar,
 .game-over-actions-bar {
   display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  gap: 28px !important; /* Generous gap between action buttons */
-}
-
-/* Uniform Symmetrical Action Buttons */
-.instructions-actions-bar,
-.game-over-actions-bar {
-  display: flex !important;
-  align-items: center !important;
+  align-items: flex-end !important;
   justify-content: center !important;
   gap: 20px !important;
 }
 
 .instructions-actions-bar .btn-image-action,
 .game-over-actions-bar .btn-image-action {
-  height: 68px !important;
   display: inline-flex !important;
-  align-items: center !important;
+  align-items: flex-end !important;
   justify-content: center !important;
   padding: 0 !important;
   margin: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  cursor: pointer !important;
+  vertical-align: bottom !important;
 }
 
-#btn-instructions-close.btn-image-action,
-#btn-results-replay.btn-image-action {
-  width: 158px !important;
-}
-
-#btn-instructions-back.btn-image-action,
-#btn-results-home.btn-image-action {
-  width: 124px !important;
-}
-
+/* Base button asset styling: preserve natural ratio, contain cleanly */
 .instructions-actions-bar .btn-image-asset,
 .game-over-actions-bar .btn-image-asset {
-  height: 68px !important;
-  width: 100% !important;
-  object-fit: fill !important;
   display: block !important;
+  object-fit: contain !important;
+  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.5)) !important;
+}
+
+/* Specific button dimensions matched to identical visual pill height (48px pill on desktop) */
+#btn-instructions-back .btn-image-asset,
+#btn-results-home .btn-image-asset {
+  width: 115px !important;
+  height: 62px !important;
+}
+
+#btn-instructions-close .btn-image-asset {
+  width: 150px !important;
+  height: 64px !important;
+}
+
+#btn-results-replay .btn-image-asset {
+  width: 149px !important;
+  height: 63px !important;
 }
 
 @media (max-width: 600px) {
   .instructions-actions-bar,
   .game-over-actions-bar {
-    gap: 16px !important;
+    gap: 14px !important;
+    align-items: flex-end !important;
   }
+
   .instructions-actions-bar .btn-image-action,
   .game-over-actions-bar .btn-image-action {
-    height: 54px !important;
+    align-items: flex-end !important;
   }
-  #btn-instructions-close.btn-image-action,
-  #btn-results-replay.btn-image-action {
-    width: 132px !important;
+
+  /* Scaled down uniformly for mobile (38px pill height, perfectly baseline-aligned) */
+  #btn-instructions-back .btn-image-asset,
+  #btn-results-home .btn-image-asset {
+    width: 91px !important;
+    height: 49px !important;
   }
-  #btn-instructions-back.btn-image-action,
-  #btn-results-home.btn-image-action {
-    width: 105px !important;
+
+  #btn-instructions-close .btn-image-asset {
+    width: 119px !important;
+    height: 50px !important;
   }
-  .instructions-actions-bar .btn-image-asset,
-  .game-over-actions-bar .btn-image-asset {
-    height: 54px !important;
-    width: 100% !important;
-    object-fit: fill !important;
+
+  #btn-results-replay .btn-image-asset {
+    width: 118px !important;
+    height: 50px !important;
   }
 }
 
@@ -1803,21 +1805,11 @@
    SCREEN OVERLAYS: DEEP ATMOSPHERIC NOCTURNAL BACKDROP FOR INTRO, HOW TO PLAY & GAME OVER
    ========================================================================== */
 .screen-overlay {
-  background: radial-gradient(circle at 50% 40%, rgba(8, 18, 36, 0.65) 0%, rgba(3, 8, 18, 0.82) 100%) !important;
-  backdrop-filter: blur(10px) saturate(1.15) !important;
-  -webkit-backdrop-filter: blur(10px) saturate(1.15) !important;
+  background: radial-gradient(circle at 50% 40%, rgba(8, 18, 36, 0.88) 0%, rgba(3, 8, 18, 0.96) 100%) !important;
 }
 
 .screen-overlay::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  opacity: 0.04;
-  mix-blend-mode: overlay;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-size: 180px 180px;
+  display: none !important;
 }
 
 /* Ensure global game vignette stays visible across all states */

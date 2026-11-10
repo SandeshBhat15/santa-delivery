@@ -1211,7 +1211,7 @@ export class DeliverySystem {
     });
 
     const box = new THREE.Mesh(this.giftBoxGeo, boxMat);
-    box.castShadow = true;
+    box.castShadow = !this.isMobile;
     giftGroup.add(box);
 
     const ribbon1 = new THREE.Mesh(this.giftRibbonGeo, ribbonMat);
@@ -1299,7 +1299,7 @@ export class DeliverySystem {
     });
 
     const box = new THREE.Mesh(this.giftBoxGeo, boxMat);
-    box.castShadow = true;
+    box.castShadow = !this.isMobile;
     giftGroup.add(box);
 
     const ribbon1 = new THREE.Mesh(this.giftRibbonGeo, ribbonMat);

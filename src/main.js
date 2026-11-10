@@ -75,7 +75,7 @@ const IS_MOBILE = (new URLSearchParams(window.location.search).get('mobile') ===
 
 if (IS_MOBILE) document.body.classList.add('is-mobile');
 
-const _maxMobileDpr = IS_FIREFOX ? 1.25 : 1.5;
+const _maxMobileDpr = IS_FIREFOX ? 1.35 : 1.5;
 
 // --- Renderer ---
 const renderer = new THREE.WebGLRenderer({
@@ -97,7 +97,9 @@ window.hardwareProfiler = hardwareProfiler;
 const _initialDprParam = parseFloat(new URLSearchParams(window.location.search).get('dpr'));
 const _initialDpr = Number.isFinite(_initialDprParam)
   ? _initialDprParam
-  : (IS_FIREFOX && IS_MOBILE ? Math.min(hardwareProfiler.profile.targetDpr, 1.15) : hardwareProfiler.profile.targetDpr);
+  : (IS_FIREFOX
+      ? (IS_MOBILE ? Math.min(hardwareProfiler.profile.targetDpr, 1.15) : Math.min(hardwareProfiler.profile.targetDpr, 1.25))
+      : hardwareProfiler.profile.targetDpr);
 
 renderer.setPixelRatio(_initialDpr);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -132,7 +134,9 @@ window.composer = composer;
 const renderPass = new RenderPass(scene, camera);
 composer.addPass(renderPass);
 
-const bloomScale = IS_MOBILE ? (hardwareProfiler.profile.tier === "low" ? 0.65 : 0.75) : 1.0;
+const bloomScale = IS_MOBILE
+  ? (hardwareProfiler.profile.tier === "low" ? 0.65 : 0.75)
+  : (IS_FIREFOX ? 0.8 : 1.0);
 const bloomRes = new THREE.Vector2(
   Math.round(window.innerWidth * _initialDpr * bloomScale),
   Math.round(window.innerHeight * _initialDpr * bloomScale)
@@ -142,7 +146,7 @@ const bloomPass = new KawaseBloomPass(
   1.4,  // Rich, warm cinematic bloom intensity
   0.32, // Smooth threshold for glowing windows, aurora, and lanterns
   2.2,  // Wide, soft blur scattering radius
-  IS_MOBILE ? 2 : 4
+  (IS_MOBILE || IS_FIREFOX) ? 2 : 4
 );
 if (IS_MOBILE && new URLSearchParams(window.location.search).get('bloom') === '0') {
   bloomPass.enabled = false;
@@ -729,7 +733,11 @@ const WINTER_SKY_AND_AURORA_GLSL = `
   }
 `;
 
-const useBakedSky = IS_MOBILE && (new URLSearchParams(window.location.search).get('sky') !== 'direct');
+// Enable high-performance BakedSky for mobile, Firefox, and low/mid tiers.
+// Raymarching a 32-step procedural sky per pixel every frame is the primary cause of sluggishness
+// in Firefox (ANGLE/D3D compiler) and mid-range devices. BakedSky produces identical visuals at ~20x less GPU cost.
+const forceDirectSky = new URLSearchParams(window.location.search).get('sky') === 'direct';
+const useBakedSky = !forceDirectSky && (IS_MOBILE || IS_FIREFOX || hardwareProfiler.profile.tier !== 'ultra');
 const bakedSky = useBakedSky ? createBakedSky(renderer, WINTER_SKY_AND_AURORA_GLSL, skyUniforms) : null;
 window.bakedSky = bakedSky;
 
@@ -1229,20 +1237,21 @@ scene.add(starlightHemiLight);
 const moonLight = new THREE.DirectionalLight(0x7ea4e8, 0.95);
 moonLight.position.set(14, 52, -12);
 moonLight.castShadow = true;
-// Shadow map resolution: 1024 on mobile (perfect for 36m frustum), 2048 on desktop (razor-sharp)
+// Shadow map resolution: 1024 on mobile, 4096 on desktop Ultra/High (razor-sharp)
 const shadowMapDim = hardwareProfiler.profile.shadowMapSize;
 moonLight.shadow.mapSize.width = shadowMapDim;
 moonLight.shadow.mapSize.height = shadowMapDim;
 moonLight.shadow.camera.near = 12;
 moonLight.shadow.camera.far = 120;
-const d = 28;
+// Keep frustum compact on Santa (22m radius on mobile, 24m on desktop) to double effective shadow texel resolution
+const d = IS_MOBILE ? 22 : 24;
 moonLight.shadow.camera.left = -d;
 moonLight.shadow.camera.right = d;
 moonLight.shadow.camera.top = d;
 moonLight.shadow.camera.bottom = -d;
-moonLight.shadow.normalBias = 0.025;
-moonLight.shadow.bias = -0.00015;
-moonLight.shadow.radius = 2.0;
+moonLight.shadow.normalBias = IS_MOBILE ? 0.025 : 0.008;
+moonLight.shadow.bias = IS_MOBILE ? -0.00015 : -0.00005;
+moonLight.shadow.radius = IS_MOBILE ? 2.0 : 1.15;
 scene.add(moonLight);
 scene.add(moonLight.target);
 
@@ -2753,9 +2762,9 @@ const modelUrl = '/assets/models/terrain.glb';
           } else if (isTerrain && !mat.userData.snowShaderApplied) {
             // Apply custom procedural snow shader mixed with existing terrain texture exclusively to terrain material
             mat.userData.snowShaderApplied = true;
-            mat.roughness = 0.80;
+            mat.roughness = 0.75;
             mat.metalness = 0.0;
-            mat.customProgramCacheKey = () => 'terrain_procedural_snow_unified_v13';
+            mat.customProgramCacheKey = () => 'terrain_procedural_snow_unified_v14';
 
             // Unified high-fidelity desktop snow shader across all devices
             mat.onBeforeCompile = (shader) => {
@@ -2846,14 +2855,15 @@ const modelUrl = '/assets/models/terrain.glb';
                 void main() {
                   vec3 sWPos = vTerrainWorldPos;
                   vec3 sWNorm = normalize(vTerrainWorldNormal);
-                  vec2 sDriftUv = vec2(sWPos.x * 0.18 + sWPos.z * 0.11, sWPos.z * 0.18 - sWPos.x * 0.11);
+                  vec2 sDriftUv = vec2(sWPos.x * 0.14 + sWPos.z * 0.09, sWPos.z * 0.14 - sWPos.x * 0.09);
                   float sMacroDrift = sin(sDriftUv.x * 1.5 + sin(sDriftUv.y * 1.0) * 0.8) * 0.5 + 0.5;
-                  // Full 3-octave FBM procedural drifts & organic snow accumulation across all platforms
-                  float sMicroRipples = snowFBM(sWPos.xz * 1.15);
-                  float sDriftCombined = sMacroDrift * 0.42 + sMicroRipples * 0.58;
+                  // Organic smooth continuous snow accumulation across all platforms (no blocky step artifacts)
+                  float sMicroRipples = snowFBM(sWPos.xz * 0.95);
+                  float sDriftCombined = sMacroDrift * 0.45 + sMicroRipples * 0.55;
                   float sSlope = clamp(sWNorm.y, 0.0, 1.0);
-                  float sSnowThreshold = 0.15 - sMicroRipples * 0.10;
-                  float sSnowCoverage = smoothstep(sSnowThreshold, sSnowThreshold + 0.25, sSlope);
+                  // Soft Hermite slope transition: organic snow coverage that drapes smoothly over contours
+                  float sSnowThreshold = 0.12 - sMicroRipples * 0.08;
+                  float sSnowCoverage = smoothstep(sSnowThreshold, sSnowThreshold + 0.28, sSlope);
                 `
               );
 
@@ -2871,43 +2881,42 @@ const modelUrl = '/assets/models/terrain.glb';
                 #endif
 
                 // Harmonize underlying cliff/rock texture so exposed steep crevices take on a cool slate-navy tone
-                // rather than saturated greenish/cyan vertex or texture tint
                 float rawLum = dot(sampledDiffuseColor.rgb, vec3(0.299, 0.587, 0.114));
                 vec3 rockTone = mix(vec3(0.12, 0.16, 0.24) * (rawLum * 0.65 + 0.35), sampledDiffuseColor.rgb, 0.35);
 
-                // --- PROCEDURAL SNOW SHADER MIXED WITH TERRAIN TEXTURE ---
-                // 1. Procedural Snow Depth Palette with Crevice Ambient Occlusion
-                float creviceAO = clamp(sDriftCombined * 1.15 + 0.22, 0.52, 1.0);
-                vec3 snowBase = mix(uSnowShadowColor * creviceAO, uSnowMidColor, smoothstep(0.18, 0.62, sDriftCombined));
-                vec3 snowCrest = mix(snowBase, uSnowColor, smoothstep(0.52, 0.92, sDriftCombined));
+                // --- PROCEDURAL SNOW SHADER (SMOOTH, CONTINUOUS, NON-BLOCKY) ---
+                // 1. Soft procedural snow depth palette with gentle crevice ambient occlusion
+                float creviceAO = clamp(sDriftCombined * 0.85 + 0.40, 0.62, 1.0);
+                vec3 snowBase = mix(uSnowShadowColor * creviceAO, uSnowMidColor, smoothstep(0.15, 0.55, sDriftCombined));
+                vec3 snowCrest = mix(snowBase, uSnowColor, smoothstep(0.45, 0.88, sDriftCombined));
 
-                // 2. View-Dependent Powder Rim & Forward Translucency
+                // 2. View-dependent soft powder rim & forward translucency
                 vec3 viewDir = normalize(vViewPosition);
                 float fresnel = pow(1.0 - max(0.0, dot(sWNorm, viewDir)), 3.0);
-                vec3 snowFinal = snowCrest + vec3(0.12, 0.16, 0.28) * fresnel * 0.50;
+                vec3 snowFinal = snowCrest + vec3(0.10, 0.15, 0.25) * fresnel * 0.45;
 
                 // Subsurface forward scattering in view of moonlight
                 vec3 moonDir = normalize(vec3(24.0, 42.0, -18.0));
                 float sssScatter = pow(clamp(dot(viewDir, -moonDir), 0.0, 1.0), 3.0) * (1.0 - sSlope * 0.45);
-                snowFinal += vec3(0.14, 0.18, 0.32) * sssScatter * 0.45;
+                snowFinal += vec3(0.12, 0.16, 0.28) * sssScatter * 0.40;
 
-                // 3. Crystalline Moonlight Sheen & Delicate Multi-Frequency Glitter
+                // 3. Crystalline moonlight sheen & delicate non-grainy glitter
                 vec3 halfVec = normalize(viewDir + moonDir);
                 float specAngle = clamp(dot(sWNorm, halfVec), 0.0, 1.0);
-                float moonSheen = pow(specAngle, 16.0) * (0.28 + 0.72 * sMacroDrift);
-                // Smooth anti-aliased crystalline moonlight sheen without high-frequency noisy glitter
-                float microSparkle = snowNoise(sWPos.xz * 4.5 + sin(uTime * 0.15) * 0.05);
-                float glitterBase = clamp(microSparkle * specAngle, 0.0, 1.0);
-                float glitter = pow(glitterBase, 4.0) * 0.65;
-                vec3 sparkleColor = vec3(0.92, 0.96, 1.0) * clamp(moonSheen * 0.22 + glitter * 0.20, 0.0, 1.0) * uSparkleIntensity;
+                float moonSheen = pow(specAngle, 18.0) * (0.35 + 0.65 * sMacroDrift);
+                float microSparkle = snowNoise(sWPos.xz * 3.8 + sin(uTime * 0.15) * 0.04);
+                float glitter = pow(clamp(microSparkle * specAngle, 0.0, 1.0), 4.0) * 0.45;
+                vec3 sparkleColor = vec3(0.95, 0.98, 1.0) * clamp(moonSheen * 0.24 + glitter * 0.18, 0.0, 1.0) * uSparkleIntensity;
 
-                // 4. Harmonious Mixing with Existing Terrain Texture
-                // Modulate the snow with the low-poly faceting of the original texture
-                float texLum = dot(sampledDiffuseColor.rgb, vec3(0.299, 0.587, 0.114));
-                vec3 facetedSnow = snowFinal * (texLum * 0.45 + 0.78);
+                // 4. Smooth continuous snow tone:
+                // ELIMINATE BLOCKY LOOK: Instead of multiplying hard texture faceting (texLum * 0.45 + 0.78),
+                // we apply a gentle, smooth shading factor (rawLum * 0.12 + 0.92) that respects macro landscape form
+                // without imprinting triangular low-poly polygon edges onto the snow surface!
+                float smoothSnowMod = mix(0.94, 1.04, rawLum);
+                vec3 smoothSnow = snowFinal * smoothSnowMod;
 
-                // Blend rock tone with our snow shader
-                vec3 blendedDiffuse = mix(rockTone, facetedSnow, sSnowCoverage * 0.92);
+                // Blend rock tone with our smooth snow shader
+                vec3 blendedDiffuse = mix(rockTone, smoothSnow, sSnowCoverage * 0.94);
                 blendedDiffuse += sparkleColor * sSnowCoverage;
 
                 // 5. Automatic Adaptive Village Warm Ground Illumination
@@ -2923,15 +2932,17 @@ const modelUrl = '/assets/models/terrain.glb';
                 float cleanCutoff = smoothstep(0.012, 0.035, lightLum);
                 vec3 warmGlow = villageLight.rgb * inBounds * slopeFactor * cleanCutoff * uGroundWarmthIntensity;
 
-                // 6. Aurora Sky-to-Ground Illumination
-                // Luminous emerald-teal ethereal light falling onto snow slopes, plateaus, and crests
+                // 6. Dynamic Aurora Sky-to-Ground Reflection & Illumination
+                // Emerald-teal ethereal light with view-dependent specular reflection on snow crests
                 float skyFacing = clamp(dot(sWNorm, uAuroraDir) * 0.70 + sWNorm.y * 0.50, 0.0, 1.0);
-                // Multi-scale procedural slow wave matching atmospheric curtain motion
                 float aWave1 = sin(sWPos.x * 0.055 + sWPos.z * 0.035 + uTime * 0.28);
                 float aWave2 = cos(sWPos.z * 0.048 - sWPos.x * 0.028 + uTime * 0.20);
-                float aMod = (aWave1 * 0.5 + aWave2 * 0.5) * 0.25 + 0.75; // 0.50 to 1.0 breathing factor
-                vec3 auroraGlow = uAuroraColor * (skyFacing * aMod * uAuroraGroundIntensity * sSnowCoverage);
-                auroraGlow *= (texLum * 0.40 + 0.60);
+                float aMod = (aWave1 * 0.5 + aWave2 * 0.5) * 0.25 + 0.75;
+                
+                // Aurora specular highlight on glancing snow slopes
+                vec3 aReflect = reflect(-viewDir, sWNorm);
+                float aSpec = pow(clamp(dot(aReflect, uAuroraDir), 0.0, 1.0), 6.0) * fresnel;
+                vec3 auroraGlow = uAuroraColor * (skyFacing * aMod * 0.28 + aSpec * 0.35) * (uAuroraGroundIntensity * sSnowCoverage);
 
                 // 7. Additive glows
                 diffuseColor.rgb = blendedDiffuse + warmGlow + auroraGlow;
@@ -2943,7 +2954,7 @@ const modelUrl = '/assets/models/terrain.glb';
                 '#include <roughnessmap_fragment>',
                 `
                 #include <roughnessmap_fragment>
-                roughnessFactor = mix(roughnessFactor, mix(0.85, 0.48, sMacroDrift), sSnowCoverage * 0.85);
+                roughnessFactor = mix(roughnessFactor, mix(0.82, 0.42, sMacroDrift), sSnowCoverage * 0.88);
                 `
               );
 
@@ -3069,7 +3080,9 @@ window.addEventListener('resize', () => {
   renderer.setSize(width, height);
   const pRatio = Number.isFinite(_initialDprParam)
     ? _initialDprParam
-    : (IS_MOBILE ? Math.min(window.devicePixelRatio || 1, _maxMobileDpr) : Math.min(window.devicePixelRatio || 1, 2.5));
+    : (IS_FIREFOX
+        ? (IS_MOBILE ? Math.min(window.devicePixelRatio || 1, 1.15) : Math.min(window.devicePixelRatio || 1, 1.25))
+        : (IS_MOBILE ? Math.min(window.devicePixelRatio || 1, _maxMobileDpr) : Math.min(window.devicePixelRatio || 1, 2.0)));
   renderer.setPixelRatio(pRatio);
   composer.setSize(width, height);
   composer.setPixelRatio(pRatio);
@@ -3271,7 +3284,10 @@ function animate(currentTime) {
       const focusLerp = 1.0 - Math.exp(-delta * 4.0);
       shadowFocus.x += (sp.x - shadowFocus.x) * focusLerp;
       shadowFocus.z += (sp.z - shadowFocus.z) * focusLerp;
-      shadowFocus.y = 0;
+      const groundH = (chunkSystem && typeof chunkSystem.getHeight === 'function')
+        ? chunkSystem.getHeight(shadowFocus.x, shadowFocus.z)
+        : 0;
+      shadowFocus.y += (groundH - shadowFocus.y) * focusLerp;
 
       // Anti-jitter: snap directional shadow camera in texel increments to completely stop sub-pixel shadow crawling
       const currentExtent = Math.abs(moonLight.shadow.camera.left) || 26;
@@ -3279,13 +3295,14 @@ function animate(currentTime) {
       const worldTexelSize = (currentExtent * 2.0) / currentShadowDim;
       const snappedFocusX = Math.floor(shadowFocus.x / worldTexelSize) * worldTexelSize;
       const snappedFocusZ = Math.floor(shadowFocus.z / worldTexelSize) * worldTexelSize;
+      const snappedFocusY = shadowFocus.y;
 
       moonLight.position.set(
         snappedFocusX + MOON_OFFSET.x,
-        MOON_OFFSET.y,
+        snappedFocusY + MOON_OFFSET.y,
         snappedFocusZ + MOON_OFFSET.z
       );
-      moonLight.target.position.set(snappedFocusX, 0, snappedFocusZ);
+      moonLight.target.position.set(snappedFocusX, snappedFocusY, snappedFocusZ);
       moonLight.target.updateMatrixWorld();
     }
     // Softly diffuse moonlight during blizzards

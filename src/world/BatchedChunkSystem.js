@@ -492,7 +492,11 @@ export class BatchedChunkSystem {
       const isTreeOrFoliage = name.toLowerCase().includes('winter_forest') || name.toLowerCase().includes('tree');
       const isLowMobile = this.isMobile && (window.hardwareProfiler?.profile?.tier === 'low');
       const isShrubFoliage = isFoliage && (name.includes('004') || name.includes('002') || name.includes('008') || name.includes('003'));
-      const isProminentCaster = isHouse || (!isLowMobile && isTreeOrFoliage && !isShrubFoliage);
+      // On mobile, disable all chunk shadow casting (trees, foliage, shrubs, and houses):
+      // 1. Completely eliminates floating/stray shadows on mobile snow.
+      // 2. Maximizes mobile performance and eliminates shadow pass draw call overhead.
+      // 3. On desktop, houses and prominent trees continue to cast high-fidelity shadows.
+      const isProminentCaster = !this.isMobile && (isHouse || (isTreeOrFoliage && !isShrubFoliage));
 
       const rawMatrixData = new Float32Array(matrices.length * 16);
       for (let i = 0; i < matrices.length; i++) {
@@ -501,14 +505,16 @@ export class BatchedChunkSystem {
 
       const triCount = Math.round(child.geometry.index ? child.geometry.index.count / 3 : child.geometry.attributes.position.count / 3);
 
-      // Enhance texture clarity with 4x anisotropic filtering for crisp rendering at perspective angles
+      // Maximize texture sharpness (anisotropic filtering) for crisp snow and terrain at grazing angles
+      // GPU texture sampler units perform this in fixed-function hardware at virtually zero performance overhead.
       if (child.material) {
         const matList = Array.isArray(child.material) ? child.material : [child.material];
         matList.forEach(m => {
           for (const key in m) {
             const prop = m[key];
             if (prop && prop.isTexture) {
-              prop.anisotropy = Math.min(4, 16);
+              const maxAniso = window.renderer?.capabilities?.getMaxAnisotropy?.() || 8;
+              prop.anisotropy = Math.min(maxAniso, 8);
               prop.needsUpdate = true;
             }
           }
@@ -1001,10 +1007,22 @@ export class BatchedChunkSystem {
       this.mobileFog.update(frameDeltaMs / 1000.0, camera, this.chunks, this.chunkSize);
     }
     
-    // 3. On mobile with the scheduler active, the old priority queue and old radius-based loading must NEVER run
+    // 3. On mobile with the scheduler active, the scheduler selects and manages exactly the active chunks.
+    // Note: Do NOT perform slot swapping (_compactVisibleChunks) into truncated front slots [0..visibleCount-1]!
+    // Truncating instMesh.count based solely on camera frustum corrupts directional light shadow rendering
+    // (the shadow camera sees chunks that the player camera does not), which causes distant tree instance
+    // matrices to displace into invalid spatial positions and project phantom/floating tree shadows on bare snow.
     if (this.scheduler && !this.scheduler.disabled) {
       this.scheduler.update(this._sleighPos, camera, now, frameDeltaMs, this.mobileFog);
-      this._compactVisibleChunks(camera);
+      // Ensure all loaded chunks rendered consistently across both main & shadow cameras
+      for (let defIdx = 0; defIdx < this.meshDefinitions.length; defIdx++) {
+        const def = this.meshDefinitions[defIdx];
+        const instMesh = this.instancedMeshes[defIdx];
+        if (instMesh) {
+          instMesh.count = this.activeChunkCount * def.baseCount;
+        }
+      }
+      this._updateBoundsAndStats();
       return; // Return unconditionally when scheduler is active!
     }
 

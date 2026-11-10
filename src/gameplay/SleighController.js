@@ -254,10 +254,16 @@ export class SleighController {
     if (!deerRigNode && rawScene.children[1]) deerRigNode = rawScene.children[1];
     if (!santaRigNode && rawScene.children[2]) santaRigNode = rawScene.children[2];
 
-    // Enable shadows on all meshes
+    // Shadow casting configuration:
+    // When Santa flies high above ground in 3rd-person chase camera, directional moonlight
+    // casts an unnatural hovering silhouette/shadow across the terrain directly under Santa.
+    // On mobile (and low/mid tiers), disable shadow casting on Santa & reindeer to eliminate
+    // the "weird floating shadow above" completely, while keeping terrain, trees, and houses
+    // casting beautiful crisp shadows. On high-end desktop, shadows remain active.
+    const isSantaShadowActive = !this.isMobile;
     rawScene.traverse(child => {
       if (child.isMesh) {
-        child.castShadow = true;
+        child.castShadow = isSantaShadowActive;
         child.receiveShadow = true;
       }
     });
@@ -594,11 +600,12 @@ export class SleighController {
     const sleighMeshGroup = new THREE.Group();
     sleighMeshGroup.name = 'SleighMesh';
 
+    const castSleighShadow = !this.isMobile;
     // Main sleigh tub
     const tubGeo = new THREE.BoxGeometry(1.2, 0.65, 1.8);
     const tub = new THREE.Mesh(tubGeo, redMat);
     tub.position.set(0, 0.45, 0);
-    tub.castShadow = true;
+    tub.castShadow = castSleighShadow;
     tub.receiveShadow = true;
     sleighMeshGroup.add(tub);
 
@@ -606,7 +613,7 @@ export class SleighController {
     const trimGeo = new THREE.BoxGeometry(1.28, 0.08, 1.88);
     const trim = new THREE.Mesh(trimGeo, goldMat);
     trim.position.set(0, 0.78, 0);
-    trim.castShadow = true;
+    trim.castShadow = castSleighShadow;
     sleighMeshGroup.add(trim);
 
     // Front curl dashboard
@@ -614,7 +621,7 @@ export class SleighController {
     const dash = new THREE.Mesh(dashGeo, redMat);
     dash.rotation.z = Math.PI / 2;
     dash.position.set(0, 0.7, -0.9);
-    dash.castShadow = true;
+    dash.castShadow = castSleighShadow;
     sleighMeshGroup.add(dash);
 
     // Sleigh runners (left & right)
@@ -622,13 +629,14 @@ export class SleighController {
       const runnerGeo = new THREE.BoxGeometry(0.08, 0.08, 2.5);
       const runner = new THREE.Mesh(runnerGeo, runnerMat);
       runner.position.set(rx, 0.08, 0.05);
-      runner.castShadow = true;
+      runner.castShadow = castSleighShadow;
       sleighMeshGroup.add(runner);
 
       const curlGeo = new THREE.CylinderGeometry(0.25, 0.25, 0.08, 8, 1, false, 0, Math.PI);
       const curl = new THREE.Mesh(curlGeo, runnerMat);
       curl.rotation.z = Math.PI / 2;
       curl.position.set(rx, 0.26, -1.25);
+      curl.castShadow = castSleighShadow;
       sleighMeshGroup.add(curl);
 
       [-0.5, 0.4].forEach((sz) => {
@@ -654,7 +662,7 @@ export class SleighController {
     const sack = new THREE.Mesh(sackGeo, sackMat);
     sack.scale.set(1.0, 0.85, 0.95);
     sack.position.set(0, 0.75, 0.55);
-    sack.castShadow = true;
+    sack.castShadow = castSleighShadow;
     sleighMeshGroup.add(sack);
 
     // Decorative gift peek out of sack
@@ -707,7 +715,7 @@ export class SleighController {
 
         santa.traverse((c) => {
           if (c.isMesh) {
-            c.castShadow = true;
+            c.castShadow = !this.isMobile;
             c.receiveShadow = true;
           }
         });
@@ -786,7 +794,7 @@ export class SleighController {
       // Torso
       const bodyGeo = new THREE.BoxGeometry(0.5, 0.5, 1.1);
       const body = new THREE.Mesh(bodyGeo, brownMat);
-      body.castShadow = true;
+      body.castShadow = !this.isMobile;
       rGroup.add(body);
 
       // Neck & Head

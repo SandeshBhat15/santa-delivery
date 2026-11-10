@@ -29,7 +29,7 @@ export class MobileOptimizer {
     // Individual optimization toggles (ALL DEFAULT OFF except light toggles which start ON)
     this.toggles = {
       chunkFrustumCulling: true,
-      shadowEvery2ndFrame: this.isMobile,
+      shadowEvery2ndFrame: false, // Keep false by default to prevent 30Hz shadow judder / lag
       debugWireframes: false,
       houseOpaque: true,
       frontSideMaterials: true,
