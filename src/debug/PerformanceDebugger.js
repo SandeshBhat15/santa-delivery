@@ -496,11 +496,11 @@ export class PerformanceDebugger {
         <div style="margin-top:10px; padding-top:8px; border-top:1px dashed #334155;">
           <div style="font-weight:bold; color:#facc15; margin-bottom:6px;">💡 7-Light Audit Toggles:</div>
           <div style="display:grid; grid-template-columns: 1fr; gap:4px; font-size:11px;">
-            <label><input type="checkbox" id="chk-lt-hemi" checked> 1. Starlight Hemisphere (0.46)</label>
-            <label><input type="checkbox" id="chk-lt-moon" checked> 2. Moon Directional Key (0.95, Shadows)</label>
-            <label><input type="checkbox" id="chk-lt-facade" checked> 3. Village Facade Light (0.35)</label>
-            <label><input type="checkbox" id="chk-lt-ambient" checked> 4. Ambient Warm Crevice (0.14)</label>
-            <label><input type="checkbox" id="chk-lt-aurora" checked> 5. Aurora Sky-to-Ground (0.16)</label>
+            <label><input type="checkbox" id="chk-lt-hemi" checked> 1. Starlight Hemisphere (0.68)</label>
+            <label><input type="checkbox" id="chk-lt-moon" checked> 2. Moon Directional Key (1.15, Shadows)</label>
+            <label><input type="checkbox" id="chk-lt-facade" checked> 3. Village Facade Light (0.45)</label>
+            <label><input type="checkbox" id="chk-lt-ambient" checked> 4. Ambient Warm Crevice (0.26)</label>
+            <label><input type="checkbox" id="chk-lt-aurora" checked> 5. Aurora Sky-to-Ground (0.24)</label>
             <label><input type="checkbox" id="chk-lt-lantern-l" checked> 6. Sleigh Lantern Left Point Light</label>
             <label><input type="checkbox" id="chk-lt-lantern-r" checked> 7. Sleigh Lantern Right Point Light</label>
           </div>

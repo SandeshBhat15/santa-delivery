@@ -18,8 +18,8 @@ export class MobileFog {
     this.isMobile = options.isMobile ?? false;
     this.enabled = true; // active fog state (can be toggled with F)
     
-    // Horizon color (#0e1b2f = 0x0e1b2f)
-    this.horizonColor = new THREE.Color(0x0e1b2f);
+    // Horizon color (#0f1d3c = 0x0f1d3c) — synced with darker vibrant sky horizon
+    this.horizonColor = new THREE.Color(0x0f1d3c);
     
     // Target and smoothed values (Dense fog on mobile: 5m near, 26m far)
     this.fogNear = this.isMobile ? 12.0 : 12.25;

@@ -252,26 +252,26 @@ export async function runTier2Tests() {
     assert.strictEqual(sleigh.maxAltitudeAboveTerrain, 3.2, 'Ceiling must be 3.2m');
   });
 
-  await test('BVA-FLIGHT-03', 'Flight boundary: maximum dive speed does not exceed 4.6 m/s desktop', async () => {
+  await test('BVA-FLIGHT-03', 'Flight boundary: maximum dive speed does not exceed 5.52 m/s desktop', async () => {
     const { SleighController } = await import('../../src/gameplay/SleighController.js');
     const { scene, camera, controls, chunkSystem } = createMockSceneContext();
     const sleigh = new SleighController(scene, camera, controls, chunkSystem, false);
-    assert.strictEqual(sleigh.maxSpeed, 4.6, 'maxSpeed must be 4.6 on desktop');
+    assert.strictEqual(sleigh.maxSpeed, 5.52, 'maxSpeed must be 5.52 on desktop');
   });
 
-  await test('BVA-FLIGHT-04', 'Flight boundary: minimum stall speed does not drop below 1.4 m/s desktop', async () => {
+  await test('BVA-FLIGHT-04', 'Flight boundary: minimum stall speed does not drop below 1.68 m/s desktop', async () => {
     const { SleighController } = await import('../../src/gameplay/SleighController.js');
     const { scene, camera, controls, chunkSystem } = createMockSceneContext();
     const sleigh = new SleighController(scene, camera, controls, chunkSystem, false);
-    assert.strictEqual(sleigh.minSpeed, 1.4, 'minSpeed must be 1.4 on desktop');
+    assert.strictEqual(sleigh.minSpeed, 1.68, 'minSpeed must be 1.68 on desktop');
   });
 
-  await test('BVA-FLIGHT-05', 'Flight boundary: mobile speed bounds (min: 1.15, max: 3.4)', async () => {
+  await test('BVA-FLIGHT-05', 'Flight boundary: mobile speed bounds (min: 1.38, max: 4.08)', async () => {
     const { SleighController } = await import('../../src/gameplay/SleighController.js');
     const { scene, camera, controls, chunkSystem } = createMockSceneContext();
     const sleighMobile = new SleighController(scene, camera, controls, chunkSystem, true);
-    assert.strictEqual(sleighMobile.minSpeed, 1.15, 'minSpeed mobile must be 1.15');
-    assert.strictEqual(sleighMobile.maxSpeed, 3.4, 'maxSpeed mobile must be 3.4');
+    assert.strictEqual(sleighMobile.minSpeed, 1.38, 'minSpeed mobile must be 1.38');
+    assert.strictEqual(sleighMobile.maxSpeed, 4.08, 'maxSpeed mobile must be 4.08');
   });
 
   // =========================================================================

@@ -155,13 +155,13 @@ try {
       if (villageFacadeLight) villageFacadeLight.visible = false;
       if (ambientWarm) ambientWarm.visible = false;
       if (auroraGroundLight) auroraGroundLight.visible = false;
-      if (starlightHemiLight) starlightHemiLight.intensity = 0.74; // 0.46 + 0.14 + 0.14
+      if (starlightHemiLight) starlightHemiLight.intensity = 1.05; // merged mode
     } else {
       // Restore all 7 lights
       if (villageFacadeLight) villageFacadeLight.visible = true;
       if (ambientWarm) ambientWarm.visible = true;
       if (auroraGroundLight) auroraGroundLight.visible = true;
-      if (starlightHemiLight) starlightHemiLight.intensity = 0.46;
+      if (starlightHemiLight) starlightHemiLight.intensity = 0.68;
     }
     this._onToggle();
   }

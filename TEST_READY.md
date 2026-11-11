@@ -62,7 +62,7 @@ node tests/e2e/run_all_tests.mjs --strict
 - **Timer Boundaries**: Real `UIManager.updateHUD()` at 75.00s (start, non-urgent), 74.99s (non-urgent), 15.01s (non-urgent), 15.00s / 14.99s (.urgent active), 0.01s (active), 0.00s (timeout trigger, results screen transition), and negative delta clamping (`-3.0s -> '0'`).
 - **Delivery Boundaries**: Real `UIManager.updateHUD()` at 0/5 (0%), 4/5 (80%), 5/5 (100% + results transition), 6th delivery clamped to 100%, and beacon collision radius via `THREE.Vector3.distanceTo()`.
 - **Guiding Wind Boundaries**: Real `TargetGuidanceFlow` at 3.49s (no gust), 3.50s (gust summoned), 2.50m proximity (dissolves), and 20.0m proximity (remains active).
-- **Flight & Speed Boundaries**: Ground collision limit, ceiling clamp with damping buffer (3.2m above terrain), dive speed cap (4.6 desktop / 3.4 mobile), and climb stall floor (1.4 desktop / 1.15 mobile).
+- **Flight & Speed Boundaries**: Ground collision limit, ceiling clamp with damping buffer (3.2m above terrain), dive speed cap (5.52 desktop / 4.08 mobile), and climb stall floor (1.68 desktop / 1.38 mobile).
 - **Viewport Resize Boundaries**: Rapid switching between 1280x720 and 390x844, square 800x800 FOV adaptation, compact 320x568 mobile, and 21:9 ultrawide 2560x1080.
 - **Joystick Boundaries**: Deadzone deflection (<0.08 produces 0), max radius clamping (200px clamped to unit circle), negative boundary sign preservation, and release reset.
 - **Bonus Stars Boundaries**: 0.35m collected vs 0.36m not collected, 6/6 cap, and genuine `DeliverySystem._collectStar` idempotent collection.

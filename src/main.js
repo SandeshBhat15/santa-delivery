@@ -103,7 +103,7 @@ const _initialDpr = Number.isFinite(_initialDprParam)
 
 renderer.setPixelRatio(_initialDpr);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.95;
+renderer.toneMappingExposure = 1.05;
 renderer.shadowMap.enabled = new URLSearchParams(window.location.search).get('shadows') !== '0';
 // High-fidelity PCFSoft shadow filtering for smooth feathered shadows across all devices
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -223,8 +223,8 @@ const skyGroup = new THREE.Group();
 skyGroup.name = 'ProceduralWinterSkyGroup';
 scene.add(skyGroup);
 
-// Consistent world-space moon direction (soft winter moon in the ENE sky)
-const WORLD_MOON_DIR = new THREE.Vector3(0.46, 0.36, -0.81).normalize();
+// Consistent world-space moon direction: elevated slightly above ridge line for cinematic vista framing
+const WORLD_MOON_DIR = new THREE.Vector3(0.52, 0.26, -0.81).normalize();
 
 const skyUniforms = {
   uTime: { value: 0 },
@@ -268,17 +268,18 @@ const WINTER_SKY_AND_AURORA_GLSL = `
   vec3 evaluateWinterNightSky(vec3 rd, vec3 moonDir) {
     float y = rd.y;
 
-    // Classic deep winter night palette with a delicate touch of cosmic purple:
-    // - Zenith: deep midnight navy with subtle royal violet undertone (#0a0a20)
-    // - Upper sky: deep midnight navy (#071226)
-    // - Mid sky: cold winter navy (#0a1834)
-    // - Horizon: atmospheric cold-blue haze (#0e1b2f)
-    // - Nadir: velvety deep abyss (#030712)
-    vec3 zenithPurple = vec3(0.0035, 0.0030, 0.0220); // Deep midnight with gentle purple tint
-    vec3 upperNavy    = vec3(0.0030, 0.0075, 0.0260); // Deep midnight navy
-    vec3 midColdBlue  = vec3(0.0055, 0.0145, 0.0420); // Crisp cold navy
-    vec3 horizonHaze  = vec3(0.0085, 0.0210, 0.0540); // Atmospheric horizon blue
-    vec3 nadirAbyss   = vec3(0.0020, 0.0040, 0.0140);
+    // Vibrant Christmas winter night palette:
+    // - Zenith: rich deep midnight royal navy with subtle violet depth
+    // - Upper sky: vibrant midnight sapphire
+    // - Mid sky: radiant arctic cobalt
+    // - Horizon: atmospheric crisp twilight blue
+    // - Nadir: velvety deep sapphire abyss
+    // Darker + more vibrant Christmas sky palette — deeper blacks at zenith, richer saturated blues
+    vec3 zenithPurple = vec3(0.0045, 0.0060, 0.0360); // Near-black violet-midnight zenith
+    vec3 upperNavy    = vec3(0.0075, 0.0170, 0.0680); // Deep saturated royal sapphire
+    vec3 midColdBlue  = vec3(0.0160, 0.0400, 0.1200); // Rich vivid arctic cobalt
+    vec3 horizonHaze  = vec3(0.0260, 0.0580, 0.1480); // Saturated twilight blue horizon
+    vec3 nadirAbyss   = vec3(0.0020, 0.0040, 0.0180); // Near-black ground sky
 
     float upperT = clamp(y, 0.0, 1.0);
     vec3 sky = mix(horizonHaze, midColdBlue, smoothstep(0.0, 0.28, upperT));
@@ -289,9 +290,9 @@ const WINTER_SKY_AND_AURORA_GLSL = `
     float lowerT = 1.0 - smoothstep(-0.45, 0.0, y);
     sky = mix(sky, nadirAbyss, lowerT);
 
-    // Subtle atmospheric horizon blend - gentle linear-space haze without bright edge banding
-    float horizonBelt = exp(-abs(y) * 4.2);
-    sky += vec3(0.0025, 0.0065, 0.0160) * horizonBelt * 0.55;
+    // Atmospheric horizon belt — slightly tightened so it stays vivid, not washed-out
+    float horizonBelt = exp(-abs(y) * 5.0);
+    sky += vec3(0.0080, 0.0160, 0.0360) * horizonBelt * 0.50;
 
     // Fast polynomial squaring replaces expensive transcendental pow/exp2 calls for mobile ALUs
     float mDot = max(0.0, dot(rd, moonDir));
@@ -306,13 +307,14 @@ const WINTER_SKY_AND_AURORA_GLSL = `
     float m64 = m32 * m32;
     float tightCorona = m64 * m32 * m16 * m2 * mDot; // mDot^115
 
-    sky += vec3(0.008, 0.018, 0.045) * wideScatter * 0.45;
-    sky += vec3(0.035, 0.070, 0.140) * innerGlow * 0.35;
-    sky += vec3(0.080, 0.130, 0.220) * tightCorona * 0.20;
+    // Radiant crystalline winter moonlight corona (crisp, not dull/yellow)
+    sky += vec3(0.015, 0.035, 0.075) * wideScatter * 0.70;
+    sky += vec3(0.060, 0.120, 0.220) * innerGlow * 0.60;
+    sky += vec3(0.180, 0.280, 0.450) * tightCorona * 0.45;
 
-    // Subtle high-altitude purple-blue lift: adds rich depth without looking washed out or overly bright
+    // Deeper violet zenith lift — richer, more cinematic colour saturation
     float upperVeil = smoothstep(0.18, 0.92, y);
-    sky += vec3(0.0035, 0.0018, 0.0140) * upperVeil;
+    sky += vec3(0.0028, 0.0010, 0.0160) * upperVeil;
 
     // Procedural Milky Way: a broad, curved galactic band with smooth cloud structure
     // and dark dust lanes. Built from continuous directional noise, not a texture or plane.
@@ -539,8 +541,8 @@ const WINTER_SKY_AND_AURORA_GLSL = `
   vec4 raymarch3DAurora(vec3 roWorld, vec3 rd, float time) {
     if (rd.y < -0.02) return vec4(0.0);
 
-    const float minAlt = 200.0;
-    const float maxAlt = 820.0;
+    const float minAlt = 110.0;
+    const float maxAlt = 580.0;
 
     // Scaled planetary curvature in world units so the aurora curves gently around the distant horizon
     // Numerically expanded to eliminate large number cancellation on mobile 24-bit floats
@@ -601,31 +603,32 @@ const WINTER_SKY_AND_AURORA_GLSL = `
     // Precompute curtain definitions outside the raymarch loop to eliminate per-step trigonometric calls
     vec2 dRay = rd.xz + vec2(0.07, -0.15) * rd.y;
 
+    // Curtains brought lower toward mountain ridge and horizon
     AuroraCurtainDef cDef1 = initAuroraCurtain(
       roWorld, rd, dRay,
       vec2(0.942751, 0.333487), -260.0,
-      215.0, 720.0, 145.0, 0.0048,
+      120.0, 520.0, 145.0, 0.0048,
       time, 1.0, 1.7, tEntry, tExit
     );
 
     AuroraCurtainDef cDef2 = initAuroraCurtain(
       roWorld, rd, dRay,
       vec2(0.975897, -0.218230), 140.0,
-      245.0, 780.0, 92.0, 0.0062,
+      140.0, 560.0, 92.0, 0.0062,
       time, -0.82, 7.4, tEntry, tExit
     );
 
     AuroraCurtainDef cDef3 = initAuroraCurtain(
       roWorld, rd, dRay,
       vec2(0.836464, 0.548037), 440.0,
-      230.0, 700.0, 130.0, 0.0041,
+      130.0, 510.0, 130.0, 0.0041,
       time, 0.68, 15.2, tEntry, tExit
     );
 
     AuroraCurtainDef cDef4 = initAuroraCurtain(
       roWorld, rd, dRay,
       vec2(0.408494, 0.912764), -420.0,
-      260.0, 760.0, 98.0, 0.0054,
+      150.0, 550.0, 98.0, 0.0054,
       time, -0.74, 23.9, tEntry, tExit
     );
 
@@ -655,10 +658,10 @@ const WINTER_SKY_AND_AURORA_GLSL = `
 
     // Classic winter aurora palette:
     // Soft emerald-green lower edge -> luminous cyan-turquoise core -> muted teal-blue upper rays
-    vec3 lowerEmerald  = vec3(0.10, 0.92, 0.55);
-    vec3 coreTurquoise = vec3(0.10, 0.84, 0.78);
-    vec3 upperCyanBlue = vec3(0.08, 0.48, 0.68);
-    vec3 faintTealTop  = vec3(0.06, 0.27, 0.48);
+    vec3 lowerEmerald  = vec3(0.05, 0.98, 0.58); // Vivid festive Christmas emerald
+    vec3 coreTurquoise = vec3(0.06, 0.92, 0.82); // Electric crystalline turquoise
+    vec3 upperCyanBlue = vec3(0.08, 0.55, 0.78);
+    vec3 faintTealTop  = vec3(0.06, 0.32, 0.56);
 
     // Precompute step advance across lateral distance v for each active curtain
     // Calibrated to the exact maximum fold derivative of each curtain's harmonic components
@@ -812,8 +815,8 @@ const layers = [
     peakScale: 125.0,
     kFreq: 1, // integer
     phase: 2.5,
-    baseColor: [0.0085, 0.0210, 0.0540],
-    crestColor: [0.0055, 0.0145, 0.0420]
+    baseColor: [0.0350, 0.0720, 0.1650],
+    crestColor: [0.0220, 0.0480, 0.1350]
   },
   // 2. Front Alpine Ridge (r = 445m): Dramatic knife-edge fjord crests (25m - 110m)
   {
@@ -822,8 +825,8 @@ const layers = [
     peakScale: 90.0,
     kFreq: 2, // integer
     phase: 0.9,
-    baseColor: [0.0085, 0.0210, 0.0540],
-    crestColor: [0.0035, 0.0085, 0.0260]
+    baseColor: [0.0350, 0.0720, 0.1650],
+    crestColor: [0.0120, 0.0240, 0.0820]
   }
 ];
 
@@ -891,7 +894,7 @@ layers.forEach((layer) => {
 // Floor disc sealing the bottom attached to innermost ring skirt
 const centerFloorIdx = vertexOffset;
 mtnPos.push(0, bottomY, 0);
-mtnColors.push(0.0085, 0.0210, 0.0540);
+mtnColors.push(0.0350, 0.0720, 0.1650);
 vertexOffset++;
 
 const innerStart = (layers.length - 1) * (MOUNTAIN_SEGS + 1) * 2;
@@ -1051,6 +1054,12 @@ const moonSphereMat = new THREE.ShaderMaterial({
       return fract((p.x + p.y) * p.z);
     }
 
+    float moonHash2(vec2 p) {
+      p = fract(p * vec2(0.1031, 0.1030));
+      p += dot(p, p.yx + 33.33);
+      return fract((p.x + p.y) * p.x);
+    }
+
     float moonNoise(vec3 p) {
       vec3 i = floor(p);
       vec3 f = fract(p);
@@ -1066,29 +1075,53 @@ const moonSphereMat = new THREE.ShaderMaterial({
 
     void main() {
       vec3 p = vLocalDir * 2.4;
+
+      // Three-octave surface detail for richer lunar texture
       float n1 = moonNoise(p + vec3(1.2, 0.7, 0.4));
       float n2 = moonNoise(p * 1.65 - vec3(0.6, 1.4, 0.9));
-      float maria = smoothstep(0.32, 0.72, n1 * 0.78 + n2 * 0.22);
+      float n3 = moonNoise(p * 2.80 + vec3(0.3, 0.9, 1.5)); // fine-grain craterlets
+      float maria = smoothstep(0.30, 0.74, n1 * 0.60 + n2 * 0.28 + n3 * 0.12);
 
-      // Soft stylized lunar basins
-      float basin1 = 1.0 - smoothstep(0.15, 0.38, length(vLocalDir.xy - vec2(-0.26, 0.18)));
-      float basin2 = 1.0 - smoothstep(0.12, 0.30, length(vLocalDir.xy - vec2(0.30, -0.14)));
-      float detail = clamp(maria * 0.65 + (basin1 + basin2) * 0.35, 0.0, 1.0);
+      // Five stylized lunar basins — varied radii & softness for realism
+      float basin1 = 1.0 - smoothstep(0.14, 0.36, length(vLocalDir.xy - vec2(-0.26, 0.18)));
+      float basin2 = 1.0 - smoothstep(0.10, 0.28, length(vLocalDir.xy - vec2( 0.30,-0.14)));
+      float basin3 = 1.0 - smoothstep(0.08, 0.20, length(vLocalDir.xy - vec2(-0.10,-0.32)));
+      float basin4 = 1.0 - smoothstep(0.05, 0.14, length(vLocalDir.xy - vec2( 0.18, 0.28)));
+      float basin5 = 1.0 - smoothstep(0.06, 0.16, length(vLocalDir.xy - vec2(-0.38,-0.10)));
+      float detail = clamp(maria * 0.55 + (basin1 * 0.16 + basin2 * 0.12 + basin3 * 0.08 + basin4 * 0.05 + basin5 * 0.04), 0.0, 1.0);
 
-      // Soft warm-white highlands & cool slate-blue maria
-      vec3 highlandWhite = vec3(0.72, 0.79, 0.91);
-      vec3 mariaSlate    = vec3(0.43, 0.54, 0.71);
-      vec3 surfaceCol    = mix(highlandWhite, mariaSlate, detail * 0.56);
-      // Gentle terminator-style shading gives the disc depth without a bright artificial rim.
-      float faceLight = 0.84 + 0.16 * clamp(vLocalDir.z * 0.5 + 0.5, 0.0, 1.0);
+      // Pearlescent winter highlands + deep arctic-blue maria
+      vec3 highlandWhite = vec3(0.97, 0.99, 1.00); // bright luminous highland
+      vec3 mariaSlate    = vec3(0.60, 0.72, 0.92); // deeper arctic-indigo maria
+      vec3 surfaceCol    = mix(highlandWhite, mariaSlate, detail * 0.48);
+
+      // Subsurface luminosity in bright highlands (like moonlight glow through ice)
+      surfaceCol += vec3(0.03, 0.05, 0.10) * (1.0 - detail) * 0.45;
+
+      // Terminator shading: subtle left-to-right gradient for 3-D depth
+      float terminator = clamp(vLocalDir.x * 0.45 + 0.60, 0.0, 1.0);
+      float faceLight = 0.80 + 0.32 * terminator;
       surfaceCol *= faceLight;
 
-      // Soft spherical limb darkening & atmospheric edge blend
+      // Physically-motivated limb darkening  (Minnaert-style power curve)
       float mu = clamp(abs(vViewNormal.z), 0.0, 1.0);
-      // Subtle limb shading only; avoid the bright double-ring caused by a tinted transparent edge.
-      float limbShade = smoothstep(0.0, 0.18, mu);
-      surfaceCol *= mix(0.82, 1.0, limbShade);
-      gl_FragColor = vec4(surfaceCol, 1.0);
+      float limbDark = mix(0.60, 1.0, pow(mu, 0.55));
+      surfaceCol *= limbDark;
+
+      // Soft atmospheric edge halo — faint blue-white scatter at the very limb
+      float limb = 1.0 - mu;
+      float limbGlow = smoothstep(0.60, 1.0, limb);
+      surfaceCol += vec3(0.06, 0.10, 0.20) * limbGlow * 0.55;
+
+      // Crater rim micro-highlights — tiny bright rings at basin edges
+      float rim1 = smoothstep(0.13, 0.145, length(vLocalDir.xy - vec2(-0.26, 0.18)));
+      rim1      -= smoothstep(0.145, 0.165, length(vLocalDir.xy - vec2(-0.26, 0.18)));
+      float rim2 = smoothstep(0.095, 0.11, length(vLocalDir.xy - vec2( 0.30,-0.14)));
+      rim2      -= smoothstep(0.11,  0.13,  length(vLocalDir.xy - vec2( 0.30,-0.14)));
+      float rimHighlight = clamp(rim1 + rim2, 0.0, 1.0) * 0.18;
+      surfaceCol += vec3(1.0, 1.0, 1.0) * rimHighlight;
+
+      gl_FragColor = vec4(clamp(surfaceCol, 0.0, 1.0), 1.0);
     }
   `,
   transparent: true,
@@ -1096,10 +1129,51 @@ const moonSphereMat = new THREE.ShaderMaterial({
   fog: false
 });
 
-const moonMesh = new THREE.Mesh(new THREE.SphereGeometry(56.0, 40, 40), moonSphereMat);
+// Cinematic moon geometry (72m radius for heroic skyline presence)
+const moonMesh = new THREE.Mesh(new THREE.SphereGeometry(72.0, 40, 40), moonSphereMat);
 moonMesh.name = 'Procedural3DMoonSphere';
 moonMesh.renderOrder = -15;
 moonGroup.add(moonMesh);
+
+// --- Cheap additive glow billboard behind the moon disc ---
+// One quad, MeshBasicMaterial, additive blending — zero shadow/light cost
+const moonGlowMat = new THREE.ShaderMaterial({
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: `
+    varying vec2 vUv;
+    void main() {
+      vec2 c = vUv - 0.5;
+      float r = length(c) * 2.0; // 0 at centre → 1 at edge of quad
+      // Double-layered glow: tight inner halo + wide outer diffusion
+      float inner = exp(-r * r * 4.5);
+      float outer = exp(-r * r * 1.4) * 0.35;
+      float glow  = clamp(inner + outer, 0.0, 1.0);
+      // Cool silver-blue moonlight tint
+      vec3 col = vec3(0.55, 0.78, 1.00) * glow;
+      gl_FragColor = vec4(col, glow * 0.72);
+    }
+  `,
+  blending: THREE.AdditiveBlending,
+  transparent: true,
+  depthWrite: false,
+  depthTest: false,
+  fog: false,
+  side: THREE.DoubleSide
+});
+// Place glow plane slightly behind the sphere (negative Z in moonGroup local space)
+const moonGlowMesh = new THREE.Mesh(new THREE.PlaneGeometry(220, 220), moonGlowMat);
+moonGlowMesh.name = 'MoonGlowBillboard';
+moonGlowMesh.position.set(0, 0, -6); // just behind the moon sphere
+moonGlowMesh.renderOrder = -16;      // renders before the sphere
+moonGlowMesh.castShadow    = false;
+moonGlowMesh.receiveShadow = false;
+moonGroup.add(moonGlowMesh);
 
 // --- Native Three.js Distance Fog & Procedural Winter Mist System ---
 // Global fog uniform injection for time-based procedural ground mist
@@ -1112,8 +1186,8 @@ if (THREE.UniformsLib.fog) {
 // Scaled for miniature flight perspective:
 // - Near: 3.5m -> Immediate foreground (Santa, sleigh, immediate trees & chimneys) stays 100% crisp and readable
 // - Far: 22.0m -> Smooth atmospheric perspective where distant mountains and pine forests seamlessly dissolve into horizon
-// - Color: 0x0e1b2f -> Exactly matches the sky shader's horizon haze color (#0e1b2f)
-const fogColorHex = 0x0e1b2f;
+// - Color: 0x0f1d3c -> Matches the deeper, more vibrant twilight horizon
+const fogColorHex = 0x0f1d3c;
 scene.fog = new THREE.Fog(fogColorHex, 3.5, 22.0);
 
 // 2. Pass true 3D world coordinates from vertex shader to fragment shader (supports InstancedMesh)
@@ -1229,13 +1303,13 @@ THREE.ShaderChunk.fog_fragment = `
   #endif
 `;
 
-// 1. Sky & Shadow Fill: Lifted blue-violet sky light with deep nocturnal ground bounce for readable terrain facets
-const starlightHemiLight = new THREE.HemisphereLight(0x22365a, 0x08101c, 0.46);
+// 1. Sky & Shadow Fill: Crisp vibrant winter sapphire sky with deep cobalt ground bounce
+const starlightHemiLight = new THREE.HemisphereLight(0x28549e, 0x102240, 0.68);
 scene.add(starlightHemiLight);
 
-// 2. Moonlight Key: Subtle cool moonlit silver-blue beam casting crisp night shadows
-const moonLight = new THREE.DirectionalLight(0x7ea4e8, 0.95);
-moonLight.position.set(14, 52, -12);
+// 2. Moonlight Key: Crisp radiant diamond-silver winter moonlight (not dull/yellow)
+const moonLight = new THREE.DirectionalLight(0xdcf0ff, 1.15);
+moonLight.position.set(20, 36, -30);
 moonLight.castShadow = true;
 // Shadow map resolution: 1024 on mobile, 4096 on desktop Ultra/High (razor-sharp)
 const shadowMapDim = hardwareProfiler.profile.shadowMapSize;
@@ -1261,23 +1335,23 @@ scene.add(moonLight.target);
 // the GROUND under Santa (not to the airborne sleigh), which lets us keep the shadow
 // frustum tight and therefore keep the texel density high enough for tree/house
 // shadows to actually read on the snow instead of being averaged away.
-const MOON_OFFSET = new THREE.Vector3(14, 52, -12); // constant light offset => constant light direction
+const MOON_OFFSET = new THREE.Vector3(20, 36, -30); // elevated low-angle light offset => matches raised moon
 const shadowFocus = new THREE.Vector3(0, 0, 0); // ground-projected anchor of the shadow frustum
-const MOON_DIR = new THREE.Vector3(-24, -42, 18).normalize(); // unit vector pointing from the moon into the scene
+const MOON_DIR = new THREE.Vector3(-20, -36, 30).normalize(); // unit vector pointing from the moon into the scene
 
-// 3. Front Key Fill: Soft warm frontal illumination that brings out the vibrant red timber walls
-const villageFacadeLight = new THREE.DirectionalLight(0xffeedd, 0.35);
+// 3. Front Key Fill: Festive golden candlelight illumination for cottage timber
+const villageFacadeLight = new THREE.DirectionalLight(0xfff0d0, 0.45);
 villageFacadeLight.position.set(-18, 14, 12);
 villageFacadeLight.target.position.set(-2.8, 0.5, -4.0);
 scene.add(villageFacadeLight);
 scene.add(villageFacadeLight.target);
 
-// 4. Subtle twilight ambient fill to ensure crevices and recesses preserve clarity without flattening shadows
-const ambientWarm = new THREE.AmbientLight(0x0e1828, 0.14);
+// 4. Twilight ambient fill to ensure crevices and recesses preserve clarity without flattening shadows
+const ambientWarm = new THREE.AmbientLight(0x182852, 0.26);
 scene.add(ambientWarm);
 
-// 5. Aurora Sky-to-Ground Key Fill: Soft, breathing emerald-cyan ambient glow coming from northern sky
-const auroraGroundLight = new THREE.DirectionalLight(0x2ec99a, 0.16);
+// 5. Aurora Sky-to-Ground Key Fill: Vibrant festive emerald-cyan glow
+const auroraGroundLight = new THREE.DirectionalLight(0x1bf7aa, 0.24);
 auroraGroundLight.position.set(-15, 45, 35); // Above and to the north
 auroraGroundLight.castShadow = false; // Soft environmental bounce
 scene.add(auroraGroundLight);
@@ -2136,16 +2210,16 @@ window.lightingSystem = lightingSystem;
 // --- Custom Procedural Snow Shader Uniforms for Terrain Material ---
 const terrainSnowUniforms = {
   uTime: { value: 0 },
-  uSnowColor: { value: new THREE.Color(0xf0f5ff) },       // Luminous powder crest
-  uSnowMidColor: { value: new THREE.Color(0x8faee4) },    // Translucent lavender-blue midtone
-  uSnowShadowColor: { value: new THREE.Color(0x364478) }, // Rich blue-violet crevice shadow (lifted from murky dark)
-  uSparkleIntensity: { value: 0.90 },
+  uSnowColor: { value: new THREE.Color(0xffffff) },       // Pure sparkling diamond-powder snow
+  uSnowMidColor: { value: new THREE.Color(0x90c2ff) },    // Vibrant crisp arctic blue midtone
+  uSnowShadowColor: { value: new THREE.Color(0x324884) }, // Deep Christmas sapphire shadow
+  uSparkleIntensity: { value: 1.25 },                     // Glistening festive diamond sparkles!
   uVillageLightMap: lightingSystem.uniforms.uVillageLightMap,
   uLightBoundsMin: lightingSystem.uniforms.uLightBoundsMin,
   uLightBoundsSize: lightingSystem.uniforms.uLightBoundsSize,
-  uGroundWarmthIntensity: lightingSystem.uniforms.uGroundWarmthIntensity,
-  uAuroraGroundIntensity: { value: 0.32 },
-  uAuroraColor: { value: new THREE.Color(0x28f0a8) },
+  uGroundWarmthIntensity: { value: 1.65 },
+  uAuroraGroundIntensity: { value: 0.36 },
+  uAuroraColor: { value: new THREE.Color(0x15f7a8) },     // Vibrant festive emerald-cyan
   uAuroraDir: { value: new THREE.Vector3(-0.35, 0.78, 0.52).normalize() }
 };
 
@@ -2893,20 +2967,20 @@ const modelUrl = '/assets/models/terrain.glb';
                 // 2. View-dependent soft powder rim & forward translucency
                 vec3 viewDir = normalize(vViewPosition);
                 float fresnel = pow(1.0 - max(0.0, dot(sWNorm, viewDir)), 3.0);
-                vec3 snowFinal = snowCrest + vec3(0.10, 0.15, 0.25) * fresnel * 0.45;
+                vec3 snowFinal = snowCrest + vec3(0.12, 0.20, 0.35) * fresnel * 0.50;
 
                 // Subsurface forward scattering in view of moonlight
-                vec3 moonDir = normalize(vec3(24.0, 42.0, -18.0));
+                vec3 moonDir = normalize(vec3(20.0, 36.0, -30.0));
                 float sssScatter = pow(clamp(dot(viewDir, -moonDir), 0.0, 1.0), 3.0) * (1.0 - sSlope * 0.45);
-                snowFinal += vec3(0.12, 0.16, 0.28) * sssScatter * 0.40;
+                snowFinal += vec3(0.15, 0.26, 0.45) * sssScatter * 0.50;
 
                 // 3. Crystalline moonlight sheen & delicate non-grainy glitter
                 vec3 halfVec = normalize(viewDir + moonDir);
                 float specAngle = clamp(dot(sWNorm, halfVec), 0.0, 1.0);
-                float moonSheen = pow(specAngle, 18.0) * (0.35 + 0.65 * sMacroDrift);
+                float moonSheen = pow(specAngle, 16.0) * (0.35 + 0.65 * sMacroDrift);
                 float microSparkle = snowNoise(sWPos.xz * 3.8 + sin(uTime * 0.15) * 0.04);
-                float glitter = pow(clamp(microSparkle * specAngle, 0.0, 1.0), 4.0) * 0.45;
-                vec3 sparkleColor = vec3(0.95, 0.98, 1.0) * clamp(moonSheen * 0.24 + glitter * 0.18, 0.0, 1.0) * uSparkleIntensity;
+                float glitter = pow(clamp(microSparkle * specAngle, 0.0, 1.0), 4.0) * 0.55;
+                vec3 sparkleColor = vec3(0.92, 0.98, 1.0) * clamp(moonSheen * 0.32 + glitter * 0.25, 0.0, 1.0) * uSparkleIntensity;
 
                 // 4. Smooth continuous snow tone:
                 // ELIMINATE BLOCKY LOOK: Instead of multiplying hard texture faceting (texLum * 0.45 + 0.78),
@@ -3269,11 +3343,11 @@ function animate(currentTime) {
   const weatherDim = 1.0 - weatherEngine.weatherIntensity * 0.70;
   if (auroraGroundLight) {
     const aBreath = Math.sin(elapsedTime * 0.28) * 0.05 + Math.cos(elapsedTime * 0.17) * 0.03;
-    auroraGroundLight.intensity = (0.22 + aBreath) * weatherDim;
+    auroraGroundLight.intensity = (0.24 + aBreath) * weatherDim;
   }
   if (starlightHemiLight) {
     const hemiBreath = Math.sin(elapsedTime * 0.22) * 0.04;
-    starlightHemiLight.intensity = (0.56 + hemiBreath) * (0.65 + 0.35 * weatherDim);
+    starlightHemiLight.intensity = (0.72 + hemiBreath) * (0.65 + 0.35 * weatherDim);
   }
   if (moonLight) {
     if (sleighController) {
@@ -3306,7 +3380,7 @@ function animate(currentTime) {
       moonLight.target.updateMatrixWorld();
     }
     // Softly diffuse moonlight during blizzards
-    moonLight.intensity = 0.95 * (0.60 + 0.40 * weatherDim);
+    moonLight.intensity = 1.15 * (0.60 + 0.40 * weatherDim);
   }
 
   // Physical snowfall update with dynamic wind gusts and blizzard turbulence

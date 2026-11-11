@@ -27,14 +27,14 @@ export class SleighController {
     this.rotationY = 0.0; // Heading north (-Z) toward village center
     this.pitch = 0.0;
     this.bank = 0.0;
-    this.speed = 1.8;
+    this.speed = this.isMobile ? 2.22 : 3.0;
 
     // Movement & Non-Linear Aerodynamics Parameters (Smooth, natural, magical flight)
-    // Mobile player movement is tuned gentler and more controllable
-    this.baseCruiseSpeed = this.isMobile ? 1.85 : 2.5;
-    this.minSpeed        = this.isMobile ? 1.15 : 1.4;
-    this.maxSpeed        = this.isMobile ? 3.40 : 4.6;
-    this.boostSpeed      = this.isMobile ? 3.20 : 4.4;
+    // Mobile player movement is tuned gentler and more controllable (+20% speed calibrated)
+    this.baseCruiseSpeed = this.isMobile ? 2.22 : 3.0;
+    this.minSpeed        = this.isMobile ? 1.38 : 1.68;
+    this.maxSpeed        = this.isMobile ? 4.08 : 5.52;
+    this.boostSpeed      = this.isMobile ? 3.84 : 5.28;
     this.boostTimer      = 0.0;
     this.accelRate       = this.isMobile ? 3.2 : 4.2;
     this.decelRate       = this.isMobile ? 2.0 : 2.2;
@@ -42,7 +42,7 @@ export class SleighController {
     this.turnVelocity    = 0.0;
     this.smoothTurnInput = 0.0;
     this.bankMax         = 0.42;
-    this.climbSpeed      = this.isMobile ? 2.5 : 3.2;
+    this.climbSpeed      = this.isMobile ? 3.0 : 3.84;
 
     // Controls input state (pure flight: no boost)
     this.inputs = {
