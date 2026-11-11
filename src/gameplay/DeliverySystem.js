@@ -544,7 +544,6 @@ export class DeliverySystem {
       <div id="joystick-zone">
         <div id="joystick-base">
           <div id="joystick-thumb"></div>
-          <div class="control-label">FLIGHT</div>
         </div>
       </div>
       <div id="drop-zone">
@@ -642,7 +641,6 @@ export class DeliverySystem {
       <div id="joystick-zone">
         <div id="joystick-base">
           <div id="joystick-thumb"></div>
-          <div class="control-label">FLIGHT</div>
         </div>
       </div>
       <div id="drop-zone">
@@ -673,7 +671,15 @@ export class DeliverySystem {
     let activePointerId = null;
     let originX = 0;
     let originY = 0;
-    const maxRadius = 46; // Max pixel deflection from dynamic touch center
+
+    // Full deflection = the thumb just reaching the ring edge. Measured live so
+    // portrait, landscape and the compact media query all saturate identically.
+    let maxRadius = 46;
+    const refreshMaxRadius = () => {
+      const baseR = base.offsetWidth / 2;
+      const thumbR = thumb.offsetWidth / 2;
+      maxRadius = baseR > 0 ? Math.max(24, baseR - thumbR) : 46;
+    };
 
     // Expose active joystick pointer id so tap-to-drop ignores flight touches
     this._joystickPointerId = null;
@@ -739,6 +745,7 @@ export class DeliverySystem {
 
       originX = e.clientX;
       originY = e.clientY;
+      refreshMaxRadius();
       setBasePosition(originX, originY);
       base.classList.add('active');
       updateStick(e.clientX, e.clientY);
@@ -768,6 +775,27 @@ export class DeliverySystem {
 
     zone.addEventListener('pointerup', handlePointerEnd);
     zone.addEventListener('pointercancel', handlePointerEnd);
+
+    // The OS can steal the touch (incoming call, notification shade, app switch) without
+    // ever delivering pointerup, which would leave the stick latched and the sleigh turning.
+    const releaseStick = () => {
+      const id = activePointerId;
+      activePointerId = null; // cleared first so lostpointercapture cannot re-enter
+      this._joystickPointerId = null;
+      if (id !== null) {
+        try {
+          zone.releasePointerCapture(id);
+        } catch (_) {}
+      }
+      resetStick();
+    };
+    zone.addEventListener('lostpointercapture', (e) => {
+      if (activePointerId === e.pointerId) releaseStick();
+    });
+    window.addEventListener('blur', releaseStick);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) releaseStick();
+    });
   }
 
   _setupTapToDrop() {

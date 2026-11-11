@@ -540,21 +540,6 @@ canvas {
   will-change: transform;
 }
 
-.control-label {
-  position: absolute;
-  top: -20px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 10px;
-  font-weight: 800;
-  color: rgba(255, 255, 255, 0.85);
-  letter-spacing: 1px;
-  text-align: center;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
-  pointer-events: none;
-  white-space: nowrap;
-}
-
 /* Unobtrusive delivery readiness badge at bottom-center */
 #drop-zone {
   position: absolute;
@@ -823,9 +808,6 @@ canvas {
 /* Desktop (mouse with fine precision): hide touch joystick and show keyboard hint */
 @media (min-width: 900px) and (pointer: fine) and (not (pointer: coarse)) {
   body:not(.is-mobile) #joystick-zone {
-    display: none;
-  }
-  body:not(.is-mobile) .control-label {
     display: none;
   }
   .drop-key {

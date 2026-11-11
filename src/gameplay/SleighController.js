@@ -38,7 +38,9 @@ export class SleighController {
     this.boostTimer      = 0.0;
     this.accelRate       = this.isMobile ? 3.2 : 4.2;
     this.decelRate       = this.isMobile ? 2.0 : 2.2;
-    this.turnSpeed       = this.isMobile ? 1.45 : 1.75;
+    // Snappy arcade yaw: capped max rate, but reached in ~0.10s (see turnAccel below)
+    this.turnSpeed       = this.isMobile ? 1.25 : 1.55;
+    this.turnAccel       = this.isMobile ? 11.0 : 12.0; // rad/s^2 yaw ramp (symmetric in and out)
     this.turnVelocity    = 0.0;
     this.smoothTurnInput = 0.0;
     this.bankMax         = 0.42;
@@ -196,6 +198,23 @@ export class SleighController {
         this.inputs.drop = false;
 
       }
+    });
+
+    // Never leave a control latched: alt-tab or an app switch can swallow the keyup,
+    // which would otherwise leave the sleigh turning on its own.
+    const clearAllInputs = () => {
+      this.inputs.left = false;
+      this.inputs.right = false;
+      this.inputs.up = false;
+      this.inputs.down = false;
+      this.inputs.drop = false;
+      this.joystick.x = 0.0;
+      this.joystick.y = 0.0;
+      this.verticalInput = 0.0;
+    };
+    window.addEventListener('blur', clearAllInputs);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) clearAllInputs();
     });
   }
 
@@ -886,6 +905,15 @@ export class SleighController {
   update(delta, elapsedTime) {
     if (delta <= 0) return;
 
+    // Frozen while paused (How-to-Play / results). Input listeners stay live, so without
+    // this the sleigh could bank and settle on a random heading before the run starts,
+    // or keep carving underneath the results overlay.
+    const frozen = this.isPaused === true;
+    if (frozen) {
+      this.turnVelocity = 0.0;
+      this.verticalSpeed = 0.0;
+    }
+
     // 1. Analog Joystick & Keyboard Steering & Altitude
     let joyX = this.joystick.x; // Horizontal steering [-1..1]
     let joyY = this.joystick.y; // Vertical altitude [-1..1] (negative = up/climb, positive = down/dive)
@@ -905,24 +933,36 @@ export class SleighController {
 
     if (Math.abs(joyX) > deadZone) {
       const normalizedTurn = (Math.abs(joyX) - deadZone) / (1.0 - deadZone);
-      // Ergonomic sensitivity curve: smooth precision near center, agile full-turn at edge
-      const curvedTurn = Math.pow(Math.min(Math.max(normalizedTurn, 0), 1.0), 1.35);
+      const n = Math.min(Math.max(normalizedTurn, 0), 1.0);
+      // Compressive response curve: real authority through the whole stick range
+      // (a convex curve left the middle dead, so players slammed to full lock),
+      // with a soft start so a trembling thumb never twitches the sleigh.
+      const softStart = Math.min(1.0, n / 0.10);
+      const curvedTurn = Math.pow(n, 0.8) * softStart;
       const sign = joyX < 0 ? 1.0 : -1.0; // Left is positive rotationY, right is negative
       turnInput = sign * curvedTurn;
     }
+    if (frozen) turnInput = 0.0;
 
-    // Smooth responsive turning with natural rotational momentum
-    const targetTurnVel = turnInput * this.turnSpeed;
-    const turnResponsiveness = (turnInput !== 0.0) ? (this.isMobile ? 6.8 : 5.6) : 4.5;
-    this.turnVelocity += (targetTurnVel - this.turnVelocity) * (1.0 - Math.exp(-turnResponsiveness * delta));
+    // Speed-aware steering authority: tighter arcs when slow, wider arcs when diving fast
+    const speedTurnScale = THREE.MathUtils.clamp(
+      Math.sqrt(this.baseCruiseSpeed / Math.max(this.speed, 0.1)), 0.85, 1.1);
+
+    // Accel-limited yaw: identical ramp in and out, so the sleigh neither lags behind
+    // the stick nor keeps carving after release (full lock in ~0.10s).
+    const targetTurnVel = turnInput * this.turnSpeed * speedTurnScale;
+    const maxYawStep = this.turnAccel * delta;
+    this.turnVelocity += THREE.MathUtils.clamp(targetTurnVel - this.turnVelocity, -maxYawStep, maxYawStep);
+    if (turnInput === 0.0 && Math.abs(this.turnVelocity) < 0.02) this.turnVelocity = 0.0;
     this.rotationY += this.turnVelocity * delta;
 
-    this.smoothTurnInput += (turnInput - this.smoothTurnInput) * (1.0 - Math.exp(-6.0 * delta));
+    this.smoothTurnInput += (turnInput - this.smoothTurnInput) * (1.0 - Math.exp(-9.0 * delta));
     this.turnInput = this.smoothTurnInput;
 
     // Subtle sleigh banking roll: tilts naturally into turn with smooth spring recovery
-    const targetBank = (this.turnVelocity / this.turnSpeed) * this.bankMax;
-    this.bank += (targetBank - this.bank) * (1.0 - Math.exp(-5.0 * delta));
+    const steerBankRatio = THREE.MathUtils.clamp(this.turnVelocity / this.turnSpeed, -1.0, 1.0);
+    const targetBank = steerBankRatio * this.bankMax;
+    this.bank += (targetBank - this.bank) * (1.0 - Math.exp(-8.0 * delta));
 
     // 2. Pure Manual Vertical Flight (No Auto Altitude Correction over Terrain)
     let localGroundH = 0.5;
@@ -950,10 +990,15 @@ export class SleighController {
     // Joystick Y controls altitude: pushing forward/up (-joyY) climbs, pulling back (+joyY) descends
     if (Math.abs(joyY) > deadZone) {
       const normY = (-joyY - Math.sign(-joyY) * deadZone) / (1.0 - deadZone);
-      const curvedY = Math.sign(normY) * Math.pow(Math.abs(normY), 1.25);
+      const nY = Math.min(Math.max(Math.abs(normY), 0), 1.0);
+      // Same compressive shape as the steering axis, so altitude has authority through
+      // the middle of the stick instead of feeling mushy next to the new yaw response.
+      const softStartY = Math.min(1.0, nY / 0.10);
+      const curvedY = Math.sign(normY) * Math.pow(nY, 0.9) * softStartY;
       vertCommand += curvedY;
     }
     vertCommand = Math.max(-1.0, Math.min(1.0, vertCommand));
+    if (frozen) vertCommand = 0.0;
     // Pure unconstrained manual controls (only soft-damp when hitting maximum sky ceiling)
     let descendFactor = 1.0;
     let climbFactor = 1.0;
@@ -1277,14 +1322,14 @@ export class SleighController {
       this._camLookInitialized = true;
     }
 
-    // Snappy exponential easing behind the sleigh (8.5 / s on mobile, 5.5 / s on desktop) for immediate steering response
-    const camFollowRate = this.isMobile ? 6.5 : 5.0;
+    // Snappy exponential easing behind the sleigh for immediate steering response
+    const camFollowRate = this.isMobile ? 10.0 : 7.5;
     const posEase = 1.0 - Math.exp(-camFollowRate * delta);
     this.camera.position.lerp(this.camTargetPos, posEase);
 
     // Dynamic camera banking roll (camera subtly leans into banked turns with responsive tracking)
     const targetCamRoll = -this.bank * 0.35;
-    const rollRate = this.isMobile ? 7.0 : 6.0;
+    const rollRate = this.isMobile ? 9.0 : 7.5;
     this.cameraRoll += (targetCamRoll - this.cameraRoll) * (1.0 - Math.exp(-rollRate * delta));
     this.camera.up.set(Math.sin(this.cameraRoll), Math.cos(this.cameraRoll), 0);
 
@@ -1297,8 +1342,8 @@ export class SleighController {
       this.camera.updateProjectionMatrix();
     }
 
-    // Look-at point eases smoothly with high responsiveness (10.5 / s on mobile, 7.5 / s on desktop) to stay firmly locked on target
-    const lookRate = this.isMobile ? 9.0 : 7.5;
+    // Look-at point eases smoothly with high responsiveness to stay firmly locked on target
+    const lookRate = this.isMobile ? 12.0 : 9.5;
     const lookEase = 1.0 - Math.exp(-lookRate * delta);
     this._currentCamLookPos.lerp(this.camLookPos, lookEase);
     this.camera.lookAt(this._currentCamLookPos);
