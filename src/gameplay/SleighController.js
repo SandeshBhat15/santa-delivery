@@ -4,6 +4,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { MagicalFlightTrail } from './MagicalFlightTrail.js';
 import { createTrail } from './createTrail.js';
+import { assetUrl } from '../utils/assetUrl.js';
 
 // World-space anchor for the golden light ribbon: just behind the sleigh's
 // rear rail and level with it (same convention as the dust plume).
@@ -220,18 +221,18 @@ export class SleighController {
 
   _buildSleighAndReindeer() {
     const dracoLoader = new DRACOLoader();
-    dracoLoader.setDecoderPath('/libs/draco/gltf/');
+    dracoLoader.setDecoderPath(assetUrl('libs/draco/gltf/'));
     const loader = new GLTFLoader();
     loader.setDRACOLoader(dracoLoader);
 
     loader.load(
-      '/assets/models/santa&deer.glb?v=2',
+      assetUrl('assets/models/santa&deer.glb?v=2'),
       (gltf) => {
         this._setupSantaAndDeerModel(gltf);
       },
       undefined,
       (err) => {
-        console.warn('Could not load /assets/models/santa&deer.glb, falling back to procedural sleigh:', err);
+        console.warn('Could not load santa&deer.glb, falling back to procedural sleigh:', err);
         this._buildProceduralFallback();
       }
     );
@@ -711,12 +712,12 @@ export class SleighController {
 
   _loadSantaOrFallback(parent) {
     const dracoLoader = new DRACOLoader();
-    dracoLoader.setDecoderPath('/libs/draco/gltf/');
+    dracoLoader.setDecoderPath(assetUrl('libs/draco/gltf/'));
     const loader = new GLTFLoader();
     loader.setDRACOLoader(dracoLoader);
 
     loader.load(
-      '/assets/models/santa.glb',
+      assetUrl('assets/models/santa.glb'),
       (gltf) => {
         const santa = gltf.scene;
         santa.name = 'SantaModel';

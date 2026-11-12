@@ -6,10 +6,30 @@
 // - Crisp, focused gameplay SFX (instant 0.4s-0.8s punchy hits, no long ringing clutter)
 // - Polyphony limiting & cooldown gates to prevent sound muddiness
 
+import { assetUrl } from '../utils/assetUrl.js';
+
+// Snapchat hands each Lens a fresh storage partition, and some webviews throw
+// on storage access altogether. An audio preference must never break the game.
+function readStoredEnabled() {
+  try {
+    return localStorage.getItem('santa_audio_enabled') !== 'false';
+  } catch (_) {
+    return true;
+  }
+}
+
+function writeStoredEnabled(enabled) {
+  try {
+    localStorage.setItem('santa_audio_enabled', enabled ? 'true' : 'false');
+  } catch (_) {
+    /* session-only: fine, the setting just won't persist */
+  }
+}
+
 class SoundManager {
   constructor() {
     this.ctx = null;
-    this.enabled = localStorage.getItem('santa_audio_enabled') !== 'false';
+    this.enabled = readStoredEnabled();
 
     // Master bus & sub-busses
     this.masterGain = null;
@@ -36,7 +56,7 @@ class SoundManager {
 
     // BGM state
     this.bgmAudio = null;
-    this.currentTrack = '/audio/bgm_morning_frost.mp3';
+    this.currentTrack = assetUrl('audio/bgm_morning_frost.mp3');
 
     // Bell rhythm state
     this._bellAccum = 0;
@@ -111,15 +131,15 @@ class SoundManager {
     this.loading = true;
 
     const sfxList = [
-      { key: 'gift_drop', url: '/audio/gift_drop.mp3' },
-      { key: 'delivery_success', url: '/audio/delivery_success.mp3' },
-      { key: 'star_collect', url: '/audio/star_collect.mp3' },
-      { key: 'beacon_burst', url: '/audio/beacon_burst.mp3' },
-      { key: 'level_complete', url: '/audio/level_complete.mp3' },
-      { key: 'crash', url: '/audio/crash.mp3' },
-      { key: 'sleigh_bells', url: '/audio/sleigh_bells.mp3' },
-      { key: 'sleigh_bells_light', url: '/audio/sleigh_bells_light.mp3' },
-      { key: 'wind_loop', url: '/audio/wind_loop.mp3' }
+      { key: 'gift_drop', url: assetUrl('audio/gift_drop.mp3') },
+      { key: 'delivery_success', url: assetUrl('audio/delivery_success.mp3') },
+      { key: 'star_collect', url: assetUrl('audio/star_collect.mp3') },
+      { key: 'beacon_burst', url: assetUrl('audio/beacon_burst.mp3') },
+      { key: 'level_complete', url: assetUrl('audio/level_complete.mp3') },
+      { key: 'crash', url: assetUrl('audio/crash.mp3') },
+      { key: 'sleigh_bells', url: assetUrl('audio/sleigh_bells.mp3') },
+      { key: 'sleigh_bells_light', url: assetUrl('audio/sleigh_bells_light.mp3') },
+      { key: 'wind_loop', url: assetUrl('audio/wind_loop.mp3') }
     ];
 
     try {
@@ -273,6 +293,31 @@ class SoundManager {
     }
   }
 
+  // Snapchat can background the webview without unloading it. Audio must follow
+// the host: silence on the way out, restore on the way back.
+  suspend() {
+    this._hostSuspended = true;
+    if (this.bgmAudio && !this.bgmAudio.paused) {
+      this.bgmAudio.pause();
+    }
+    if (this.ctx && this.ctx.state === 'running') {
+      const p = this.ctx.suspend();
+      if (p && p.catch) p.catch(() => {});
+    }
+  }
+
+  resume() {
+    if (!this._hostSuspended) return;
+    this._hostSuspended = false;
+    if (this.ctx && this.ctx.state === 'suspended') {
+      const p = this.ctx.resume();
+      if (p && p.catch) p.catch(() => {});
+    }
+    if (this.bgmAudio && this.enabled && this.bgmAudio.paused) {
+      this.bgmAudio.play().catch(() => {});
+    }
+  }
+
   // Helper to play a clean, concise sample with strict voice-limiting and fast fadeout
   async _playSample(channel, key, volume = 0.7, maxDuration = 1.2, pitch = 1.0) {
     if (!this.ctx || this.ctx.state !== 'running' || !this.enabled) return;
@@ -380,7 +425,7 @@ class SoundManager {
   // Toggle Audio Mute / Unmute
   toggleMute() {
     this.enabled = !this.enabled;
-    localStorage.setItem('santa_audio_enabled', this.enabled ? 'true' : 'false');
+    writeStoredEnabled(this.enabled);
     if (this.ctx && this.masterGain) {
       const targetGain = this.enabled ? this.masterVolume : 0.0;
       this.masterGain.gain.setTargetAtTime(targetGain, this.ctx.currentTime, 0.05);

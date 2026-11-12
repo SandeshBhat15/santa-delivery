@@ -12,6 +12,11 @@
  *    stat rows (Deliveries, Time Left, Stars Collected, Total Score), and circular red enamel Home/Replay buttons.
  */
 
+import { assetUrl } from '../utils/assetUrl.js';
+
+// UI artwork lives in the zip, so every reference must be relative to the page.
+const uiAsset = (file) => assetUrl('assets/custom_ui/' + file);
+
 export class UIManager {
   constructor() {
     this.container = null;
@@ -124,7 +129,7 @@ export class UIManager {
       <!-- Deliveries Candy-Cane Progress Capsule -->
       <div class="hud-pill hud-pill-deliveries">
         <div class="hud-badge-icon badge-gift">
-          <img src="/assets/custom_ui/icon_gift_box.png" alt="Gifts" class="hud-custom-icon" />
+          <img src="${uiAsset('icon_gift_box.png')}" alt="Gifts" class="hud-custom-icon" />
         </div>
         <div class="delivery-content">
           <div class="delivery-label-row">
@@ -139,7 +144,7 @@ export class UIManager {
       <!-- Gold Pocket-Watch Countdown Timer -->
       <div id="hud-timer-pill" class="hud-pill hud-pill-timer">
         <div class="hud-badge-icon badge-watch">
-          <img src="/assets/custom_ui/icon_timer.png" alt="Timer" class="hud-custom-icon" />
+          <img src="${uiAsset('icon_timer.png')}" alt="Timer" class="hud-custom-icon" />
         </div>
         <span class="timer-text-val"><span id="hud-timer">75</span>s</span>
       </div>
@@ -165,13 +170,13 @@ export class UIManager {
       <div class="menu-view">
         <!-- High-Fidelity 3D Holiday Logo Asset -->
         <header class="title-banner-wrapper custom-logo-wrapper">
-          <img src="/assets/custom_ui/logo_holiday.png" alt="Santa's Gift Run" class="menu-custom-title-logo" />
+          <img src="${uiAsset('logo_holiday.png')}" alt="Santa's Gift Run" class="menu-custom-title-logo" />
         </header>
 
         <!-- Action Group: High-Polish Custom Enamel Buttons -->
         <footer class="menu-actions-group custom-menu-actions">
           <button id="btn-menu-play" class="btn-image-action" aria-label="Play">
-            <img src="/assets/custom_ui/btn_play.png" alt="Play" class="btn-image-asset" />
+            <img src="${uiAsset('btn_play.png')}" alt="Play" class="btn-image-asset" />
           </button>
         </footer>
       </div>
@@ -186,18 +191,18 @@ export class UIManager {
         <!-- Instructions Visual Showcase: Desktop & Mobile Switching Image -->
         <div class="instructions-poster-container">
           <picture>
-            <source media="(max-width: 768px)" srcset="/assets/custom_ui/instructions_mobile.png" />
-            <img src="/assets/custom_ui/instructions_desktop.png" alt="How to Play" class="instructions-poster-img" />
+            <source media="(max-width: 768px)" srcset="${uiAsset('instructions_mobile.png')}" />
+            <img src="${uiAsset('instructions_desktop.png')}" alt="How to Play" class="instructions-poster-img" />
           </picture>
         </div>
 
         <!-- Action Buttons: Play Now & Back -->
         <footer class="instructions-actions-bar">
           <button id="btn-instructions-back" class="btn-image-action" aria-label="Back">
-            <img src="/assets/custom_ui/btn_back.png" alt="Back" class="btn-image-asset" />
+            <img src="${uiAsset('btn_back.png')}" alt="Back" class="btn-image-asset" />
           </button>
           <button id="btn-instructions-close" class="btn-image-action" aria-label="Play Now">
-            <img src="/assets/custom_ui/btn_play.png" alt="Play Now" class="btn-image-asset" />
+            <img src="${uiAsset('btn_play.png')}" alt="Play Now" class="btn-image-asset" />
           </button>
         </footer>
       </div>
@@ -211,7 +216,7 @@ export class UIManager {
       <div class="game-over-modal-wrapper">
         <!-- 3D Enamel Game Over Frame Artwork -->
         <div class="game-over-card-container">
-          <img src="/assets/custom_ui/game_over.png" alt="Game Over" class="game-over-frame-bg" />
+          <img src="${uiAsset('game_over.png')}" alt="Game Over" class="game-over-frame-bg" />
 
           <!-- Dynamic Stars Overlay (matches 3 stars on the board) -->
           
@@ -242,10 +247,10 @@ export class UIManager {
         <!-- Custom Buttons: Retry / Play Again & Home -->
         <footer class="game-over-actions-bar">
           <button id="btn-results-home" class="btn-image-action" aria-label="Main Menu">
-            <img src="/assets/custom_ui/btn_back.png" alt="Home" class="btn-image-asset" />
+            <img src="${uiAsset('btn_back.png')}" alt="Home" class="btn-image-asset" />
           </button>
           <button id="btn-results-replay" class="btn-image-action" aria-label="Retry">
-            <img src="/assets/custom_ui/btn_retry.png" alt="Retry" class="btn-image-asset" />
+            <img src="${uiAsset('btn_retry.png')}" alt="Retry" class="btn-image-asset" />
           </button>
         </footer>
       </div>
@@ -258,7 +263,7 @@ export class UIManager {
     toast.innerHTML = `
       <div class="toast-ribbon-pill">
         <div class="toast-gift-badge">
-          <img src="/assets/custom_ui/icon_gift_box.png" alt="Gift" class="toast-custom-gift-img" />
+          <img src="${uiAsset('icon_gift_box.png')}" alt="Gift" class="toast-custom-gift-img" />
         </div>
         <span class="toast-headline" id="toast-text">Gift Delivered!</span>
         <span class="points-tag" id="toast-points-tag">+500</span>

@@ -6,7 +6,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:snap": "vite build --config vite.config.snap.js",
+    "pack:snap": "node tools/pack.mjs",
+    "snap": "npm run build:snap && npm run pack:snap",
+    "verify:snap": "node tools/verify-snap.mjs",
+    "fonts": "node scripts/fetch-fonts.mjs"
   },
   "dependencies": {
     "meshoptimizer": "^1.3.0",

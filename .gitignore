@@ -10,6 +10,9 @@ dist-ssr/
 # Hosting bundles (regenerated with npm run build)
 release/
 
+# Netlify CLI local state (site link, no remote impact)
+.netlify/
+
 # Vite cache
 .vite/
 

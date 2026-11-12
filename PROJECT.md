@@ -114,3 +114,15 @@ Every requirement from `ORIGINAL_REQUEST.md` (R1 through R5) is inventoried and 
   - `src/gameplay/TargetGuidanceFlow.js`: Off-course stardust guiding wind.
   - `src/gameplay/GiftDropMarker.js`: Target cottage golden sky beacon and chimney star emblem.
 - `src/main.js`: Three.js scene setup, render loop, UIManager binding.
+
+## Build Targets
+
+| Target | Command | Output |
+|---|---|---|
+| Web / desktop | `npm run build` | `dist/` |
+| Snapchat Web Lens (mobile portrait) | `npm run snap` | `release/santas-sleigh-run-web-v1.zip` |
+
+The Snap build is isolated in `vite.config.snap.js` (relative `base`, separate
+output folder) and packed by `tools/pack.mjs`, which enforces Snapchat's zip
+rules. See `SNAP_LENS.md` for the requirement mapping, runtime changes and the
+icon/preview assets that are uploaded alongside the zip.

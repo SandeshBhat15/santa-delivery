@@ -17,6 +17,7 @@ import { MobileOptimizer } from './mobile/MobileOptimizer.js';
 import { runMobileWarmup } from './mobile/MobileWarmup.js';
 import { BatchedChunkSystem, USE_LEGACY } from './world/BatchedChunkSystem.js';
 import { createBakedSky } from './sky/BakedSky.js';
+import { assetUrl } from './utils/assetUrl.js';
 
 // Global Shadowmap Edge Softening:
 // Smoothly fades directional shadows into ambient light near the edges of the shadow camera frustum.
@@ -2659,13 +2660,13 @@ let deliverySystem = null;
 
 // --- Load Terrain GLTF with House Glow ---
 const dracoLoader = new DRACOLoader();
-dracoLoader.setDecoderPath('/libs/draco/gltf/');
+dracoLoader.setDecoderPath(assetUrl('libs/draco/gltf/'));
 
 const gltfLoader = new GLTFLoader();
 gltfLoader.setDRACOLoader(dracoLoader);
 
 window._loadedModelName = 'terrain.glb';
-const modelUrl = '/assets/models/terrain.glb';
+const modelUrl = assetUrl('assets/models/terrain.glb');
 
 (() => {
   gltfLoader.load(
@@ -3174,6 +3175,28 @@ let frameCount = 0;
 let fps = 0;
 const clock = new THREE.Clock();
 
+// --- Mobile / Web Lens host behaviour -------------------------------------
+// Snapchat can send the webview to the background without unloading it. While
+// hidden, requestAnimationFrame stops, so the first frame back would otherwise
+// hand the simulation a multi-second delta: the sleigh teleports, collisions are
+// missed and the countdown drains. Clamp the step and discard the hidden gap.
+const MAX_DELTA = 0.1;
+let hostPaused = false;
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    hostPaused = true;
+    soundManager.suspend();
+  } else {
+    hostPaused = false;
+    clock.getDelta(); // discard time spent in the background
+    soundManager.resume();
+  }
+});
+
+// A long press on the canvas must not raise the OS context menu over the game.
+window.addEventListener('contextmenu', (event) => event.preventDefault());
+
 
 window._printScenePolys = function() {
   if (chunkSystem && typeof chunkSystem.getActiveTriangleCount === 'function') {
@@ -3259,10 +3282,10 @@ function animate(currentTime) {
   }
 
   const logicStart = performance.now();
-  const delta = clock.getDelta();
+  const delta = Math.min(clock.getDelta(), MAX_DELTA);
   const elapsedTime = clock.getElapsedTime();
 
-  const pauseLogic = perfDebugger?.state?.pauseLogic;
+  const pauseLogic = hostPaused || perfDebugger?.state?.pauseLogic;
 
   // Update Santa Sleigh Flight & Gift Delivery systems
   if (sleighController && !pauseLogic) {
